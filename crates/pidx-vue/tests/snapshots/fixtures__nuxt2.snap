@@ -1,0 +1,188 @@
+---
+source: crates/pidx-vue/tests/fixtures.rs
+expression: summary(&store)
+---
+{
+  "detection": {
+    "vue_major": 2,
+    "nuxt": [
+      2,
+      true
+    ],
+    "src_dir": "",
+    "build": "nuxt",
+    "aliases": [
+      [
+        "@@",
+        ""
+      ],
+      [
+        "~~",
+        ""
+      ],
+      [
+        "@",
+        ""
+      ],
+      [
+        "~",
+        ""
+      ]
+    ],
+    "component_dirs": [
+      {
+        "path": "components",
+        "path_prefix": true
+      }
+    ],
+    "libraries": [
+      "@nuxtjs/axios"
+    ],
+    "ui": []
+  },
+  "modules": [
+    [
+      "components/Base/Card.vue",
+      "component",
+      "BaseCard"
+    ],
+    [
+      "components/OrderList.vue",
+      "component",
+      "OrderList"
+    ],
+    [
+      "layouts/admin.vue",
+      "layout",
+      "admin"
+    ],
+    [
+      "nuxt.config.js",
+      "module",
+      null
+    ],
+    [
+      "pages/index.vue",
+      "page",
+      "index"
+    ],
+    [
+      "pages/orders/_id.vue",
+      "page",
+      "orders-id"
+    ],
+    [
+      "store/index.js",
+      "module",
+      null
+    ],
+    [
+      "store/orders.js",
+      "module",
+      null
+    ]
+  ],
+  "uses": [
+    [
+      "components/OrderList.vue",
+      "BaseCard",
+      2,
+      "components/Base/Card.vue",
+      "auto",
+      null
+    ],
+    [
+      "pages/index.vue",
+      "OrderList",
+      2,
+      "components/OrderList.vue",
+      "auto",
+      null
+    ],
+    [
+      "pages/orders/_id.vue",
+      "BaseCard",
+      2,
+      "components/Base/Card.vue",
+      "auto",
+      null
+    ]
+  ],
+  "symbols": [
+    [
+      "component",
+      "BaseCard",
+      "components/Base/Card.vue",
+      "<BaseCard>",
+      null
+    ],
+    [
+      "component",
+      "OrderList",
+      "components/OrderList.vue",
+      "<OrderList>",
+      null
+    ],
+    [
+      "component",
+      "admin",
+      "layouts/admin.vue",
+      "layout 'admin'",
+      "layout component"
+    ],
+    [
+      "component",
+      "index",
+      "pages/index.vue",
+      "page 'index'",
+      "page component"
+    ],
+    [
+      "component",
+      "orders-id",
+      "pages/orders/_id.vue",
+      "page 'orders-id'",
+      "page component"
+    ],
+    [
+      "store",
+      "root",
+      "store/index.js",
+      "Vuex module 'root'",
+      "state: ready · mutations: SET_READY"
+    ],
+    [
+      "store",
+      "orders",
+      "store/orders.js",
+      "Vuex module 'orders' (namespaced)",
+      "state: orders · mutations: SET · actions: fetch"
+    ]
+  ],
+  "pages": [
+    [
+      "/",
+      "index",
+      "pages/index.vue",
+      "nuxt",
+      "pages/index.vue:1",
+      null,
+      "admin",
+      "[\"auth\"]",
+      null,
+      null
+    ],
+    [
+      "/orders/:id",
+      "orders-id",
+      "pages/orders/_id.vue",
+      "nuxt",
+      "pages/orders/_id.vue:1",
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  ]
+}

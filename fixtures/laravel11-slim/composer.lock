@@ -1,0 +1,14 @@
+{
+    "_readme": [
+        "Trimmed fixture lock file"
+    ],
+    "content-hash": "fixture",
+    "packages": [
+        {
+            "name": "laravel/framework",
+            "version": "v11.31.0",
+            "type": "library"
+        }
+    ],
+    "packages-dev": []
+}

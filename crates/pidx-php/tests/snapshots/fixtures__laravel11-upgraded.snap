@@ -1,0 +1,234 @@
+---
+source: crates/pidx-php/tests/fixtures.rs
+expression: all
+---
+[
+  {
+    "kind": "class",
+    "name": "Controller",
+    "fqn": "App\\Http\\Controllers\\Controller",
+    "parent_fqn": null,
+    "signature": "abstract class Controller",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": true,
+    "is_final": false,
+    "file": "app/Http/Controllers/Controller.php",
+    "line": 5,
+    "end_line": 7,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "InvoiceController",
+    "fqn": "App\\Http\\Controllers\\InvoiceController",
+    "parent_fqn": null,
+    "signature": "class InvoiceController extends Controller",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/InvoiceController.php",
+    "line": 7,
+    "end_line": 18,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "App\\Http\\Controllers\\Controller"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "index",
+    "fqn": "App\\Http\\Controllers\\InvoiceController::index",
+    "parent_fqn": "App\\Http\\Controllers\\InvoiceController",
+    "signature": "public function index()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/InvoiceController.php",
+    "line": 9,
+    "end_line": 12,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "show",
+    "fqn": "App\\Http\\Controllers\\InvoiceController::show",
+    "parent_fqn": "App\\Http\\Controllers\\InvoiceController",
+    "signature": "public function show(Invoice $invoice)",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/InvoiceController.php",
+    "line": 14,
+    "end_line": 17,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$invoice",
+          "type": "Invoice",
+          "type_fqns": [
+            "App\\Models\\Invoice"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "class",
+    "name": "Kernel",
+    "fqn": "App\\Http\\Kernel",
+    "parent_fqn": null,
+    "signature": "class Kernel extends HttpKernel",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 7,
+    "end_line": 21,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Http\\Kernel"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "middlewareGroups",
+    "fqn": "App\\Http\\Kernel::$middlewareGroups",
+    "parent_fqn": "App\\Http\\Kernel",
+    "signature": "protected $middlewareGroups = ['web' => [\\Illuminate\\Session\\Middleware\\StartSession::cla…",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 9,
+    "end_line": 16,
+    "doc_summary": null,
+    "meta": {
+      "value": "['web' => [\\Illuminate\\Session\\Middleware\\StartSession::class], 'api' => [\\Illu…"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "middlewareAliases",
+    "fqn": "App\\Http\\Kernel::$middlewareAliases",
+    "parent_fqn": "App\\Http\\Kernel",
+    "signature": "protected $middlewareAliases = ['auth' => \\App\\Http\\Middleware\\Authenticate::class]",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 18,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {
+      "value": "['auth' => \\App\\Http\\Middleware\\Authenticate::class]"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "Invoice",
+    "fqn": "App\\Models\\Invoice",
+    "parent_fqn": null,
+    "signature": "class Invoice extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Invoice.php",
+    "line": 7,
+    "end_line": 15,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\Invoice::$fillable",
+    "parent_fqn": "App\\Models\\Invoice",
+    "signature": "protected $fillable = ['number', 'amount', 'due_on']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Invoice.php",
+    "line": 9,
+    "end_line": 9,
+    "doc_summary": null,
+    "meta": {
+      "value": "['number', 'amount', 'due_on']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "casts",
+    "fqn": "App\\Models\\Invoice::$casts",
+    "parent_fqn": "App\\Models\\Invoice",
+    "signature": "protected $casts = ['amount' => 'decimal:2', 'due_on' => 'date']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Invoice.php",
+    "line": 11,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {
+      "value": "['amount' => 'decimal:2', 'due_on' => 'date']"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "RouteServiceProvider",
+    "fqn": "App\\Providers\\RouteServiceProvider",
+    "parent_fqn": null,
+    "signature": "class RouteServiceProvider extends ServiceProvider",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 8,
+    "end_line": 21,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "boot",
+    "fqn": "App\\Providers\\RouteServiceProvider::boot",
+    "parent_fqn": "App\\Providers\\RouteServiceProvider",
+    "signature": "public function boot(): void",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 10,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {
+      "return_type": "void"
+    }
+  }
+]

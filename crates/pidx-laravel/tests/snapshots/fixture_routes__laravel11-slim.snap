@@ -1,0 +1,17 @@
+---
+source: crates/pidx-laravel/tests/fixture_routes.rs
+expression: table(&store)
+---
+GET|HEAD   api/orders                           orders.index             App\Http\Controllers\OrderController@index               [api] routes/api.php:8 static
+POST       api/orders                           orders.store             App\Http\Controllers\OrderController@store               [api] routes/api.php:8 static
+GET|HEAD   api/orders/{order}                   orders.show              App\Http\Controllers\OrderController@show                [api] routes/api.php:8 static
+GET|HEAD   api/customers                        customers.index          App\Http\Controllers\CustomerController@index            [api] routes/api.php:9 static
+POST       api/customers                        customers.store          App\Http\Controllers\CustomerController@store            [api] routes/api.php:9 static
+GET|HEAD   api/customers/{customer}             customers.show           App\Http\Controllers\CustomerController@show             [api] routes/api.php:9 static
+PUT|PATCH  api/customers/{customer}             customers.update         App\Http\Controllers\CustomerController@update           [api] routes/api.php:9 static
+GET|HEAD   api/user                             user                     Closure                                                  [api,auth:sanctum] routes/api.php:12 static
+GET|HEAD   up                                   -                        Closure                                                  [] bootstrap/app.php:7 static
+GET|HEAD   orders                               orders.index             App\Http\Controllers\OrderController@index               [web] routes/web.php:10 static
+GET|HEAD   orders/{order}                       orders.show              App\Http\Controllers\OrderController@show                [web] routes/web.php:11 static
+GET|HEAD   about                                about                    view:about                                               [web] routes/web.php:14 static
+GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS home                                 -                        redirect:/                                               [web] routes/web.php:15 static

@@ -1,0 +1,7 @@
+{
+  // Vite + Vue
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"], "#shared/*": ["shared/*"] },
+  },
+}

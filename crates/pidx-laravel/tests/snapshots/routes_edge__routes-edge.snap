@@ -1,0 +1,39 @@
+---
+source: crates/pidx-laravel/tests/routes_edge.rs
+expression: "common::table(&store)"
+---
+GET|POST|HEAD search                               search                   App\Http\Controllers\PhotoController@search              [web] routes/web.php:9 static
+GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS ping                                 -                        Closure                                                  [web] routes/web.php:10 static
+GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS old                                  -                        redirect:/new                                            [web] routes/web.php:11 static
+GET|HEAD   admin/dashboard                      admin.dashboard          App\Http\Controllers\Admin\DashboardController@__invoke  [web,auth,can:admin] routes/web.php:14 static
+GET|HEAD   admin/users                          admin.users              Closure                                                  [web,auth,can:admin] routes/admin.php:5 static
+GET|HEAD   /                                    account.home             App\Http\Controllers\PhotoController@index               [web] routes/web.php:19 static
+GET|HEAD   photos                               photos.index             App\Http\Controllers\PhotoController@index               [web] routes/web.php:22 static
+GET|HEAD   photos/create                        photos.create            App\Http\Controllers\PhotoController@create              [web] routes/web.php:22 static
+POST       photos                               photos.store             App\Http\Controllers\PhotoController@store               [web] routes/web.php:22 static
+GET|HEAD   photos/{photo}                       photos.show              App\Http\Controllers\PhotoController@show                [web] routes/web.php:22 static
+GET|HEAD   photos/{photo}/edit                  photos.edit              App\Http\Controllers\PhotoController@edit                [web] routes/web.php:22 static
+PUT|PATCH  photos/{photo}                       photos.update            App\Http\Controllers\PhotoController@update              [web] routes/web.php:22 static
+DELETE     photos/{photo}                       photos.destroy           App\Http\Controllers\PhotoController@destroy             [web] routes/web.php:22 static
+GET|HEAD   videos                               videos.index             App\Http\Controllers\VideoController@index               [web] routes/web.php:22 static
+GET|HEAD   videos/create                        videos.create            App\Http\Controllers\VideoController@create              [web] routes/web.php:22 static
+POST       videos                               videos.store             App\Http\Controllers\VideoController@store               [web] routes/web.php:22 static
+GET|HEAD   videos/{video}                       videos.show              App\Http\Controllers\VideoController@show                [web] routes/web.php:22 static
+GET|HEAD   videos/{video}/edit                  videos.edit              App\Http\Controllers\VideoController@edit                [web] routes/web.php:22 static
+PUT|PATCH  videos/{video}                       videos.update            App\Http\Controllers\VideoController@update              [web] routes/web.php:22 static
+DELETE     videos/{video}                       videos.destroy           App\Http\Controllers\VideoController@destroy             [web] routes/web.php:22 static
+GET|HEAD   photos/{photo}/comments              photos.comments.index    App\Http\Controllers\CommentController@index             [web] routes/web.php:27 static
+GET|HEAD   comments/{comment}                   comments.show            App\Http\Controllers\CommentController@show              [web] routes/web.php:27 static
+GET|HEAD   user-profiles                        profiles.list            App\Http\Controllers\ProfileController@index             [web] routes/web.php:28 static
+GET|HEAD   user-profiles/{profile}              user-profiles.show       App\Http\Controllers\ProfileController@show              [web] routes/web.php:28 static
+GET|HEAD   settings                             settings.show            App\Http\Controllers\ProfileController@show              [web] routes/web.php:32 static
+GET|HEAD   settings/edit                        settings.edit            App\Http\Controllers\ProfileController@edit              [web] routes/web.php:32 static
+PUT|PATCH  settings                             settings.update          App\Http\Controllers\ProfileController@update            [web] routes/web.php:32 static
+GET|HEAD   legacy                               -                        LegacyController@index                                   [web] routes/web.php:34 static  UNRESOLVED: string action 'LegacyController@index' needs a controller namespace (none is set for this group)
+GET|HEAD   '/letters/'.$letter                  -                        Closure                                                  [web] routes/web.php:37 static  UNRESOLVED: defined inside a loop
+GET|HEAD   $uri                                 -                        Closure                                                  [web] routes/web.php:41 static  UNRESOLVED: URI is not a literal (variable $uri)
+GET|HEAD   macro                                -                        Closure                                                  [web] routes/web.php:43 static  UNRESOLVED: unknown route method ->customMacro() (macro?)
+GET|HEAD   debug                                -                        Closure                                                  [web] routes/web.php:46 static
+GET|HEAD   no-session                           -                        Closure                                                  [web] routes/web.php:49 static
+GET|HEAD   {fallbackPlaceholder}                -                        Closure                                                  [web] routes/web.php:51 static
+POST       webhooks/stripe                      webhooks.stripe          App\Http\Controllers\WebhookController@stripe            [api] routes/webhooks.php:6 static

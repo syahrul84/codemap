@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+pidx-core = { path = "crates/pidx-core" }
+pidx-php = { path = "crates/pidx-php" }
+pidx-laravel = { path = "crates/pidx-laravel" }
+pidx-mcp = { path = "crates/pidx-mcp" }
+pidx-js = { path = "crates/pidx-js" }
+pidx-vue = { path = "crates/pidx-vue" }
+
+# Pinned once here; each crate opts in when its phase needs it.
+anyhow = "=1.0.104"
+blake3 = "=1.8.7"
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+dirs = "=7.0.0"
+filetime = "=0.2.29"
+ignore = "=0.4.33"
+jiff = "=0.2.38"
+oxc_allocator = "=0.154.0"
+oxc_ast = "=0.154.0"
+oxc_ast_visit = "=0.154.0"
+oxc_parser = "=0.154.0"
+oxc_span = "=0.154.0"
+insta = { version = "=1.49.0", features = ["json"] }
+rayon = "=1.12.0"
+rmcp = { version = "=3.5.1", default-features = false }
+rusqlite = { version = "=0.40.2", features = ["bundled", "fallible_uint"] }
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+strsim = "=0.11.1"
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+tokio = { version = "=1.53.3", default-features = false }
+toml = "=1.1.8"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+tree-sitter = "=0.27.1"
+tree-sitter-php = "=0.25.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

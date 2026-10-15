@@ -1,0 +1,1 @@
+{ "name": "mall-web", "dependencies": { "nuxt": "^3.13.2", "vue": "^3.5.12" } }

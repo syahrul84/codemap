@@ -1,0 +1,110 @@
+---
+source: crates/pidx-laravel/tests/data.rs
+expression: snapshot
+---
+{
+  "models": [
+    {
+      "fqn": "App\\Models\\Invoice",
+      "kind": "model",
+      "parent_fqn": "Illuminate\\Database\\Eloquent\\Model",
+      "table": "invoices",
+      "table_inferred": true,
+      "connection": null,
+      "primary_key": null,
+      "fillable": [
+        "number",
+        "amount",
+        "due_on"
+      ],
+      "guarded": null,
+      "hidden": null,
+      "casts": [
+        [
+          "amount",
+          "decimal:2"
+        ],
+        [
+          "due_on",
+          "date"
+        ]
+      ],
+      "appends": null,
+      "traits": [],
+      "relations": [],
+      "accessors": [],
+      "scopes": [],
+      "file": "app/Models/Invoice.php",
+      "line": 7,
+      "notes": []
+    }
+  ],
+  "schema": {
+    "invoices": {
+      "found": true,
+      "table": "invoices",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "keys": [
+            "primary",
+            "auto_increment",
+            "unsigned"
+          ],
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:12",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:12"
+        },
+        {
+          "name": "number",
+          "type": "varchar(255)",
+          "nullable": false,
+          "keys": [
+            "unique"
+          ],
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:13",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:13"
+        },
+        {
+          "name": "amount",
+          "type": "decimal(12,2)",
+          "nullable": false,
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:14",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:14"
+        },
+        {
+          "name": "due_on",
+          "type": "date",
+          "nullable": false,
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:15",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:15"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:16",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:16"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:16",
+          "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:16"
+        }
+      ],
+      "models": [
+        {
+          "fqn": "App\\Models\\Invoice",
+          "file": "app/Models/Invoice.php:7",
+          "table_inferred": true
+        }
+      ],
+      "created_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:11",
+      "last_changed_in": "database/migrations/2024_06_01_000000_create_invoices_table.php:16"
+    }
+  },
+  "form_requests": []
+}

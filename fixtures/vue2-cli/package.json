@@ -1,0 +1,11 @@
+{
+  "name": "vue2-cli-fixture",
+  "dependencies": {
+    "vue": "^2.7.14",
+    "vuex": "^3.6.2",
+    "vue-router": "^3.6.5",
+    "vuetify": "^1.5.24",
+    "vue-signature-pad": "^2.0.5"
+  },
+  "devDependencies": { "@vue/cli-service": "^4.5.0" }
+}

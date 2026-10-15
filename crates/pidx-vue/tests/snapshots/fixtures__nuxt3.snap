@@ -1,0 +1,287 @@
+---
+source: crates/pidx-vue/tests/fixtures.rs
+expression: summary(&store)
+---
+{
+  "detection": {
+    "vue_major": 3,
+    "nuxt": [
+      3,
+      true
+    ],
+    "src_dir": "",
+    "build": "nuxt",
+    "aliases": [
+      [
+        "@@",
+        ""
+      ],
+      [
+        "~~",
+        ""
+      ],
+      [
+        "@",
+        ""
+      ],
+      [
+        "~",
+        ""
+      ]
+    ],
+    "component_dirs": [
+      {
+        "path": "components",
+        "path_prefix": true
+      }
+    ],
+    "libraries": [
+      "pinia",
+      "@pinia/nuxt"
+    ],
+    "ui": [
+      "@nuxt/ui"
+    ]
+  },
+  "modules": [
+    [
+      "app.vue",
+      "component",
+      "App"
+    ],
+    [
+      "components/AppHeader.vue",
+      "component",
+      "AppHeader"
+    ],
+    [
+      "components/base/Button.vue",
+      "component",
+      "BaseButton"
+    ],
+    [
+      "components/order/OrderSummary.vue",
+      "component",
+      "OrderSummary"
+    ],
+    [
+      "composables/useCart.ts",
+      "module",
+      null
+    ],
+    [
+      "layouts/default.vue",
+      "layout",
+      "default"
+    ],
+    [
+      "nuxt.config.ts",
+      "module",
+      null
+    ],
+    [
+      "pages/index.vue",
+      "page",
+      "index"
+    ],
+    [
+      "pages/orders/[id].vue",
+      "page",
+      "orders-id"
+    ],
+    [
+      "pages/orders/[id]/invoice.vue",
+      "page",
+      "orders-id-invoice"
+    ],
+    [
+      "stores/cart.ts",
+      "module",
+      null
+    ]
+  ],
+  "uses": [
+    [
+      "app.vue",
+      "NuxtLayout",
+      2,
+      null,
+      "external",
+      "nuxt"
+    ],
+    [
+      "app.vue",
+      "NuxtPage",
+      3,
+      null,
+      "external",
+      "nuxt"
+    ],
+    [
+      "components/AppHeader.vue",
+      "BaseButton",
+      2,
+      "components/base/Button.vue",
+      "auto",
+      null
+    ],
+    [
+      "components/base/Button.vue",
+      "UButton",
+      7,
+      null,
+      "external",
+      "@nuxt/ui"
+    ],
+    [
+      "layouts/default.vue",
+      "AppHeader",
+      3,
+      "components/AppHeader.vue",
+      "auto",
+      null
+    ],
+    [
+      "pages/index.vue",
+      "LazyAppHeader",
+      2,
+      "components/AppHeader.vue",
+      "auto",
+      null
+    ],
+    [
+      "pages/index.vue",
+      "OrderOrderSummary",
+      2,
+      null,
+      "unresolved",
+      null
+    ],
+    [
+      "pages/orders/[id].vue",
+      "OrderSummary",
+      8,
+      "components/order/OrderSummary.vue",
+      "auto",
+      null
+    ],
+    [
+      "pages/orders/[id].vue",
+      "NuxtPage",
+      9,
+      null,
+      "external",
+      "nuxt"
+    ]
+  ],
+  "symbols": [
+    [
+      "component",
+      "App",
+      "app.vue",
+      "<App>",
+      null
+    ],
+    [
+      "component",
+      "AppHeader",
+      "components/AppHeader.vue",
+      "<AppHeader>",
+      null
+    ],
+    [
+      "component",
+      "BaseButton",
+      "components/base/Button.vue",
+      "<BaseButton :label :disabled @click>",
+      null
+    ],
+    [
+      "component",
+      "OrderSummary",
+      "components/order/OrderSummary.vue",
+      "<OrderSummary :orderId>",
+      null
+    ],
+    [
+      "composable",
+      "useCart",
+      "composables/useCart.ts#useCart",
+      "useCart()",
+      null
+    ],
+    [
+      "component",
+      "default",
+      "layouts/default.vue",
+      "layout 'default'",
+      "layout component"
+    ],
+    [
+      "component",
+      "index",
+      "pages/index.vue",
+      "page 'index'",
+      "page component"
+    ],
+    [
+      "component",
+      "orders-id",
+      "pages/orders/[id].vue",
+      "page 'orders-id'",
+      "page component"
+    ],
+    [
+      "component",
+      "orders-id-invoice",
+      "pages/orders/[id]/invoice.vue",
+      "page 'orders-id-invoice'",
+      "page component"
+    ],
+    [
+      "store",
+      "useCartStore",
+      "stores/cart.ts#useCartStore",
+      "defineStore('cart') (options store)",
+      "state: items, coupon · getters: count · actions: add"
+    ]
+  ],
+  "pages": [
+    [
+      "/",
+      "index",
+      "pages/index.vue",
+      "nuxt",
+      "pages/index.vue:1",
+      null,
+      "default",
+      null,
+      null,
+      null
+    ],
+    [
+      "/orders/:id",
+      "orders-id",
+      "pages/orders/[id].vue",
+      "nuxt",
+      "pages/orders/[id].vue:1",
+      null,
+      "default",
+      "[\"auth\"]",
+      null,
+      null
+    ],
+    [
+      "/orders/:id/invoice",
+      "order-invoice",
+      "pages/orders/[id]/invoice.vue",
+      "nuxt",
+      "pages/orders/[id]/invoice.vue:1",
+      "/orders/:id",
+      "default",
+      "[\"auth\"]",
+      null,
+      null
+    ]
+  ]
+}

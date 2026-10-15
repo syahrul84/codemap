@@ -1,0 +1,12 @@
+target/
+.git/
+.github/
+fixtures/**/out/
+**/*.db
+**/*.snap.new
+**/*.pending-snap
+.env*
+.DS_Store
+Makefile
+docker-compose.yml
+BUILD_PROMPT.md

@@ -1,0 +1,36 @@
+services:
+  # Rust toolchain. Source is bind-mounted; registry and target/ live in named
+  # volumes because bind-mounted target/ is very slow on macOS.
+  dev:
+    build:
+      context: .
+      target: dev
+    image: pidx-dev:latest
+    working_dir: /src
+    volumes:
+      - .:/src
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/target
+    environment:
+      CARGO_TARGET_DIR: /target
+      CARGO_TERM_COLOR: always
+
+  # Runtime image for manual testing: PROJECT=/path/to/laravel docker compose run --rm pidx scan --project /workspace
+  # stdin_open without tty: a TTY would corrupt the MCP stdio stream.
+  pidx:
+    build:
+      context: .
+      target: runtime
+    image: pidx:latest
+    stdin_open: true
+    tty: false
+    volumes:
+      - ${PROJECT:-./fixtures}:/workspace:ro
+      - pidx-data:/data
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  cargo-target:
+  pidx-data:

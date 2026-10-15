@@ -1,0 +1,294 @@
+---
+source: crates/pidx-laravel/tests/data.rs
+expression: snapshot
+---
+{
+  "models": [
+    {
+      "fqn": "App\\Models\\Customer",
+      "kind": "model",
+      "parent_fqn": "Illuminate\\Database\\Eloquent\\Model",
+      "table": "customers",
+      "table_inferred": true,
+      "connection": null,
+      "primary_key": null,
+      "fillable": [
+        "name",
+        "email"
+      ],
+      "guarded": null,
+      "hidden": null,
+      "casts": null,
+      "appends": null,
+      "traits": [],
+      "relations": [
+        {
+          "method": "orders",
+          "type": "hasMany",
+          "related": "App\\Models\\Order",
+          "line": 11
+        }
+      ],
+      "accessors": [],
+      "scopes": [],
+      "file": "app/Models/Customer.php",
+      "line": 7,
+      "notes": []
+    },
+    {
+      "fqn": "App\\Models\\Order",
+      "kind": "model",
+      "parent_fqn": "Illuminate\\Database\\Eloquent\\Model",
+      "table": "orders",
+      "table_inferred": true,
+      "connection": null,
+      "primary_key": null,
+      "fillable": [
+        "customer_id",
+        "status",
+        "total",
+        "notes",
+        "shipped_at"
+      ],
+      "guarded": null,
+      "hidden": null,
+      "casts": [
+        [
+          "total",
+          "decimal:2"
+        ],
+        [
+          "shipped_at",
+          "datetime"
+        ]
+      ],
+      "appends": null,
+      "traits": [],
+      "relations": [
+        {
+          "method": "customer",
+          "type": "belongsTo",
+          "related": "App\\Models\\Customer",
+          "line": 16
+        }
+      ],
+      "accessors": [],
+      "scopes": [],
+      "file": "app/Models/Order.php",
+      "line": 7,
+      "notes": []
+    }
+  ],
+  "schema": {
+    "customers": {
+      "found": true,
+      "table": "customers",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "keys": [
+            "primary",
+            "auto_increment",
+            "unsigned"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:3",
+          "last_changed_in": "database/schema/mysql-schema.sql:3"
+        },
+        {
+          "name": "name",
+          "type": "varchar(255)",
+          "nullable": false,
+          "created_in": "database/schema/mysql-schema.sql:3",
+          "last_changed_in": "database/schema/mysql-schema.sql:3"
+        },
+        {
+          "name": "email",
+          "type": "varchar(255)",
+          "nullable": false,
+          "keys": [
+            "unique"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:3",
+          "last_changed_in": "database/schema/mysql-schema.sql:3"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:3",
+          "last_changed_in": "database/schema/mysql-schema.sql:3"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:3",
+          "last_changed_in": "database/schema/mysql-schema.sql:3"
+        }
+      ],
+      "models": [
+        {
+          "fqn": "App\\Models\\Customer",
+          "file": "app/Models/Customer.php:7",
+          "table_inferred": true
+        }
+      ],
+      "created_in": "database/schema/mysql-schema.sql:3",
+      "last_changed_in": "database/schema/mysql-schema.sql:3"
+    },
+    "orders": {
+      "found": true,
+      "table": "orders",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "keys": [
+            "primary",
+            "auto_increment",
+            "unsigned"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/schema/mysql-schema.sql:20"
+        },
+        {
+          "name": "customer_id",
+          "type": "bigint",
+          "nullable": false,
+          "keys": [
+            "index",
+            "unsigned"
+          ],
+          "references": "customers.id",
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/schema/mysql-schema.sql:20"
+        },
+        {
+          "name": "status",
+          "type": "varchar(20)",
+          "nullable": false,
+          "default": "'pending'",
+          "keys": [
+            "index"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/migrations/2024_02_01_000000_rename_state_on_orders_table.php:12"
+        },
+        {
+          "name": "shipped_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/migrations/2024_03_01_000000_change_total_on_orders_table.php:14",
+          "last_changed_in": "database/migrations/2024_03_01_000000_change_total_on_orders_table.php:14"
+        },
+        {
+          "name": "total",
+          "type": "decimal(10,2)",
+          "nullable": false,
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/migrations/2024_03_01_000000_change_total_on_orders_table.php:12"
+        },
+        {
+          "name": "notes",
+          "type": "varchar(500)",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/migrations/2024_03_01_000000_change_total_on_orders_table.php:13"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/schema/mysql-schema.sql:20"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:20",
+          "last_changed_in": "database/schema/mysql-schema.sql:20"
+        }
+      ],
+      "models": [
+        {
+          "fqn": "App\\Models\\Order",
+          "file": "app/Models/Order.php:7",
+          "table_inferred": true
+        }
+      ],
+      "created_in": "database/schema/mysql-schema.sql:20",
+      "last_changed_in": "database/migrations/2024_03_01_000000_change_total_on_orders_table.php:14"
+    },
+    "users": {
+      "found": true,
+      "table": "users",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "keys": [
+            "primary",
+            "auto_increment",
+            "unsigned"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "name",
+          "type": "varchar(255)",
+          "nullable": false,
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "email",
+          "type": "varchar(255)",
+          "nullable": false,
+          "keys": [
+            "unique"
+          ],
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "password",
+          "type": "varchar(255)",
+          "nullable": false,
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "remember_token",
+          "type": "varchar(100)",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": true,
+          "created_in": "database/schema/mysql-schema.sql:34",
+          "last_changed_in": "database/schema/mysql-schema.sql:34"
+        }
+      ],
+      "models": [],
+      "created_in": "database/schema/mysql-schema.sql:34",
+      "last_changed_in": "database/schema/mysql-schema.sql:34"
+    }
+  },
+  "form_requests": []
+}

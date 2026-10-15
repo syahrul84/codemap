@@ -1,0 +1,11 @@
+## Project index (pidx MCP) — required usage
+- At the start of a task, call `project_overview`.
+- Before creating any class, method or helper, call `search_symbol` to check for an existing one and reuse it.
+- Before writing queries, migrations or model code, call `get_schema` — never assume column names.
+- Prefer `get_symbol` over reading whole files.
+- For app settings and their defaults (and which admin page edits them), call `get_schema` with `settings: true` and a `key_prefix`.
+- Before changing, renaming or removing a class, method, route, component, composable, store, translation key or endpoint, call `find_usages` and update every use; run the tests it lists.
+- Vue / Nuxt: before using, changing or creating a component, call `get_component` (props, emits, v-model, slots, who renders it); search composables and stores with `search_symbol`; find screens and their URLs with `list_pages`; before calling or changing an API endpoint, check `api_usage` (route, callers, fields it returns).
+- Before finishing, call `verify` with every class, method, route, table, column, component, endpoint and translation key your change relies on. Fix all `not_found` items.
+- Before finishing a change, call `find_usages` with `git_changes: true` and run the test commands it returns instead of the whole suite.
+- If a tool response says `stale: true`, mention it and re-check files directly.
