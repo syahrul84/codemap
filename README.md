@@ -467,3 +467,7 @@ fixtures/            hand-written Laravel, Vue 2, Vue 3, Nuxt 2 and Nuxt 3 proje
 ```
 
 Extractor versions (`PHP_EXTRACTOR_VERSION`, `ROUTES_EXTRACTOR_VERSION`, `DATA_EXTRACTOR_VERSION`, `DETECTION_VERSION`, `JS_EXTRACTOR_VERSION`, `REGISTRY_VERSION`, `VUE_DETECTION_VERSION`) make existing indexes re-extract after an upgrade. Bump the relevant one whenever extraction output changes.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
