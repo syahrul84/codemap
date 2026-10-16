@@ -53,6 +53,8 @@ codemap is one program with no dependencies. Pick one way to get it:
 | **Cargo** | Rust 1.99+ and a C compiler | building from source |
 | **Docker** | Docker | keeping the program away from your machine; the project is mounted read-only |
 
+On **Windows**, use WSL or Docker Desktop: see [Windows](#windows).
+
 ### Download
 
 Ready-made programs for macOS (Apple Silicon and Intel) and Linux (x86-64 and ARM64) are on the [Releases](https://github.com/syahrul84/codemap/releases) page. To install the latest one:
@@ -69,6 +71,48 @@ codemap --version
 ```
 
 If macOS refuses to open a file downloaded with a browser, remove the download flag once: `xattr -d com.apple.quarantine ~/.local/bin/codemap`. Each release has a `SHA256SUMS` file to check the downloads against.
+
+### Windows
+
+There is no Windows program yet. codemap runs on Windows through WSL (Windows' built-in Linux) or Docker Desktop.
+
+**WSL (recommended)**
+
+1. Install WSL once, in PowerShell as administrator, then restart:
+   ```powershell
+   wsl --install
+   ```
+2. Open **Ubuntu** from the Start menu and install codemap there (use `codemap-aarch64-unknown-linux-gnu` on an ARM PC):
+   ```bash
+   curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-x86_64-unknown-linux-gnu.tar.gz | tar xz
+   mkdir -p ~/.local/bin && mv codemap ~/.local/bin/
+   codemap --version
+   ```
+3. Use it from your project folder. Projects inside WSL (`~/code/my-app`) are much faster to read than ones on the Windows drive (`/mnt/c/Users/me/my-app`), but both work.
+4. Connect it to Claude Code:
+   - **Claude Code running inside WSL** (the usual setup): in the project folder, run `claude mcp add codemap -- codemap serve --project "$(pwd)"`.
+   - **Claude Code running on Windows**: let it start codemap through WSL, with the project's path as WSL sees it. In PowerShell, in the project folder:
+     ```powershell
+     claude mcp add codemap -- wsl bash -lc "codemap serve --project /mnt/c/Users/me/my-app"
+     ```
+     Replace the path with your project's (`wsl wslpath -a .` prints it).
+
+**Docker Desktop**
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then in PowerShell:
+
+```powershell
+git clone https://github.com/syahrul84/codemap; cd codemap
+docker build -t codemap:latest --target runtime .
+```
+
+and in your project folder:
+
+```powershell
+claude mcp add codemap -- docker run -i --rm -v "${PWD}:/workspace:ro" -v codemap-data:/data codemap:latest serve --project /workspace
+```
+
+The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 
 ### Cargo
 
