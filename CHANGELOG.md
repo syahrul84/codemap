@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- `codemap update` installs the latest release, checked against its SHA256SUMS (`--check` only reports, `--force` reinstalls).
+- A once-a-day check for new releases; `codemap doctor` and `project_overview` mention a newer version. Turn it off with `CODEMAP_NO_UPDATE_CHECK=1`.
+
 ## [0.1.0] - 2026-10-16
 
 First release. codemap reads a Laravel, Vue 2, Vue 3, Nuxt (2/3/4) or Next.js project and serves facts about it to Claude over MCP, so Claude checks what exists instead of guessing.

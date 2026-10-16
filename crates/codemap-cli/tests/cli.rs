@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 
 fn codemap(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .env("CODEMAP_NO_UPDATE_CHECK", "1")
         .args(args)
         .env_remove("CODEMAP_LOG")
         .env_remove("CODEMAP_PROJECT_ID")
@@ -332,6 +333,7 @@ fn migrations_not_yet_applied_are_listed_per_database() {
         .unwrap();
     }
     let out = Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .env("CODEMAP_NO_UPDATE_CHECK", "1")
         .args([
             "query",
             "--project",

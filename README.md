@@ -127,6 +127,17 @@ git clone https://github.com/syahrul84/codemap && cd codemap
 docker build -t codemap:latest --target runtime .
 ```
 
+### Updating
+
+```bash
+codemap update           # download and install the latest release (checked against its SHA256SUMS)
+codemap update --check   # only say whether there is a newer one
+```
+
+Claude Code picks up the new version in its next session. Indexes update themselves the first time the new version runs. With Cargo, run the `cargo install` line again with the new tag; with Docker, `git pull` and build the image again.
+
+Once a day, `codemap serve` and `codemap doctor` ask GitHub whether a newer release exists (a plain request for the public release list; nothing about your project is sent). When there is one, `codemap doctor` and `project_overview` say so, so Claude can tell you. To turn this off, set `CODEMAP_NO_UPDATE_CHECK=1` (in your shell profile, or in the `env` of the MCP server entry).
+
 ## Quick start
 
 Inside a project folder:
@@ -232,6 +243,7 @@ codemap stats  [--project <path>] [--json]            # counts, timings, index s
 codemap doctor [--project <path>] [--json]            # detection reasons, warnings, unresolved routes, broken routes
 codemap map    [--project <path>] --out <file.html>   # the code map: one page to open in a browser
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
+codemap update [--check] [--force]                    # install the latest release
 ```
 
 Global options: `--name` / `CODEMAP_PROJECT_NAME` (display name; inside Docker the folder is always `workspace`), `--link name=path` / `CODEMAP_LINKS`, `--project-id` / `CODEMAP_PROJECT_ID`, `--data-dir` / `CODEMAP_DATA_DIR` (default `/data` in Docker, the platform cache dir elsewhere), `--log-level` / `CODEMAP_LOG`.

@@ -42,6 +42,8 @@ mysql = { version = "=28.0.3", default-features = false, features = ["minimal-ru
 schemars = "=1.2.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+# Checks downloaded releases (`codemap update`).
+sha2 = "=0.10.9"
 strsim = "=0.11.1"
 tempfile = "=3.27.0"
 thiserror = "=2.0.21"

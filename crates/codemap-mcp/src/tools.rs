@@ -707,6 +707,15 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
         },
         "next": "search_symbol before writing new code; get_schema before queries or migrations (settings: true for app settings, migrations: true for unapplied migrations); get_component before using or changing a component; after editing, find_usages git_changes: true for the tests to run; verify before finishing",
     });
+    // A newer codemap release (from the last daily check; no network here).
+    if let Some(data_dir) = project
+        .index_path
+        .parent()
+        .and_then(std::path::Path::parent)
+        && let Some(n) = codemap_core::updates::notice(data_dir)
+    {
+        v["update"] = json!(n);
+    }
     // Names the AI got wrong before in this project, so it avoids them now.
     let mistaken = crate::misses::often_mistaken(store, project);
     if !mistaken.is_empty() {

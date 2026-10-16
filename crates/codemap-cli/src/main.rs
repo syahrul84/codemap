@@ -9,6 +9,8 @@ use codemap_core::{Config, ScanOptions, Store, paths};
 use codemap_mcp::RefreshReport;
 use serde::Serialize;
 
+mod update;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "codemap",
@@ -109,6 +111,15 @@ enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// Install the latest release of codemap (checked against its SHA256SUMS).
+    Update {
+        /// Only say whether a newer version exists.
+        #[arg(long)]
+        check: bool,
+        /// Install the latest release even if it is not newer (a repair).
+        #[arg(long)]
+        force: bool,
+    },
     /// Explain detection, warnings and unresolved items.
     Doctor {
         /// The project folder (default: the current folder).
@@ -172,6 +183,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         } => cmd_query(&cli, project, tool, args.as_deref()),
         Command::Doctor { project, json } => cmd_doctor(&cli, project, *json),
         Command::Map { project, out } => cmd_map(&cli, project, out),
+        Command::Update { check, force } => {
+            let data_dir = paths::resolve_data_dir(cli.data_dir.clone())?;
+            update::run(&data_dir, *check, *force)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Misses {
             project,
             json,
@@ -496,6 +512,10 @@ fn cmd_misses(cli: &Cli, project: &Path, json: bool, clear: bool) -> anyhow::Res
 
 fn cmd_serve(cli: &Cli, project: &Path) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
+    // Once a day, in the background: is there a newer release?
+    if let Ok(data_dir) = paths::resolve_data_dir(cli.data_dir.clone()) {
+        update::check_in_background(data_dir);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -508,6 +528,12 @@ fn cmd_serve(cli: &Cli, project: &Path) -> anyhow::Result<ExitCode> {
 
 fn cmd_doctor(cli: &Cli, project: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
+    if let Ok(data_dir) = paths::resolve_data_dir(cli.data_dir.clone()) {
+        update::check_if_due(&data_dir, 5);
+        if !json && let Some(n) = codemap_core::updates::notice(&data_dir) {
+            println!("{n}\n");
+        }
+    }
     for p in &projects {
         if !json {
             header(&projects, p);

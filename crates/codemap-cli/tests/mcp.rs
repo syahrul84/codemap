@@ -20,7 +20,8 @@ fn fixture(name: &str) -> PathBuf {
 async fn connect(project: &Path, data: &Path) -> RunningService<RoleClient, ()> {
     let transport = TokioChildProcess::new(Command::new(env!("CARGO_BIN_EXE_codemap")).configure(
         |cmd| {
-            cmd.args(["serve", "--project"])
+            cmd.env("CODEMAP_NO_UPDATE_CHECK", "1")
+                .args(["serve", "--project"])
                 .arg(project)
                 .arg("--data-dir")
                 .arg(data)
@@ -297,6 +298,7 @@ async fn first_call_never_claims_fresh_while_warm_up_runs() {
     let data = tempfile::tempdir().unwrap();
     // An existing, now outdated index (default 2 s check interval).
     let status = std::process::Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .env("CODEMAP_NO_UPDATE_CHECK", "1")
         .args(["scan", "--project"])
         .arg(project.path())
         .arg("--data-dir")

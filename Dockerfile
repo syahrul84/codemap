@@ -31,7 +31,8 @@ RUN apt-get update \
  && mkdir -p /data /workspace \
  && chown codemap:codemap /data
 COPY --from=builder /usr/local/bin/codemap /usr/local/bin/codemap
-ENV CODEMAP_DATA_DIR=/data
+ENV CODEMAP_DATA_DIR=/data \
+    CODEMAP_IN_DOCKER=1
 USER codemap
 WORKDIR /workspace
 VOLUME ["/data"]
