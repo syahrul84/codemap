@@ -386,6 +386,72 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         None => notes.push("not a git repository: unused new code not checked".into()),
     }
 
+    // What the release needs on the server, the project's file rules, and
+    // mentions left behind after deletions.
+    let mut deploy_steps: Vec<Value> = Vec::new();
+    let mut rules: Vec<String> = Vec::new();
+    if let Some((_, from, changes)) = codemap_core::git::branch_changes(&project.root, base) {
+        deploy_steps = crate::deploy::steps(store, project, &from, &changes);
+        for (rule, files) in
+            crate::deploy::rules_hit(&project.root, &project.config.rules, &changes)
+        {
+            let line = format!("{} ({})", rule.note.trim(), files.join(", "));
+            if rule.level.as_deref() == Some("problem") {
+                push(&mut problems, "rule", line);
+            } else {
+                rules.push(line);
+            }
+        }
+        let gone = crate::leftovers::gone(&project.root, &from, &changes);
+        if !gone.is_empty() {
+            checked.push(format!("mentions of {} deleted names", gone.len()));
+        }
+        for (name, why, places) in crate::leftovers::mentions(&project.root, &gone) {
+            let (hard, soft): (Vec<_>, Vec<_>) = places
+                .into_iter()
+                .partition(|(kind, _)| matches!(*kind, "code" | "test"));
+            let list = |v: &[(&str, String)]| {
+                v.iter()
+                    .map(|(k, at)| format!("{at} ({k})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            if !hard.is_empty() {
+                push(
+                    &mut problems,
+                    "leftover",
+                    format!(
+                        "`{name}` is still named after it was removed ({why}): {}",
+                        list(&hard)
+                    ),
+                );
+            }
+            if !soft.is_empty() {
+                low.push(format!(
+                    "leftover: `{name}` is still named in comments or docs ({why}): {}",
+                    list(&soft)
+                ));
+            }
+        }
+    }
+
+    // Tests that only pass with the right data already in the database.
+    let all_files: Vec<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
+    let live = crate::livedata::find(&project.root, &all_files);
+    if !live.is_empty() {
+        checked.push("tests that depend on live data".into());
+        let examples: Vec<String> = live
+            .iter()
+            .take(8)
+            .map(|(f, why)| format!("{f} ({why})"))
+            .collect();
+        low.push(format!(
+            "tests: {} tests check data they never create, so they pass only while the database holds the right records (e.g. {})",
+            live.len(),
+            examples.join("; ")
+        ));
+    }
+
     // Laravel: migrations, config, settings.
     let files: Vec<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
     let laravel = files.iter().any(|f| f.starts_with("database/migrations/"))
@@ -531,6 +597,12 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         v["to_mark_intended"] = json!(
             "a problem that is on purpose: add a `codemap-ignore` comment (e.g. `// codemap-ignore: why`) on the line it points at or the line above, or add text from the problem to `[release] ignore = [\"…\"]` in .codemap.toml; it then moves to `ignored`"
         );
+    }
+    if !deploy_steps.is_empty() {
+        v["release_steps"] = json!(deploy_steps);
+    }
+    if !rules.is_empty() {
+        v["rules"] = json!(rules);
     }
     if !notes.is_empty() {
         v["notes"] = json!(notes);

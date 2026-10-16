@@ -125,6 +125,13 @@ pub fn projects(
                 app_config.release.ignore.push(i.clone());
             }
         }
+        // Workspace rules: for every app, or the one they name.
+        for r in &config.rules {
+            if r.app.as_deref().is_none_or(|a| a == name.as_str()) && !app_config.rules.contains(r)
+            {
+                app_config.rules.push(r.clone());
+            }
+        }
         if app_config.copy.banned.is_empty() {
             app_config.copy = config.copy.clone();
         }
@@ -287,6 +294,12 @@ pub fn call(
         .as_object_mut()
         .and_then(|o| o.remove("app"))
         .and_then(|v| v.as_str().map(str::to_owned));
+    // A type-check output belongs to one app: its starting point is per app.
+    if tool == "verify" && args["type_errors"].is_string() && wanted.is_none() && apps.len() > 1 {
+        return Err(ToolError::InvalidParams(
+            "type_errors belong to one app: pass `app` (the app the type check ran in)".into(),
+        ));
+    }
     if apps.len() == 1 && apps[0].1.app.is_none() {
         let (s, p) = apps[0];
         return tools::call(s, p, tool, args, fresh);
@@ -427,12 +440,28 @@ pub fn call(
         }
         json!({ "clean": clean, "problems_total": total, "apps": by_app })
     } else if tool == "verify" {
-        merge_verify(
+        let mut merged = merge_verify(
             results
                 .iter()
                 .map(|(a, e)| (a.clone(), e.data.clone()))
                 .collect(),
-        )
+        );
+        // The type-error comparison of the one app it was run for.
+        if let Some((app, e)) = results
+            .iter()
+            .find(|(_, e)| e.data.get("type_errors").is_some())
+        {
+            merged["type_errors"] = e.data["type_errors"].clone();
+            merged["app"] = json!(app);
+            if merged["results"].as_array().is_some_and(Vec::is_empty)
+                && let Some(o) = merged.as_object_mut()
+            {
+                o.remove("results");
+                o.remove("summary");
+                o.remove("all_exist");
+            }
+        }
+        merged
     } else if tool == "project_overview" || results.len() == 1 {
         if results.len() == 1 {
             let (app, e) = results.remove(0);

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- Release check: `release_steps`, the server steps a release needs (installs, migrations, caches, queue and server restarts, rebuilds, new environment variables), worked out from what changed.
+- Project rules tied to files (`[[rules]]` in `.codemap.toml`), returned by the release check and by change impact when a matching file changes.
+- Leftover mentions: names deleted or renamed on the branch that code, tests, comments or docs still use.
+- Tests that depend on live data: browser and PHP tests that check data they never create.
+- New type errors only: `verify` with `type_errors` (the type check's output) reports only errors not in the saved starting point.
+
 ## [0.1.1] - 2026-10-16
 
 - `codemap update` installs the latest release, checked against its SHA256SUMS (`--check` only reports, `--force` reinstalls).

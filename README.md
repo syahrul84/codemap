@@ -420,6 +420,35 @@ if (env('ALLOW_DB_WIPE')) { … }
 
 Translations: empty lists in a lang file (`'items' => []`) are not keys; uses with a fallback (`$t('a.b', 'Default text')`) or behind an existence check (`Lang::has('a.b')`, `$key === 'x'`) are not reported as missing; sentences used as Laravel keys (`__('Save changes')`) are plain text; a one-word key with no translation (`__('canceled')`) is reported, because speakers of the other shipped languages see the word as written. `verify` with `claims: {"i18n_keys": ["*"]}` lists every translation problem one row each.
 
+#### Release steps, file rules, leftovers and live-data tests
+
+The release check also answers:
+
+- **`release_steps`: what the server needs for this release**, from what changed on the branch: `composer install` (dependencies changed) or `composer dump-autoload --optimize` (classes added, deleted or renamed), `php artisan migrate --force` (new migrations), `php artisan optimize` (config, routes or listeners changed), `filament:optimize`, `horizon:terminate` or `queue:restart` (workers keep the old code), `octane:reload` or a PHP-FPM reload, the frontend install and build, restarting a Nuxt / Next.js server, and environment variables new in `.env.example` (public ones are read at build time). Each step says which files call for it.
+- **`rules`: your project's rules tied to files.** In `.codemap.toml`:
+
+  ```toml
+  [[rules]]
+  files = ["database/migrations/**"]
+  when = "modified"            # added | modified | deleted | renamed | changed (default)
+  note = "Never edit a migration that has already run; add a new one."
+  # level = "problem"          # make the release check fail on it
+  ```
+
+  A rule whose files change comes back in the release check and in `find_usages` change impact. In a workspace's file, `app = "backend"` limits a rule to one app.
+- **Leftover mentions**: classes, components, functions and methods deleted or renamed on the branch that are still named somewhere. Mentions in code and tests are problems; in comments and docs, low priority. A name that is still defined elsewhere (moved, or another class's method of the same name) is not reported.
+- **Tests that depend on live data** (low priority, and marked in change impact as `tests_on_live_data`): browser tests that check page content without seeding, API setup or mocked responses, and PHP feature tests that check data without factories, seeders or inserts (in the test or its parent test class). They pass only while the database holds the right records.
+
+#### New type errors only
+
+codemap does not run the type check; Claude does, and passes the output to `verify`:
+
+```json
+{ "app": "consumer", "type_errors": "<output of vue-tsc --noEmit / nuxi typecheck / tsc / phpstan --error-format=raw>" }
+```
+
+The first output becomes the starting point (kept next to the app's index). After that, only errors that are new come back (`new`, `new_total`), with how many were fixed since. Line numbers are ignored when comparing, so an old error that moved is not new. Add `"type_errors_save": true` to make the current output the new starting point.
+
 ### Migrations not yet applied
 
 `get_schema` with `migrations: true` (and `codemap doctor`) compares the migration files with each database's `migrations` table: migrations a database has not run yet, and rows whose file is gone (squashed into a schema dump, or deleted).

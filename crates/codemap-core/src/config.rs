@@ -30,6 +30,28 @@ pub struct Config {
     pub release: ReleaseConfig,
     /// Databases to compare migrations with (read-only); see [`DatabaseConfig`].
     pub databases: Vec<DatabaseConfig>,
+    /// Project rules tied to files: a note returned when a matching file changes.
+    pub rules: Vec<RuleConfig>,
+}
+
+/// `[[rules]] files = ["database/migrations/**"], when = "modified",
+/// note = "Never edit a migration that has run; add a new one."`
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuleConfig {
+    /// Patterns in `.gitignore` style, relative to the app's folder.
+    pub files: Vec<String>,
+    /// What to tell whoever changes a matching file.
+    pub note: String,
+    /// `added`, `modified`, `deleted` or `changed` (any; the default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// `problem` makes the release check fail on it; default `note`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    /// In a workspace's file: only for this app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// A database whose `migrations` table is compared with the migration files.
@@ -261,6 +283,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("copy", &["banned"]),
     ("release", &["ignore"]),
     ("databases", &["name", "env", "app", "table"]),
+    ("rules", &["files", "note", "when", "level", "app"]),
 ];
 
 impl Config {

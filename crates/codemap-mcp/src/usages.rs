@@ -876,6 +876,25 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
     if let Some(n) = php_runner_note(project, &tests) {
         data["run_note"] = json!(n);
     }
+    // The project's rules for the files changed (`[[rules]]`).
+    let changes = crate::deploy::changes_of(&project.root, files);
+    let rules: Vec<String> =
+        crate::deploy::rules_hit(&project.root, &project.config.rules, &changes)
+            .into_iter()
+            .map(|(r, f)| format!("{} ({})", r.note.trim(), f.join(", ")))
+            .collect();
+    if !rules.is_empty() {
+        data["rules"] = json!(rules);
+    }
+    // Tests to run that only pass with the right data in the database.
+    let live = crate::livedata::find(&project.root, &tests);
+    if !live.is_empty() {
+        data["tests_on_live_data"] = json!(
+            live.iter()
+                .map(|(f, why)| format!("{f}: {why}"))
+                .collect::<Vec<_>>()
+        );
+    }
     // Brief: the commands already name the tests.
     if detail == Detail::Full || tests.len() <= 15 {
         data["tests"] = json!(tests);

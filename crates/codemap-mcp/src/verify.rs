@@ -105,6 +105,15 @@ pub struct VerifyParams {
     /// main, master or develop).
     #[serde(default)]
     pub base: Option<String>,
+    /// The output of the project's type check (vue-tsc, nuxi typecheck, tsc,
+    /// or PHPStan with --error-format=raw): only errors not in the saved
+    /// starting point are reported. The first output given becomes the
+    /// starting point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_errors: Option<String>,
+    /// With `type_errors`: save this output as the new starting point.
+    #[serde(default)]
+    pub type_errors_save: bool,
     #[serde(default)]
     pub detail: DetailParam,
 }
@@ -492,9 +501,16 @@ pub fn verify(store: &Store, project: &Project, p: VerifyParams) -> Result<Value
     if p.release_check {
         return crate::release::release_check(store, project, p.base.as_deref());
     }
+    let types = p
+        .type_errors
+        .as_deref()
+        .map(|out| crate::typecheck::compare(project, out, p.type_errors_save));
     if p.claims.is_none() && p.php_snippet.is_none() {
+        if let Some(t) = types {
+            return Ok(json!({ "type_errors": t }));
+        }
         return Err(ToolError::InvalidParams(
-            "pass `claims`, `php_snippet`, `release_check: true`, or a mix".into(),
+            "pass `claims`, `php_snippet`, `type_errors`, `release_check: true`, or a mix".into(),
         ));
     }
     let detail: Detail = p.detail.into();
@@ -677,6 +693,9 @@ pub fn verify(store: &Store, project: &Project, p: VerifyParams) -> Result<Value
     });
     if !notes.is_empty() {
         out["notes"] = json!(notes);
+    }
+    if let Some(t) = types {
+        out["type_errors"] = t;
     }
     Ok(out)
 }

@@ -125,6 +125,108 @@ pub fn branch_files(root: &Path, base: Option<&str>) -> Option<(String, Vec<Stri
     Some((used, out))
 }
 
+/// One file changed on the branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    /// `A` added, `M` modified, `D` deleted, `R` renamed.
+    pub status: char,
+    /// Relative to the root; the new name for a rename.
+    pub path: String,
+    /// The old name of a renamed file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// The branch's changes with their kind: committed since it left `base`
+/// (as in [`branch_files`]) plus uncommitted and untracked files. Also the
+/// commit it left from, to read files as they were.
+pub fn branch_changes(root: &Path, base: Option<&str>) -> Option<(String, String, Vec<Change>)> {
+    let opts = [
+        "-c",
+        "core.checkStat=minimal",
+        "-c",
+        "core.trustctime=false",
+        "--no-optional-locks",
+    ];
+    let head = head(root)?;
+    let candidates: Vec<String> = match base {
+        Some(b) => vec![b.to_owned()],
+        None => {
+            let mut v = Vec::new();
+            if let Some(h) = git(
+                root,
+                &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            ) {
+                v.push(h.trim_start_matches("refs/remotes/").to_owned());
+            }
+            v.extend(
+                ["origin/main", "origin/master", "main", "master", "develop"]
+                    .iter()
+                    .map(|s| (*s).to_owned()),
+            );
+            v
+        }
+    };
+    let mut from = head.clone();
+    let mut used = "uncommitted changes".to_owned();
+    for c in candidates {
+        if let Some(mb) = git(root, &["merge-base", "HEAD", &c]) {
+            used = if mb == head {
+                format!("{c} (no commits of its own on this branch; uncommitted changes)")
+            } else {
+                c
+            };
+            from = mb;
+            break;
+        }
+    }
+    // `git diff <commit>` compares it with the working tree: committed and
+    // uncommitted changes to tracked files.
+    let mut args: Vec<&str> = opts.to_vec();
+    args.extend(["diff", "--name-status", "-M", "--relative", &from]);
+    let mut out = Vec::new();
+    for line in git(root, &args)?.lines() {
+        let mut parts = line.split('\t');
+        let (Some(st), Some(first)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let status = st.chars().next().unwrap_or('M');
+        match (status, parts.next()) {
+            ('R' | 'C', Some(new)) => out.push(Change {
+                status: if status == 'C' { 'A' } else { 'R' },
+                path: new.to_owned(),
+                from: Some(first.to_owned()),
+            }),
+            _ => out.push(Change {
+                status: if matches!(status, 'A' | 'D') {
+                    status
+                } else {
+                    'M'
+                },
+                path: first.to_owned(),
+                from: None,
+            }),
+        }
+    }
+    let mut args: Vec<&str> = opts.to_vec();
+    args.extend(["ls-files", "--others", "--exclude-standard"]);
+    if let Some(untracked) = git(root, &args) {
+        out.extend(untracked.lines().filter(|l| !l.is_empty()).map(|l| Change {
+            status: 'A',
+            path: l.to_owned(),
+            from: None,
+        }));
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.dedup_by(|a, b| a.path == b.path);
+    Some((used, from, out))
+}
+
+/// A file's content at `rev` (`HEAD`, a commit), when it existed there.
+pub fn show(root: &Path, rev: &str, path: &str) -> Option<String> {
+    git(root, &["show", &format!("{rev}:./{path}")])
+}
+
 pub fn remote_url(root: &Path) -> Option<String> {
     git(root, &["config", "--get", "remote.origin.url"]).filter(|s| !s.is_empty())
 }
