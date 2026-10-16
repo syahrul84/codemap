@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1] - 2026-10-16
 
 - `codemap update` installs the latest release, checked against its SHA256SUMS (`--check` only reports, `--force` reinstalls).
 - A once-a-day check for new releases; `codemap doctor` and `project_overview` mention a newer version. Turn it off with `CODEMAP_NO_UPDATE_CHECK=1`.
