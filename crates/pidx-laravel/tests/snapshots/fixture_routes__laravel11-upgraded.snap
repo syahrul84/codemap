@@ -1,7 +1,0 @@
----
-source: crates/pidx-laravel/tests/fixture_routes.rs
-expression: table(&store)
----
-GET|HEAD   api/v1/invoices                      v1.invoices.index        App\Http\Controllers\InvoiceController@index             [api] routes/api.php:7 static
-GET|HEAD   api/v1/invoices/{invoice}            v1.invoices.show         App\Http\Controllers\InvoiceController@show              [api] routes/api.php:8 static
-GET|HEAD   /                                    -                        Closure                                                  [web] routes/web.php:5 static

@@ -1,0 +1,25 @@
+[package]
+name = "codemap-vue"
+description = "Vue / Nuxt adapter: detection, components, stores, composables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+codemap-core.workspace = true
+codemap-js.workspace = true
+rayon.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strsim.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+filetime.workspace = true
+insta.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

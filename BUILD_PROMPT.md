@@ -1,4 +1,4 @@
-# Build Prompt — `project-index` (pidx): Rust MCP server for Laravel / Vue / Nuxt projects
+# Build Prompt — `project-index` (codemap): Rust MCP server for Laravel / Vue / Nuxt projects
 
 Paste this file into the project root and tell Claude Code: "Read BUILD_PROMPT.md fully. Enter plan mode, propose the plan for Phase 0, then wait for my approval."
 
@@ -15,7 +15,7 @@ Paste this file into the project root and tell Claude Code: "Read BUILD_PROMPT.m
 
 ## 1. What we are building
 
-A single Rust binary, `pidx`, that:
+A single Rust binary, `codemap`, that:
 
 1. Scans a project (Laravel 9+ first; Vue 2/3 and Nuxt 2/3/4 in later milestones).
 2. Extracts structured facts: PHP symbols, routes, models, relationships, DB schema (from migrations), Form Request rules.
@@ -59,11 +59,11 @@ A single Rust binary, `pidx`, that:
 
 * `Dockerfile` — multi-stage:
   * builder: official `rust` image (slim, Debian-based), builds release binary. Use cargo-chef or layer caching so dependency builds are cached.
-  * runtime: `debian:bookworm-slim` (or similar) with `git` and `ca-certificates`, non-root user, `ENTRYPOINT ["pidx"]`.
+  * runtime: `debian:bookworm-slim` (or similar) with `git` and `ca-certificates`, non-root user, `ENTRYPOINT ["codemap"]`.
   * runtime-php (optional target): runtime + `php-cli` + common extensions, for artisan mode (§7.3).
 * `docker-compose.yml` with services:
   * `dev` — Rust toolchain image with `rustfmt`, `clippy`; source bind-mounted at `/src`; cargo registry and `target/` in named volumes (bind-mounted `target/` is very slow on macOS); working dir `/src`.
-  * `pidx` — runtime image for manual testing against a project mounted at `/workspace`.
+  * `codemap` — runtime image for manual testing against a project mounted at `/workspace`.
 * `.dockerignore` — exclude `target/`, `.git/`, fixtures output, etc.
 * `Makefile` (or `justfile`) shortcuts: `make test`, `make lint`, `make build-image`, `make scan PROJECT=/path`, `make serve PROJECT=/path`.
 
@@ -80,7 +80,7 @@ docker compose run --rm dev cargo insta review   # if cargo-insta installed in d
 ### 3.3 Runtime layout inside the container
 
 * Scanned project mounted read-only at `/workspace` (`-v /host/project:/workspace:ro`).
-* Index stored in a named volume at `/data` → `/data/<project-id>/index.db`, where `project-id` = short hash of the project's host path (passed via `--project-id` or env `PIDX_PROJECT_ID`) or, fallback, of the git remote URL + root commit.
+* Index stored in a named volume at `/data` → `/data/<project-id>/index.db`, where `project-id` = short hash of the project's host path (passed via `--project-id` or env `CODEMAP_PROJECT_ID`) or, fallback, of the git remote URL + root commit.
 * All paths in responses are relative to the project root (never `/workspace/...`), so they match what Claude sees on the host.
 * Git inside the container: set `safe.directory` for `/workspace` (otherwise git refuses with "dubious ownership" because of UID mismatch).
 
@@ -94,14 +94,14 @@ docker compose run --rm dev cargo insta review   # if cargo-insta installed in d
 ### 3.5 How Claude Code will use the finished server (document in README)
 
 ```bash
-docker build -t pidx:latest --target runtime .
+docker build -t codemap:latest --target runtime .
 
 # Register for a project (run inside that project's folder):
 claude mcp add project-index -- docker run -i --rm \
   -v "$(pwd)":/workspace:ro \
-  -v pidx-data:/data \
-  -e PIDX_PROJECT_ID="$(pwd | shasum | cut -c1-12)" \
-  pidx:latest serve --project /workspace
+  -v codemap-data:/data \
+  -e CODEMAP_PROJECT_ID="$(pwd | shasum | cut -c1-12)" \
+  codemap:latest serve --project /workspace
 ```
 
 Also provide a `.mcp.json` example. Check current Claude Code docs for whether `.mcp.json` supports env-var expansion; if not, document using absolute paths.
@@ -112,11 +112,11 @@ Also provide a `.mcp.json` example. Check current Claude Code docs for whether `
 project-index/
 ├── Cargo.toml                 # workspace
 ├── crates/
-│   ├── pidx-core/             # index model, SQLite store, scanner, hashing, freshness, envelope types
-│   ├── pidx-php/              # tree-sitter-php parsing → PHP symbols (framework-agnostic)
-│   ├── pidx-laravel/          # Laravel adapter: detection, routes, models, migrations→schema, form requests
-│   ├── pidx-mcp/              # MCP server (rmcp, stdio), tool definitions, response shaping
-│   └── pidx-cli/              # `pidx` binary: scan, serve, query, stats, doctor
+│   ├── codemap-core/             # index model, SQLite store, scanner, hashing, freshness, envelope types
+│   ├── codemap-php/              # tree-sitter-php parsing → PHP symbols (framework-agnostic)
+│   ├── codemap-laravel/          # Laravel adapter: detection, routes, models, migrations→schema, form requests
+│   ├── codemap-mcp/              # MCP server (rmcp, stdio), tool definitions, response shaping
+│   └── codemap-cli/              # `codemap` binary: scan, serve, query, stats, doctor
 ├── fixtures/                  # tiny hand-written Laravel projects (no vendor/)
 ├── Dockerfile
 ├── docker-compose.yml
@@ -135,7 +135,7 @@ trait FrameworkAdapter {
 ```
 
 * Detection by files that exist, not only the version number (an app on Laravel 11 may keep `app/Http/Kernel.php`).
-* `ExtractReport` collects warnings (`unresolved` items with reasons) — exposed via `pidx doctor`.
+* `ExtractReport` collects warnings (`unresolved` items with reasons) — exposed via `codemap doctor`.
 
 ### Suggested crates (verify current versions/APIs first)
 
@@ -153,7 +153,7 @@ trait FrameworkAdapter {
 * `rayon` — parallel parsing
 * An English pluralizer for Laravel table-name inference (pick a crate or port Laravel's `Str::plural` rules; mark results `inferred`).
 
-## 5. Configuration — `.pidx.toml` (optional, in the scanned project root)
+## 5. Configuration — `.codemap.toml` (optional, in the scanned project root)
 
 ```toml
 [project]
@@ -229,7 +229,7 @@ Config is optional; sensible defaults must work with zero config.
   * Record both signals; if mixed, prefer what the files actually say and add a warning.
 * PSR-4 roots from `composer.json` `autoload.psr-4` (don't hardcode `app/`).
 
-### 7.2 PHP symbols (`pidx-php`)
+### 7.2 PHP symbols (`codemap-php`)
 
 * Parse every PHP file under the include dirs with tree-sitter-php (parallel with rayon).
 * Resolve namespace and `use` imports (including aliases and grouped `use`) so every referenced class name becomes an FQN.
@@ -360,14 +360,14 @@ Use before finalising code to check that everything referenced actually exists. 
 
 Returns per item: `exists` | `not_found` (+ suggestions) | `external` (class not in project but present in `vendor/` — check via `vendor/composer/autoload_psr4.php` / `autoload_classmap.php` path existence; `Illuminate\...` etc.) | `unresolved` (couldn't determine). Summary line: `"3 ok, 1 not_found, 1 external"`.
 
-## 9. CLI (`pidx`)
+## 9. CLI (`codemap`)
 
 ```
-pidx scan  --project <path> [--full]        # build/update index, print summary + warnings count
-pidx serve --project <path>                 # MCP stdio server (auto-scans on start if needed)
-pidx query --project <path> <tool> '<json>' # call any MCP tool from the CLI (debugging)
-pidx stats --project <path>                 # counts, timings, index size
-pidx doctor --project <path>                # detection reasons, warnings, unresolved items, git/php availability
+codemap scan  --project <path> [--full]        # build/update index, print summary + warnings count
+codemap serve --project <path>                 # MCP stdio server (auto-scans on start if needed)
+codemap query --project <path> <tool> '<json>' # call any MCP tool from the CLI (debugging)
+codemap stats --project <path>                 # counts, timings, index size
+codemap doctor --project <path>                # detection reasons, warnings, unresolved items, git/php availability
 ```
 
 Global: `--project-id`, `--data-dir` (default `/data` in Docker, platform cache dir otherwise), `--log-level`.
@@ -386,25 +386,25 @@ Global: `--project-id`, `--data-dir` (default `/data` in Docker, platform cache 
 
 * Unit tests per extractor.
 * `insta` JSON snapshots of the full extracted index per fixture (sorted, deterministic, no timestamps).
-* MCP integration test: spawn `pidx serve` and call each tool over stdio with an MCP client (rmcp client feature), assert envelope shape and not-found behaviour.
+* MCP integration test: spawn `codemap serve` and call each tool over stdio with an MCP client (rmcp client feature), assert envelope shape and not-found behaviour.
 * Incremental test: scan → modify one file → rescan → only that file re-parsed (assert via report counters).
 * Performance smoke test (ignored by default): generate 2,000 synthetic PHP files, assert cold scan time budget.
 
 ## 11. Phases & acceptance criteria (stop after each)
 
-* **Phase 0 — Scaffold.** Workspace + 5 crates, Dockerfile (builder/runtime/runtime-php targets), docker-compose `dev` + `pidx`, Makefile, `.dockerignore`, tracing to stderr, error types, CI-style `make lint test`. ✅ `make lint test` passes in Docker; `docker build --target runtime` produces an image; `pidx --help` runs in the container.
-* **Phase 1 — Store & scanner.** SQLite schema + migrations, `ignore` walker, mtime/size/blake3 incremental logic, git info, `pidx scan` / `stats`. ✅ Incremental test passes; rescanning an unchanged project re-parses 0 files.
-* **Phase 2 — PHP symbols.** tree-sitter-php extraction, namespace/use resolution, FTS search, `pidx query search_symbol`. ✅ Snapshots for all fixtures; search finds by short name, FQN, partial, typo (suggestions).
+* **Phase 0 — Scaffold.** Workspace + 5 crates, Dockerfile (builder/runtime/runtime-php targets), docker-compose `dev` + `codemap`, Makefile, `.dockerignore`, tracing to stderr, error types, CI-style `make lint test`. ✅ `make lint test` passes in Docker; `docker build --target runtime` produces an image; `codemap --help` runs in the container.
+* **Phase 1 — Store & scanner.** SQLite schema + migrations, `ignore` walker, mtime/size/blake3 incremental logic, git info, `codemap scan` / `stats`. ✅ Incremental test passes; rescanning an unchanged project re-parses 0 files.
+* **Phase 2 — PHP symbols.** tree-sitter-php extraction, namespace/use resolution, FTS search, `codemap query search_symbol`. ✅ Snapshots for all fixtures; search finds by short name, FQN, partial, typo (suggestions).
 * **Phase 3 — Laravel detection + routes.** Version/layout detection, static routes (all features in §7.3), resource expansion, artisan mode with fallback. ✅ Route snapshots match expected tables for each fixture; `doctor` explains detection.
 * **Phase 4 — Models, schema, Form Requests.** §7.4–7.6 including schema-dump handling. ✅ `get_schema orders` on fixtures matches hand-written expectations, incl. renamed/changed columns.
 * **Phase 5 — MCP server.** rmcp stdio server, 6 tools, envelope, pagination, `detail` levels, freshness check before every call. ✅ Integration tests pass; works via `docker run -i` from Claude Code (manual test documented in README).
 * **Phase 6 — verify.** Claims mode + php_snippet mode, vendor `external` check. ✅ Tests for each status (`exists`, `not_found` with suggestion, `external`, `unresolved`).
 * **Phase 7 — Integration & docs.** README (install, Docker build, `claude mcp add`, `.mcp.json`, troubleshooting), the CLAUDE.md snippet below, run against one real Laravel project and fix issues found. ✅ Real-project scan completes with a reviewed `doctor` report.
 
-## 12. CLAUDE.md snippet to ship for projects that use pidx
+## 12. CLAUDE.md snippet to ship for projects that use codemap
 
 ```markdown
-## Project index (pidx MCP) — required usage
+## Project index (codemap MCP) — required usage
 - At the start of a task, call `project_overview`.
 - Before creating any class, method or helper, call `search_symbol` to check for an existing one and reuse it.
 - Before writing queries, migrations or model code, call `get_schema` — never assume column names.

@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code map</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5d6878; --line: #dde1e7;
+  --soft: #eef1f5; --accent: #2f6fde; --bad: #c8372d; --bad-soft: #fbeceb; --warn: #a86400;
+  --k-screen: #7a4fd6; --k-frontend: #1f8a70; --k-endpoint: #2f6fde; --k-controller: #c2570c;
+  --k-model: #b8326e; --k-table: #56657a;
+  --shadow: 0 1px 2px rgba(20,30,50,.06), 0 4px 14px rgba(20,30,50,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --panel: #1a2029; --ink: #e5e9f0; --muted: #98a3b3; --line: #2c3440;
+    --soft: #222a35; --accent: #6b9cff; --bad: #ff7b6e; --bad-soft: #3a2220; --warn: #e3a64a;
+    --k-screen: #a98bff; --k-frontend: #4cc9a5; --k-endpoint: #6b9cff; --k-controller: #f0904a;
+    --k-model: #f074a8; --k-table: #9aa8bc; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --panel: #1a2029; --ink: #e5e9f0; --muted: #98a3b3; --line: #2c3440;
+  --soft: #222a35; --accent: #6b9cff; --bad: #ff7b6e; --bad-soft: #3a2220; --warn: #e3a64a;
+  --k-screen: #a98bff; --k-frontend: #4cc9a5; --k-endpoint: #6b9cff; --k-controller: #f0904a;
+  --k-model: #f074a8; --k-table: #9aa8bc; --shadow: none;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input { font: inherit; color: inherit; }
+header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .meta { color: var(--muted); font-size: 12px; }
+.grow { flex: 1; }
+.tabs { display: flex; gap: 4px; }
+.tab { border: 1px solid var(--line); background: transparent; padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tab .n { margin-left: 6px; font-size: 12px; opacity: .8; }
+#search { width: min(320px, 100%); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
+.icon-btn { border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+.layout { display: grid; grid-template-columns: 290px minmax(0, 1fr) 340px; height: calc(100% - 58px); }
+aside, #detail { background: var(--panel); overflow: auto; }
+aside { border-right: 1px solid var(--line); }
+#detail { border-left: 1px solid var(--line); padding: 14px 16px; overflow-x: hidden; }
+#detail .mono { overflow-wrap: anywhere; }
+.apps { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 12px 4px; }
+.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; background: transparent; }
+.chip[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.group h3 { margin: 0; padding: 10px 12px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); display: flex; justify-content: space-between; cursor: pointer; user-select: none; }
+.group ul { list-style: none; margin: 0; padding: 0 6px 6px; }
+.item { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: 6px; cursor: pointer; overflow: hidden; }
+.item:hover { background: var(--soft); }
+.item.sel { background: var(--soft); outline: 1px solid var(--accent); }
+.item .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .app { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(-1px); }
+.bad { color: var(--bad); font-weight: 650; }
+.more { color: var(--muted); font-size: 12px; padding: 2px 8px 6px; }
+main { overflow: auto; position: relative; }
+#canvas { min-width: 100%; }
+.empty { padding: 32px; max-width: 720px; }
+.empty h2 { margin-top: 0; font-size: 18px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); }
+.card h4 { margin: 0 0 6px; font-size: 14px; }
+.card .row { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+svg text { fill: var(--ink); font-size: 12px; }
+svg .col-title { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+.node { cursor: pointer; }
+.node:hover rect { stroke: var(--accent); }
+.node.focus rect { stroke: var(--accent); stroke-width: 2; }
+.node.has-problem rect { stroke: var(--bad); }
+.node .ai { fill: var(--warn); }
+.warn { color: var(--warn); font-weight: 650; }
+.mistake { background: var(--soft); border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.mistake .what { font-weight: 600; }
+.mistake .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.mistake p { margin: 4px 0 0; font-size: 13px; }
+.node .sub { fill: var(--muted); font-size: 10.5px; }
+.edge { fill: none; stroke: var(--line); stroke-width: 1.4; }
+.edge.hot { stroke: var(--accent); stroke-width: 2; }
+#detail h2 { font-size: 16px; margin: 4px 0 2px; word-break: break-word; }
+#detail .kind { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
+#detail .path { color: var(--muted); font-size: 12px; word-break: break-all; margin-bottom: 10px; }
+#detail h5 { margin: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+#detail ul { margin: 0; padding-left: 16px; }
+#detail li { margin: 2px 0; word-break: break-word; }
+#detail code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.link { color: var(--accent); cursor: pointer; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+.problem { background: var(--bad-soft); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; word-break: break-word; }
+.low { background: var(--soft); }
+.plist { padding: 20px 24px; max-width: 980px; }
+.plist h2 { font-size: 16px; margin: 18px 0 6px; }
+.hint { color: var(--muted); font-size: 12px; }
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 260px minmax(0, 1fr); }
+  #detail { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 720px) {
+  .layout { display: block; height: auto; }
+  aside { max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  main { min-height: 50vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Code map</h1>
+  <span class="meta" id="generated"></span>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="map" aria-selected="true">Map</button>
+    <button class="tab" role="tab" data-tab="problems" aria-selected="false">Problems<span class="n" id="pcount"></span></button>
+    <button class="tab" role="tab" data-tab="mistakes" aria-selected="false">AI mistakes<span class="n" id="mcount"></span></button>
+  </div>
+  <span class="grow"></span>
+  <input id="search" type="search" placeholder="Search screens, endpoints, models, tables…" aria-label="Search">
+  <button class="icon-btn" id="theme" title="Switch light / dark">◐</button>
+</header>
+<div class="layout">
+  <aside>
+    <div class="apps" id="apps"></div>
+    <div id="lists"></div>
+  </aside>
+  <main><div id="view"></div></main>
+  <section id="detail"><p class="hint">Click anything to see where it lives, what it uses and what uses it.</p></section>
+</div>
+<script>
+const DATA = /*__CODEMAP_DATA__*/null;
+
+const KINDS = [
+  ["screen", "Screens"], ["frontend", "Frontend code"], ["endpoint", "Endpoints"],
+  ["controller", "Controllers"], ["model", "Models"], ["table", "Tables"],
+];
+const ORDER = Object.fromEntries(KINDS.map(([k], i) => [k, i]));
+const LABEL = Object.fromEntries(KINDS);
+const SINGULAR = { screen: "Screen", frontend: "Frontend file", endpoint: "Endpoint", controller: "Controller", model: "Model", table: "Table" };
+const ACROSS = new Set(["uses", "calls", "screen_calls", "screen_reads", "handled_by", "stored_in", "reads_table"]);
+const DIRECT = new Set(["screen_calls", "screen_reads"]);
+const SIDE = new Set(["relation", "foreign_key"]);
+
+const nodes = new Map(DATA.nodes.map(n => [n.id, n]));
+const out = new Map(), inc = new Map();
+for (const e of DATA.edges) {
+  if (!nodes.has(e.from) || !nodes.has(e.to)) continue;
+  (out.get(e.from) || out.set(e.from, []).get(e.from)).push(e);
+  (inc.get(e.to) || inc.set(e.to, []).get(e.to)).push(e);
+}
+const shownApps = new Set(DATA.apps.map(a => a.name));
+let selected = null, query = "", tab = "map";
+const collapsed = new Set();
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const color = k => `var(--k-${k})`;
+const visible = n => shownApps.has(n.app) || n.stub;
+const multiApp = DATA.apps.length > 1;
+
+function store(key, value) { try { localStorage.setItem("codemap." + key, value); } catch (_) {} }
+function load(key) { try { return localStorage.getItem("codemap." + key); } catch (_) { return null; } }
+
+/* Header */
+$("#title").textContent = DATA.title ? `${DATA.title} — code map` : "Code map";
+document.title = DATA.title ? `${DATA.title} code map` : "Code map";
+$("#generated").textContent = "built " + new Date(DATA.generated_at).toLocaleString();
+const problemTotal = Object.values(DATA.problems).reduce((n, p) => n + (p.problems || []).length, 0);
+$("#pcount").textContent = problemTotal;
+const MISTAKES = DATA.mistakes || [];
+$("#mcount").textContent = MISTAKES.length;
+const savedTheme = load("theme");
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+$("#theme").onclick = () => {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const now = document.documentElement.dataset.theme || (dark ? "dark" : "light");
+  const next = now === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  store("theme", next);
+};
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+$("#search").oninput = e => { query = e.target.value.trim().toLowerCase(); renderLists(); };
+
+/* App filter */
+function renderApps() {
+  if (!multiApp) { $("#apps").style.display = "none"; return; }
+  $("#apps").innerHTML = DATA.apps.map(a =>
+    `<button class="chip" data-app="${esc(a.name)}" aria-pressed="${shownApps.has(a.name)}">${esc(a.name)}</button>`).join("");
+  $("#apps").querySelectorAll(".chip").forEach(c => c.onclick = () => {
+    const a = c.dataset.app;
+    shownApps.has(a) ? shownApps.delete(a) : shownApps.add(a);
+    render();
+  });
+}
+
+/* Side lists */
+function matches(n) {
+  if (!query) return true;
+  return [n.label, n.sub, n.file].some(v => v && String(v).toLowerCase().includes(query));
+}
+function renderLists() {
+  const html = [];
+  const problemNodes = DATA.nodes.filter(n => n.problems && visible(n) && matches(n));
+  for (const [kind, title] of KINDS) {
+    const all = DATA.nodes.filter(n => n.kind === kind && !n.stub && visible(n));
+    if (!all.length) continue;
+    const list = all.filter(matches).sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    const closed = collapsed.has(kind) && !query;
+    const cap = query ? 200 : 60;
+    html.push(`<div class="group"><h3 data-kind="${kind}"><span>${closed ? "▸" : "▾"} ${title}</span><span>${query ? list.length + " / " : ""}${all.length}</span></h3>`);
+    if (!closed) {
+      html.push("<ul>");
+      for (const n of list.slice(0, cap)) html.push(itemHtml(n));
+      html.push("</ul>");
+      if (list.length > cap) html.push(`<div class="more">${list.length - cap} more — search to narrow down</div>`);
+    }
+    html.push("</div>");
+  }
+  if (problemNodes.length) {
+    html.unshift(`<div class="group"><h3><span class="bad">Has problems</span><span>${problemNodes.length}</span></h3><ul>${problemNodes.slice(0, 30).map(itemHtml).join("")}</ul></div>`);
+  }
+  $("#lists").innerHTML = html.join("") || `<p class="more">Nothing matches.</p>`;
+  $("#lists").querySelectorAll(".item").forEach(el => el.onclick = () => select(el.dataset.id));
+  $("#lists").querySelectorAll("h3[data-kind]").forEach(h => h.onclick = () => {
+    const k = h.dataset.kind;
+    collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k);
+    renderLists();
+  });
+}
+function itemHtml(n) {
+  return `<li class="item${selected === n.id ? " sel" : ""}" data-id="${esc(n.id)}" title="${esc(n.sub || n.file || n.label)}">
+    <span class="dot" style="background:${color(n.kind)}"></span>
+    <span class="lbl${n.problems ? " bad" : ""}">${esc(n.label)}</span>${n.mistaken_for ? ` <span class="warn" title="The AI got this name wrong">●</span>` : ""}
+    ${multiApp ? `<span class="app">${esc(n.app)}</span>` : ""}</li>`;
+}
+
+/* Neighbourhood of the selected item, as columns */
+function neighbourhood(id) {
+  const keep = new Map([[id, 0]]);
+  const hot = new Set();
+  const focusKind = nodes.get(id).kind;
+  // A shared frontend file calls many endpoints; a screen only some of them.
+  // So from a screen, follow its own calls, and towards screens, come back
+  // through those calls rather than through the shared files.
+  const skip = (e, forward) => {
+    if (focusKind === "frontend") return DIRECT.has(e.kind);
+    if (forward) return focusKind === "screen" && (e.kind === "calls" || e.kind === "reads_table");
+    return e.kind === "uses";
+  };
+  const walk = (start, edgesOf, end) => {
+    const forward = end === "to";
+    const queue = [start];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const e of edgesOf.get(cur) || []) {
+        if (!ACROSS.has(e.kind) || skip(e, forward)) continue;
+        const next = e[end];
+        const n = nodes.get(next);
+        if (!n || !visible(n)) continue;
+        hot.add(e);
+        if (!keep.has(next)) { keep.set(next, 1); queue.push(next); }
+      }
+    }
+  };
+  walk(id, out, "to");
+  walk(id, inc, "from");
+  // Relations and foreign keys of the selected item only.
+  for (const e of [...(out.get(id) || []), ...(inc.get(id) || [])]) {
+    if (!SIDE.has(e.kind)) continue;
+    const other = e.from === id ? e.to : e.from;
+    const n = nodes.get(other);
+    if (!n || !visible(n)) continue;
+    hot.add(e);
+    if (!keep.has(other)) keep.set(other, (e.from === id ? "" : "← ") + (e.label || e.kind));
+  }
+  // Draw every link between the items shown; a screen's direct link to an
+  // endpoint only when no frontend file sits between them.
+  const hasFiles = [...keep.keys()].some(k => nodes.get(k).kind === "frontend");
+  const drawn = [];
+  for (const k of keep.keys()) {
+    for (const e of out.get(k) || []) {
+      if (!keep.has(e.to)) continue;
+      if (SIDE.has(e.kind) && !hot.has(e)) continue;
+      if (DIRECT.has(e.kind) && hasFiles) continue;
+      drawn.push(e);
+    }
+  }
+  return { ids: [...keep.keys()], side: keep, edges: drawn };
+}
+
+const W = 210, H = 40, GAPX = 90, GAPY = 10, TOP = 44, LEFT = 20, CAP = 40;
+
+function renderMap() {
+  if (!selected || !nodes.has(selected)) return renderOverview();
+  const { ids, edges, side } = neighbourhood(selected);
+  const cols = new Map();
+  for (const id of ids) {
+    const n = nodes.get(id);
+    const c = ORDER[n.kind] ?? 0;
+    (cols.get(c) || cols.set(c, []).get(c)).push(n);
+  }
+  const used = [...cols.keys()].sort((a, b) => a - b);
+  const pos = new Map();
+  let maxY = 0;
+  const hidden = {};
+  used.forEach((c, ci) => {
+    const list = cols.get(c).sort((a, b) =>
+      (b.id === selected) - (a.id === selected) || String(a.label).localeCompare(String(b.label)));
+    const shown = list.slice(0, CAP);
+    if (list.length > CAP) hidden[ci] = list.length - CAP;
+    shown.forEach((n, i) => {
+      const x = LEFT + ci * (W + GAPX), y = TOP + i * (H + GAPY);
+      pos.set(n.id, { x, y });
+      maxY = Math.max(maxY, y + H);
+    });
+  });
+  const width = LEFT * 2 + used.length * W + (used.length - 1) * GAPX + 60;
+  const height = maxY + 50;
+  const parts = [`<svg id="canvas" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Connections of the selected item">`];
+  used.forEach((c, ci) => {
+    const x = LEFT + ci * (W + GAPX);
+    parts.push(`<text class="col-title" x="${x}" y="24">${esc(KINDS[c][1])}${hidden[ci] ? ` (+${hidden[ci]} not shown)` : ""}</text>`);
+  });
+  for (const e of edges) {
+    const a = pos.get(e.from), b = pos.get(e.to);
+    if (!a || !b) continue;
+    const hot = e.from === selected || e.to === selected;
+    let d;
+    if (a.x === b.x) {
+      const x = a.x + W, bend = x + 40;
+      d = `M${x},${a.y + H / 2} C${bend},${a.y + H / 2} ${bend},${b.y + H / 2} ${x},${b.y + H / 2}`;
+    } else {
+      const [s, t] = a.x < b.x ? [a, b] : [b, a];
+      const x1 = s.x + W, x2 = t.x, mx = (x1 + x2) / 2;
+      d = `M${x1},${s.y + H / 2} C${mx},${s.y + H / 2} ${mx},${t.y + H / 2} ${x2},${t.y + H / 2}`;
+    }
+    parts.push(`<path class="edge${hot ? " hot" : ""}" d="${d}"><title>${esc(edgeText(e))}</title></path>`);
+  }
+  for (const [id, p] of pos) {
+    const n = nodes.get(id);
+    const cls = ["node", id === selected ? "focus" : "", n.problems ? "has-problem" : ""].join(" ");
+    const how = side.get(id);
+    const label = clip(n.label, 30), sub = clip(typeof how === "string" ? how : subline(n), 34);
+    parts.push(`<g class="${cls}" data-id="${esc(id)}" transform="translate(${p.x},${p.y})">
+      <title>${esc(n.sub || n.label)}</title>
+      <rect width="${W}" height="${H}" rx="7"></rect>
+      <rect width="4" height="${H}" rx="2" style="fill:${color(n.kind)};stroke:none"></rect>
+      <text x="12" y="17">${esc(label)}</text>
+      <text class="sub" x="12" y="31">${esc(sub)}</text>
+      ${n.mistaken_for ? `<circle class="ai" cx="${W - 10}" cy="10" r="4"><title>The AI got this name wrong ${esc(n.mistaken_for.join("; "))}</title></circle>` : ""}</g>`);
+  }
+  parts.push("</svg>");
+  $("#view").innerHTML = parts.join("");
+  $("#view").querySelectorAll(".node").forEach(g => g.onclick = () => select(g.dataset.id));
+}
+function subline(n) {
+  if (n.kind === "frontend" || n.kind === "screen") return (multiApp ? n.app + " · " : "") + (n.file || "");
+  if (n.kind === "endpoint") return n.sub || n.app;
+  if (n.kind === "table") return `${(n.info?.columns || []).length} columns`;
+  return multiApp ? n.app : (n.file || "");
+}
+function clip(s, n) { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function edgeText(e) {
+  const a = nodes.get(e.from), b = nodes.get(e.to);
+  const verb = { uses: "uses", calls: "calls", screen_calls: "calls", screen_reads: "reads", handled_by: "is handled by", stored_in: "is stored in", reads_table: "reads", relation: "relation", foreign_key: "foreign key" }[e.kind] || e.kind;
+  return `${a?.label} ${verb} ${b?.label}${e.label ? " (" + e.label + (e.more ? `, +${e.more} more` : "") + ")" : ""}`;
+}
+
+function renderOverview() {
+  const counts = {};
+  for (const n of DATA.nodes) if (!n.stub && visible(n)) counts[n.kind] = (counts[n.kind] || 0) + 1;
+  const appCards = DATA.apps.filter(a => shownApps.has(a.name)).map(a => {
+    const p = DATA.problems[a.name] || {};
+    const rows = KINDS.map(([k, t]) => {
+      const c = DATA.nodes.filter(n => n.app === a.name && n.kind === k && !n.stub).length;
+      return c ? `<div class="row"><span>${t}</span><span>${c}</span></div>` : "";
+    }).join("");
+    const np = (p.problems || []).length;
+    return `<div class="card"><h4>${esc(a.name)}</h4>${rows}
+      <div class="row"><span>Problems</span><span class="${np ? "bad" : ""}">${p.error ? "not checked" : np}</span></div></div>`;
+  }).join("");
+  $("#view").innerHTML = `<div class="empty">
+    <h2>Pick something on the left</h2>
+    <p>The map then shows everything connected to it, from the screen a user opens, through the API call and the endpoint, to the controller, the models it uses and the tables they are stored in.</p>
+    <div class="legend">${KINDS.filter(([k]) => counts[k]).map(([k, t]) => `<span><span class="dot" style="background:${color(k)}"></span>${t} (${counts[k]})</span>`).join("")}</div>
+    <div class="cards">${appCards}</div>
+    <p class="hint">Built from the code index only. Nothing on this page is sent anywhere.</p></div>`;
+}
+
+/* Detail panel */
+function renderDetail() {
+  const n = nodes.get(selected);
+  if (!n) { $("#detail").innerHTML = `<p class="hint">Click anything to see where it lives, what it uses and what uses it.</p>`; return; }
+  const h = [];
+  h.push(`<div class="kind" style="color:${color(n.kind)}">${esc(SINGULAR[n.kind] || n.kind)}${multiApp ? " · " + esc(n.app) : ""}</div>`);
+  h.push(`<h2>${esc(n.label)}</h2>`);
+  const where = n.file ? `${n.file}${n.line ? ":" + n.line : ""}` : "";
+  if (n.sub && n.sub !== n.file) h.push(`<div class="path mono">${esc(n.sub)}</div>`);
+  if (where) h.push(`<div class="path mono">${esc(where)}</div>`);
+  if (n.stub) h.push(`<p class="hint">This endpoint belongs to a backend that is not part of this map.</p>`);
+  for (const p of n.problems || []) h.push(`<div class="problem">${esc(p)}</div>`);
+  if (n.mistaken_for) h.push(`<h5 class="warn">The AI got this name wrong</h5><ul>${n.mistaken_for.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`);
+  const info = n.info || {};
+  const named = { talks_through: "Talks to the backend through", methods: "Methods", columns: "Columns", calls: "API calls", calls_to_missing_endpoints: "Calls to endpoints that don't exist", middleware: "Middleware", tables: "Tables read", action: "Action", table: "Table" };
+  for (const [k, v] of Object.entries(info)) {
+    if (v == null || (Array.isArray(v) && !v.length) || v === "") continue;
+    const title = named[k] || k;
+    if (Array.isArray(v)) {
+      const bad = k === "calls_to_missing_endpoints";
+      h.push(`<h5 class="${bad ? "bad" : ""}">${esc(title)} (${v.length})</h5><ul>${v.slice(0, 120).map(x => `<li class="mono${bad ? " bad" : ""}">${esc(x)}</li>`).join("")}</ul>`);
+      if (v.length > 120) h.push(`<p class="hint">${v.length - 120} more</p>`);
+    } else {
+      h.push(`<h5>${esc(title)}</h5><div class="mono">${esc(v)}</div>`);
+    }
+  }
+  const conn = (list, dir) => list.map(e => {
+    const other = nodes.get(dir === "out" ? e.to : e.from);
+    if (!other) return "";
+    const verb = dir === "out"
+      ? { uses: "uses", calls: "calls", screen_calls: "calls", screen_reads: "reads", handled_by: "handled by", stored_in: "stored in", reads_table: "reads", relation: "", foreign_key: "references" }[e.kind]
+      : { uses: "used by", calls: "called from", screen_calls: "called from screen", screen_reads: "read by screen", handled_by: "handles", stored_in: "holds", reads_table: "read by", relation: "related from", foreign_key: "referenced by" }[e.kind];
+    return `<li>${esc(verb ?? e.kind)} <a class="link" data-id="${esc(other.id)}">${esc(other.label)}</a>${e.label ? ` <span class="hint mono">${esc(e.label)}${e.more ? ` +${e.more} more` : ""}</span>` : ""}</li>`;
+  }).join("");
+  const o = out.get(n.id) || [], i = inc.get(n.id) || [];
+  if (o.length) h.push(`<h5>Connects to (${o.length})</h5><ul>${conn(o.slice(0, 150), "out")}</ul>`);
+  if (i.length) h.push(`<h5>Connected from (${i.length})</h5><ul>${conn(i.slice(0, 150), "in")}</ul>`);
+  $("#detail").innerHTML = h.join("");
+  $("#detail").querySelectorAll(".link").forEach(a => a.onclick = () => select(a.dataset.id));
+}
+
+/* Problems tab */
+function renderProblems() {
+  const h = [`<div class="plist"><p class="hint">From the release check: problems to fix before shipping, then low-priority notes and lines marked as intended.</p>`];
+  for (const a of DATA.apps) {
+    if (!shownApps.has(a.name)) continue;
+    const p = DATA.problems[a.name] || {};
+    h.push(`<h2>${esc(a.name)}</h2>`);
+    if (p.error) { h.push(`<div class="problem low">Not checked: ${esc(p.error)}</div>`); continue; }
+    const list = p.problems || [];
+    if (!list.length) h.push(`<div class="problem low">No problems found.</div>`);
+    for (const x of list) h.push(`<div class="problem">${esc(x)}</div>`);
+    if ((p.low_priority || []).length) {
+      h.push(`<h5 class="hint">Low priority</h5>`);
+      for (const x of p.low_priority) h.push(`<div class="problem low">${esc(x)}</div>`);
+    }
+    if ((p.ignored || []).length) {
+      h.push(`<h5 class="hint">Marked as intended</h5>`);
+      for (const x of p.ignored) h.push(`<div class="problem low">${esc(x)}</div>`);
+    }
+  }
+  h.push("</div>");
+  $("#view").innerHTML = h.join("");
+}
+
+/* AI mistakes tab */
+function nodeFor(name, app) {
+  if (!name) return null;
+  const base = name.split("::")[0];
+  const inApp = n => !app || n.app === app;
+  return DATA.nodes.find(n => (n.sub === base || n.label === base) && inApp(n))
+    // `orders.status`: the column's table.
+    || DATA.nodes.find(n => n.kind === "table" && n.label === base.split(".")[0] && inApp(n))
+    || null;
+}
+function renderMistakes() {
+  const h = [`<div class="plist"><p class="hint">Names the AI asked for that do not exist, most frequent first. A name it keeps guessing wrong usually means the real one is unclear, or that it assumes something that was never built. Names created since are left out.</p>`];
+  const list = MISTAKES.filter(m => !m.app || shownApps.has(m.app));
+  if (!list.length) h.push(`<div class="problem low">No AI mistakes logged yet. They are recorded while Claude uses this project through codemap.</div>`);
+  for (const m of list) {
+    const target = nodeFor(m.closest, m.app);
+    const closest = m.closest
+      ? (target ? `<a class="link" data-id="${esc(target.id)}">${esc(m.closest)}</a>` : `<code>${esc(m.closest)}</code>`)
+      : "—";
+    h.push(`<div class="mistake"><div class="what">${m.times}× ${esc(m.kind)} <code>${esc(m.item)}</code> → ${closest}</div>
+      <div class="meta">${multiApp && m.app ? esc(m.app) + " · " : ""}asked with ${esc((m.asked_with || []).join(", "))} · last ${esc(new Date(m.last_seen).toLocaleString())}</div>
+      <p>${esc(m.idea).replace(/`([^`]+)`/g, "<code>$1</code>")}</p></div>`);
+  }
+  h.push("</div>");
+  $("#view").innerHTML = h.join("");
+  $("#view").querySelectorAll(".link").forEach(a => a.onclick = () => select(a.dataset.id));
+}
+
+function select(id) {
+  selected = id;
+  tab = "map";
+  try { history.replaceState(null, "", "#" + encodeURIComponent(id)); } catch (_) {}
+  render();
+  const el = $("#lists .item.sel");
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+function render() {
+  document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+  renderApps();
+  renderLists();
+  if (tab === "problems") renderProblems();
+  else if (tab === "mistakes") renderMistakes();
+  else renderMap();
+  renderDetail();
+}
+const fromHash = decodeURIComponent(location.hash.slice(1));
+if (fromHash && nodes.has(fromHash)) selected = fromHash;
+render();
+</script>
+</body>
+</html>

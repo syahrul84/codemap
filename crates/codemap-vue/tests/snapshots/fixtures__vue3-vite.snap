@@ -1,0 +1,232 @@
+---
+source: crates/codemap-vue/tests/fixtures.rs
+expression: summary(&store)
+---
+{
+  "detection": {
+    "vue_major": 3,
+    "nuxt": null,
+    "src_dir": "src",
+    "build": "vite",
+    "aliases": [
+      [
+        "#shared",
+        "shared"
+      ],
+      [
+        "@",
+        "src"
+      ]
+    ],
+    "component_dirs": [],
+    "libraries": [
+      "pinia",
+      "vue-router",
+      "vue-i18n"
+    ],
+    "ui": []
+  },
+  "modules": [
+    [
+      "src/components/OrderCard.vue",
+      "page",
+      "OrderCard"
+    ],
+    [
+      "src/composables/useApi.ts",
+      "module",
+      null
+    ],
+    [
+      "src/i18n/index.ts",
+      "module",
+      null
+    ],
+    [
+      "src/i18n/locales/en.ts",
+      "module",
+      null
+    ],
+    [
+      "src/i18n/locales/ms.ts",
+      "module",
+      null
+    ],
+    [
+      "src/router/account.ts",
+      "module",
+      null
+    ],
+    [
+      "src/router/index.ts",
+      "module",
+      null
+    ],
+    [
+      "src/stores/cart.ts",
+      "module",
+      null
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "page",
+      "OrdersView"
+    ],
+    [
+      "tests/OrderCard.spec.ts",
+      "module",
+      null
+    ],
+    [
+      "vite.config.ts",
+      "module",
+      null
+    ]
+  ],
+  "uses": [
+    [
+      "src/views/OrdersView.vue",
+      "DefineRow",
+      17,
+      null,
+      "local-binding",
+      null
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "OrderCard",
+      18,
+      "src/components/OrderCard.vue",
+      "local",
+      null
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "i18n-t",
+      21,
+      null,
+      "external",
+      "vue-i18n"
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "ReuseRow",
+      23,
+      null,
+      "local-binding",
+      null
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "OrdersView",
+      24,
+      null,
+      "self",
+      null
+    ],
+    [
+      "src/views/OrdersView.vue",
+      "UnknownThing",
+      25,
+      null,
+      "unresolved",
+      null
+    ]
+  ],
+  "symbols": [
+    [
+      "component",
+      "OrderCard",
+      "src/components/OrderCard.vue",
+      "page 'OrderCard' <:order :compact :size :quantity @select @remove>",
+      "page component"
+    ],
+    [
+      "function",
+      "formatPrice",
+      "src/composables/useApi.ts#formatPrice",
+      "formatPrice(cents: number, currency = 'MYR')",
+      null
+    ],
+    [
+      "composable",
+      "useApi",
+      "src/composables/useApi.ts#useApi",
+      "useApi(url: string, opts: { method?: string } = {})",
+      "Calls the backend and tracks loading state."
+    ],
+    [
+      "const",
+      "i18n",
+      "src/i18n/index.ts#i18n",
+      "const i18n",
+      null
+    ],
+    [
+      "const",
+      "accountRoutes",
+      "src/router/account.ts#accountRoutes",
+      "const accountRoutes: RouteRecordRaw[]",
+      null
+    ],
+    [
+      "const",
+      "router",
+      "src/router/index.ts#router",
+      "const router",
+      null
+    ],
+    [
+      "store",
+      "useCartStore",
+      "src/stores/cart.ts#useCartStore",
+      "defineStore('cart') (setup store)",
+      "state: items · getters: count · actions: add, clear"
+    ],
+    [
+      "component",
+      "OrdersView",
+      "src/views/OrdersView.vue",
+      "page 'OrdersView'",
+      "page component"
+    ]
+  ],
+  "pages": [
+    [
+      "/",
+      "orders",
+      "src/views/OrdersView.vue",
+      "router",
+      "src/router/index.ts:6",
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "/account",
+      null,
+      "src/views/OrdersView.vue",
+      "router",
+      "src/router/account.ts:4",
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "/account/orders/:id",
+      "account.order",
+      "src/components/OrderCard.vue",
+      "router",
+      "src/router/account.ts:7",
+      "/account",
+      null,
+      null,
+      null,
+      null
+    ]
+  ]
+}

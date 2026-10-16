@@ -1,0 +1,132 @@
+---
+source: crates/codemap-php/tests/fixtures.rs
+expression: all
+---
+[
+  {
+    "kind": "class",
+    "name": "Customer",
+    "fqn": "App\\Models\\Customer",
+    "parent_fqn": null,
+    "signature": "class Customer extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 7,
+    "end_line": 15,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\Customer::$fillable",
+    "parent_fqn": "App\\Models\\Customer",
+    "signature": "protected $fillable = ['name', 'email']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 9,
+    "end_line": 9,
+    "doc_summary": null,
+    "meta": {
+      "value": "['name', 'email']"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "orders",
+    "fqn": "App\\Models\\Customer::orders",
+    "parent_fqn": "App\\Models\\Customer",
+    "signature": "public function orders()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 11,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "Order",
+    "fqn": "App\\Models\\Order",
+    "parent_fqn": null,
+    "signature": "class Order extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 7,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\Order::$fillable",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $fillable = ['customer_id', 'status', 'total', 'notes', 'shipped_at']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 9,
+    "end_line": 9,
+    "doc_summary": null,
+    "meta": {
+      "value": "['customer_id', 'status', 'total', 'notes', 'shipped_at']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "casts",
+    "fqn": "App\\Models\\Order::$casts",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $casts = ['total' => 'decimal:2', 'shipped_at' => 'datetime']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 11,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {
+      "value": "['total' => 'decimal:2', 'shipped_at' => 'datetime']"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "customer",
+    "fqn": "App\\Models\\Order::customer",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function customer()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 16,
+    "end_line": 19,
+    "doc_summary": null,
+    "meta": {}
+  }
+]

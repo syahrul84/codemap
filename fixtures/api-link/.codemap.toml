@@ -1,0 +1,7 @@
+# Backend tests run inside the app container.
+[workspace.tests.backend]
+php = "docker compose exec -T app php artisan test"
+
+# House copy rules: words that must not appear in user-facing text.
+[copy]
+banned = { ms = ["dibuat"], all = ["rescue"] }

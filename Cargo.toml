@@ -10,12 +10,12 @@ publish = false
 
 [workspace.dependencies]
 # Internal crates
-pidx-core = { path = "crates/pidx-core" }
-pidx-php = { path = "crates/pidx-php" }
-pidx-laravel = { path = "crates/pidx-laravel" }
-pidx-mcp = { path = "crates/pidx-mcp" }
-pidx-js = { path = "crates/pidx-js" }
-pidx-vue = { path = "crates/pidx-vue" }
+codemap-core = { path = "crates/codemap-core" }
+codemap-php = { path = "crates/codemap-php" }
+codemap-laravel = { path = "crates/codemap-laravel" }
+codemap-mcp = { path = "crates/codemap-mcp" }
+codemap-js = { path = "crates/codemap-js" }
+codemap-vue = { path = "crates/codemap-vue" }
 
 # Pinned once here; each crate opts in when its phase needs it.
 anyhow = "=1.0.104"
@@ -34,6 +34,9 @@ insta = { version = "=1.49.0", features = ["json"] }
 rayon = "=1.12.0"
 rmcp = { version = "=3.5.1", default-features = false }
 rusqlite = { version = "=0.40.2", features = ["bundled", "fallible_uint"] }
+# Read-only checks of a real database's `migrations` table (off unless configured).
+postgres = "=0.19.14"
+mysql = { version = "=28.0.3", default-features = false, features = ["minimal-rust"] }
 schemars = "=1.2.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }

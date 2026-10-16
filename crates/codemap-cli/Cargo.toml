@@ -1,0 +1,34 @@
+[package]
+name = "codemap-cli"
+description = "The codemap command-line tool and MCP server entry point"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "codemap"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+codemap-core.workspace = true
+codemap-laravel.workspace = true
+codemap-mcp.workspace = true
+codemap-vue.workspace = true
+serde.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+rusqlite.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
+
+[lints]
+workspace = true

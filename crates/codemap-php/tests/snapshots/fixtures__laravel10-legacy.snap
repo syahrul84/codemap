@@ -1,0 +1,1205 @@
+---
+source: crates/codemap-php/tests/fixtures.rs
+expression: all
+---
+[
+  {
+    "kind": "class",
+    "name": "ReportController",
+    "fqn": "App\\Http\\Controllers\\Admin\\ReportController",
+    "parent_fqn": null,
+    "signature": "class ReportController extends Controller",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/Admin/ReportController.php",
+    "line": 7,
+    "end_line": 16,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "App\\Http\\Controllers\\Controller"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "__invoke",
+    "fqn": "App\\Http\\Controllers\\Admin\\ReportController::__invoke",
+    "parent_fqn": "App\\Http\\Controllers\\Admin\\ReportController",
+    "signature": "public function __invoke()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/Admin/ReportController.php",
+    "line": 12,
+    "end_line": 15,
+    "doc_summary": "Monthly sales report.",
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "Controller",
+    "fqn": "App\\Http\\Controllers\\Controller",
+    "parent_fqn": null,
+    "signature": "abstract class Controller extends BaseController",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": true,
+    "is_final": false,
+    "file": "app/Http/Controllers/Controller.php",
+    "line": 9,
+    "end_line": 12,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Routing\\Controller"
+      ],
+      "traits": [
+        "Illuminate\\Foundation\\Auth\\Access\\AuthorizesRequests",
+        "Illuminate\\Foundation\\Validation\\ValidatesRequests"
+      ]
+    }
+  },
+  {
+    "kind": "class",
+    "name": "OrderController",
+    "fqn": "App\\Http\\Controllers\\OrderController",
+    "parent_fqn": null,
+    "signature": "class OrderController extends Controller",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 10,
+    "end_line": 35,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "App\\Http\\Controllers\\Controller"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "orders",
+    "fqn": "App\\Http\\Controllers\\OrderController::$orders",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "private OrderService $orders",
+    "visibility": "private",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 12,
+    "end_line": 12,
+    "doc_summary": null,
+    "meta": {
+      "type": "OrderService"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "__construct",
+    "fqn": "App\\Http\\Controllers\\OrderController::__construct",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "public function __construct(private OrderService $orders)",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 12,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$orders",
+          "type": "OrderService",
+          "type_fqns": [
+            "App\\Services\\OrderService"
+          ],
+          "promoted": true
+        }
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "index",
+    "fqn": "App\\Http\\Controllers\\OrderController::index",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "public function index(): JsonResponse",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 16,
+    "end_line": 19,
+    "doc_summary": null,
+    "meta": {
+      "return_type": "JsonResponse",
+      "return_fqns": [
+        "Illuminate\\Http\\JsonResponse"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "store",
+    "fqn": "App\\Http\\Controllers\\OrderController::store",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "public function store(StoreOrderRequest $request): JsonResponse",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 21,
+    "end_line": 24,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$request",
+          "type": "StoreOrderRequest",
+          "type_fqns": [
+            "App\\Http\\Requests\\StoreOrderRequest"
+          ]
+        }
+      ],
+      "return_type": "JsonResponse",
+      "return_fqns": [
+        "Illuminate\\Http\\JsonResponse"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "show",
+    "fqn": "App\\Http\\Controllers\\OrderController::show",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "public function show(Order $order): JsonResponse",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 26,
+    "end_line": 29,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$order",
+          "type": "Order",
+          "type_fqns": [
+            "App\\Models\\Order"
+          ]
+        }
+      ],
+      "return_type": "JsonResponse",
+      "return_fqns": [
+        "Illuminate\\Http\\JsonResponse"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "markPaid",
+    "fqn": "App\\Http\\Controllers\\OrderController::markPaid",
+    "parent_fqn": "App\\Http\\Controllers\\OrderController",
+    "signature": "public function markPaid(Order $order): JsonResponse",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Controllers/OrderController.php",
+    "line": 31,
+    "end_line": 34,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$order",
+          "type": "Order",
+          "type_fqns": [
+            "App\\Models\\Order"
+          ]
+        }
+      ],
+      "return_type": "JsonResponse",
+      "return_fqns": [
+        "Illuminate\\Http\\JsonResponse"
+      ]
+    }
+  },
+  {
+    "kind": "class",
+    "name": "Kernel",
+    "fqn": "App\\Http\\Kernel",
+    "parent_fqn": null,
+    "signature": "class Kernel extends HttpKernel",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 7,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Http\\Kernel"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "middleware",
+    "fqn": "App\\Http\\Kernel::$middleware",
+    "parent_fqn": "App\\Http\\Kernel",
+    "signature": "protected $middleware = [\\Illuminate\\Http\\Middleware\\HandleCors::class]",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 9,
+    "end_line": 11,
+    "doc_summary": null,
+    "meta": {
+      "value": "[\\Illuminate\\Http\\Middleware\\HandleCors::class]"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "middlewareGroups",
+    "fqn": "App\\Http\\Kernel::$middlewareGroups",
+    "parent_fqn": "App\\Http\\Kernel",
+    "signature": "protected $middlewareGroups = ['web' => [\\Illuminate\\Session\\Middleware\\StartSession::cla…",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 13,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {
+      "value": "['web' => [\\Illuminate\\Session\\Middleware\\StartSession::class], 'api' => [\\Illu…"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "middlewareAliases",
+    "fqn": "App\\Http\\Kernel::$middlewareAliases",
+    "parent_fqn": "App\\Http\\Kernel",
+    "signature": "protected $middlewareAliases = ['auth' => \\App\\Http\\Middleware\\Authenticate::class]",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Kernel.php",
+    "line": 22,
+    "end_line": 24,
+    "doc_summary": null,
+    "meta": {
+      "value": "['auth' => \\App\\Http\\Middleware\\Authenticate::class]"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "StoreOrderRequest",
+    "fqn": "App\\Http\\Requests\\StoreOrderRequest",
+    "parent_fqn": null,
+    "signature": "class StoreOrderRequest extends FormRequest",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Requests/StoreOrderRequest.php",
+    "line": 8,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Http\\FormRequest"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "authorize",
+    "fqn": "App\\Http\\Requests\\StoreOrderRequest::authorize",
+    "parent_fqn": "App\\Http\\Requests\\StoreOrderRequest",
+    "signature": "public function authorize(): bool",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Requests/StoreOrderRequest.php",
+    "line": 10,
+    "end_line": 13,
+    "doc_summary": null,
+    "meta": {
+      "return_type": "bool"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "rules",
+    "fqn": "App\\Http\\Requests\\StoreOrderRequest::rules",
+    "parent_fqn": "App\\Http\\Requests\\StoreOrderRequest",
+    "signature": "public function rules(): array",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Http/Requests/StoreOrderRequest.php",
+    "line": 15,
+    "end_line": 24,
+    "doc_summary": null,
+    "meta": {
+      "return_type": "array"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "Customer",
+    "fqn": "App\\Models\\Customer",
+    "parent_fqn": null,
+    "signature": "class Customer extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 7,
+    "end_line": 17,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\Customer::$fillable",
+    "parent_fqn": "App\\Models\\Customer",
+    "signature": "protected $fillable = ['name', 'email']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 9,
+    "end_line": 9,
+    "doc_summary": null,
+    "meta": {
+      "value": "['name', 'email']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "hidden",
+    "fqn": "App\\Models\\Customer::$hidden",
+    "parent_fqn": "App\\Models\\Customer",
+    "signature": "protected $hidden = ['email']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 11,
+    "end_line": 11,
+    "doc_summary": null,
+    "meta": {
+      "value": "['email']"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "orders",
+    "fqn": "App\\Models\\Customer::orders",
+    "parent_fqn": "App\\Models\\Customer",
+    "signature": "public function orders()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Customer.php",
+    "line": 13,
+    "end_line": 16,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "Order",
+    "fqn": "App\\Models\\Order",
+    "parent_fqn": null,
+    "signature": "class Order extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 9,
+    "end_line": 54,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ],
+      "traits": [
+        "Illuminate\\Database\\Eloquent\\Factories\\HasFactory",
+        "Illuminate\\Database\\Eloquent\\SoftDeletes"
+      ]
+    }
+  },
+  {
+    "kind": "const",
+    "name": "STATUS_PENDING",
+    "fqn": "App\\Models\\Order::STATUS_PENDING",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public const STATUS_PENDING = 'pending'",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 13,
+    "end_line": 13,
+    "doc_summary": null,
+    "meta": {
+      "value": "'pending'"
+    }
+  },
+  {
+    "kind": "const",
+    "name": "STATUS_PAID",
+    "fqn": "App\\Models\\Order::STATUS_PAID",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public const STATUS_PAID = 'paid'",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 14,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {
+      "value": "'paid'"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\Order::$fillable",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $fillable = ['customer_id', 'status', 'total_cents', 'paid_at']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 16,
+    "end_line": 16,
+    "doc_summary": null,
+    "meta": {
+      "value": "['customer_id', 'status', 'total_cents', 'paid_at']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "hidden",
+    "fqn": "App\\Models\\Order::$hidden",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $hidden = ['deleted_at']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 18,
+    "end_line": 18,
+    "doc_summary": null,
+    "meta": {
+      "value": "['deleted_at']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "casts",
+    "fqn": "App\\Models\\Order::$casts",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $casts = ['paid_at' => 'datetime', 'total_cents' => 'integer']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 20,
+    "end_line": 23,
+    "doc_summary": null,
+    "meta": {
+      "value": "['paid_at' => 'datetime', 'total_cents' => 'integer']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "appends",
+    "fqn": "App\\Models\\Order::$appends",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "protected $appends = ['total_formatted']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 25,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {
+      "value": "['total_formatted']"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "customer",
+    "fqn": "App\\Models\\Order::customer",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function customer()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 27,
+    "end_line": 30,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "items",
+    "fqn": "App\\Models\\Order::items",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function items()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 32,
+    "end_line": 35,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "getTotalFormattedAttribute",
+    "fqn": "App\\Models\\Order::getTotalFormattedAttribute",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function getTotalFormattedAttribute(): string",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 40,
+    "end_line": 43,
+    "doc_summary": "Total as a formatted money string.",
+    "meta": {
+      "return_type": "string"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "setStatusAttribute",
+    "fqn": "App\\Models\\Order::setStatusAttribute",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function setStatusAttribute(string $value): void",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 45,
+    "end_line": 48,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$value",
+          "type": "string"
+        }
+      ],
+      "return_type": "void"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "scopePaid",
+    "fqn": "App\\Models\\Order::scopePaid",
+    "parent_fqn": "App\\Models\\Order",
+    "signature": "public function scopePaid($query)",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/Order.php",
+    "line": 50,
+    "end_line": 53,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$query"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "class",
+    "name": "OrderItem",
+    "fqn": "App\\Models\\OrderItem",
+    "parent_fqn": null,
+    "signature": "class OrderItem extends Model",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/OrderItem.php",
+    "line": 7,
+    "end_line": 17,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Eloquent\\Model"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "table",
+    "fqn": "App\\Models\\OrderItem::$table",
+    "parent_fqn": "App\\Models\\OrderItem",
+    "signature": "protected $table = 'order_items'",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/OrderItem.php",
+    "line": 9,
+    "end_line": 9,
+    "doc_summary": null,
+    "meta": {
+      "value": "'order_items'"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "guarded",
+    "fqn": "App\\Models\\OrderItem::$guarded",
+    "parent_fqn": "App\\Models\\OrderItem",
+    "signature": "protected $guarded = []",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/OrderItem.php",
+    "line": 11,
+    "end_line": 11,
+    "doc_summary": null,
+    "meta": {
+      "value": "[]"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "order",
+    "fqn": "App\\Models\\OrderItem::order",
+    "parent_fqn": "App\\Models\\OrderItem",
+    "signature": "public function order()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/OrderItem.php",
+    "line": 13,
+    "end_line": 16,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "User",
+    "fqn": "App\\Models\\User",
+    "parent_fqn": null,
+    "signature": "class User extends Authenticatable",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/User.php",
+    "line": 8,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Auth\\User"
+      ],
+      "traits": [
+        "Illuminate\\Notifications\\Notifiable"
+      ]
+    }
+  },
+  {
+    "kind": "property",
+    "name": "fillable",
+    "fqn": "App\\Models\\User::$fillable",
+    "parent_fqn": "App\\Models\\User",
+    "signature": "protected $fillable = ['name', 'email', 'password']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/User.php",
+    "line": 12,
+    "end_line": 12,
+    "doc_summary": null,
+    "meta": {
+      "value": "['name', 'email', 'password']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "hidden",
+    "fqn": "App\\Models\\User::$hidden",
+    "parent_fqn": "App\\Models\\User",
+    "signature": "protected $hidden = ['password', 'remember_token']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/User.php",
+    "line": 14,
+    "end_line": 14,
+    "doc_summary": null,
+    "meta": {
+      "value": "['password', 'remember_token']"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "casts",
+    "fqn": "App\\Models\\User::$casts",
+    "parent_fqn": "App\\Models\\User",
+    "signature": "protected $casts = ['email_verified_at' => 'datetime', 'password' => 'hashed']",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Models/User.php",
+    "line": 16,
+    "end_line": 19,
+    "doc_summary": null,
+    "meta": {
+      "value": "['email_verified_at' => 'datetime', 'password' => 'hashed']"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "RouteServiceProvider",
+    "fqn": "App\\Providers\\RouteServiceProvider",
+    "parent_fqn": null,
+    "signature": "class RouteServiceProvider extends ServiceProvider",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 8,
+    "end_line": 29,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider"
+      ]
+    }
+  },
+  {
+    "kind": "const",
+    "name": "HOME",
+    "fqn": "App\\Providers\\RouteServiceProvider::HOME",
+    "parent_fqn": "App\\Providers\\RouteServiceProvider",
+    "signature": "public const HOME = '/home'",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 10,
+    "end_line": 10,
+    "doc_summary": null,
+    "meta": {
+      "value": "'/home'"
+    }
+  },
+  {
+    "kind": "property",
+    "name": "namespace",
+    "fqn": "App\\Providers\\RouteServiceProvider::$namespace",
+    "parent_fqn": "App\\Providers\\RouteServiceProvider",
+    "signature": "protected $namespace = 'App\\\\Http\\\\Controllers'",
+    "visibility": "protected",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 15,
+    "end_line": 15,
+    "doc_summary": "Controller namespace for string route actions.",
+    "meta": {
+      "value": "'App\\\\Http\\\\Controllers'"
+    }
+  },
+  {
+    "kind": "method",
+    "name": "boot",
+    "fqn": "App\\Providers\\RouteServiceProvider::boot",
+    "parent_fqn": "App\\Providers\\RouteServiceProvider",
+    "signature": "public function boot(): void",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Providers/RouteServiceProvider.php",
+    "line": 17,
+    "end_line": 28,
+    "doc_summary": null,
+    "meta": {
+      "return_type": "void"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "OrderService",
+    "fqn": "App\\Services\\OrderService",
+    "parent_fqn": null,
+    "signature": "class OrderService",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Services/OrderService.php",
+    "line": 11,
+    "end_line": 29,
+    "doc_summary": "Places and settles customer orders.",
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "place",
+    "fqn": "App\\Services\\OrderService::place",
+    "parent_fqn": "App\\Services\\OrderService",
+    "signature": "public function place(array $data): Order",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Services/OrderService.php",
+    "line": 18,
+    "end_line": 21,
+    "doc_summary": "Creates an order with its items in one transaction.",
+    "meta": {
+      "params": [
+        {
+          "name": "$data",
+          "type": "array"
+        }
+      ],
+      "return_type": "Order",
+      "return_fqns": [
+        "App\\Models\\Order"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "markPaid",
+    "fqn": "App\\Services\\OrderService::markPaid",
+    "parent_fqn": "App\\Services\\OrderService",
+    "signature": "public function markPaid(Order $order): Order",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/Services/OrderService.php",
+    "line": 23,
+    "end_line": 28,
+    "doc_summary": null,
+    "meta": {
+      "params": [
+        {
+          "name": "$order",
+          "type": "Order",
+          "type_fqns": [
+            "App\\Models\\Order"
+          ]
+        }
+      ],
+      "return_type": "Order",
+      "return_fqns": [
+        "App\\Models\\Order"
+      ]
+    }
+  },
+  {
+    "kind": "function",
+    "name": "money",
+    "fqn": "money",
+    "parent_fqn": null,
+    "signature": "function money(int $cents, string $currency = 'USD'): string",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "app/helpers.php",
+    "line": 7,
+    "end_line": 10,
+    "doc_summary": "Formats an amount in cents as a money string.",
+    "meta": {
+      "params": [
+        {
+          "name": "$cents",
+          "type": "int"
+        },
+        {
+          "name": "$currency",
+          "type": "string",
+          "default": "'USD'"
+        }
+      ],
+      "return_type": "string"
+    }
+  },
+  {
+    "kind": "class",
+    "name": "CreateUsersTable",
+    "fqn": "CreateUsersTable",
+    "parent_fqn": null,
+    "signature": "class CreateUsersTable extends Migration",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2014_10_12_000000_create_users_table.php",
+    "line": 7,
+    "end_line": 26,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Migrations\\Migration"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "up",
+    "fqn": "CreateUsersTable::up",
+    "parent_fqn": "CreateUsersTable",
+    "signature": "public function up()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2014_10_12_000000_create_users_table.php",
+    "line": 9,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "down",
+    "fqn": "CreateUsersTable::down",
+    "parent_fqn": "CreateUsersTable",
+    "signature": "public function down()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2014_10_12_000000_create_users_table.php",
+    "line": 22,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "CreateCustomersTable",
+    "fqn": "CreateCustomersTable",
+    "parent_fqn": null,
+    "signature": "class CreateCustomersTable extends Migration",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000001_create_customers_table.php",
+    "line": 7,
+    "end_line": 23,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Migrations\\Migration"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "up",
+    "fqn": "CreateCustomersTable::up",
+    "parent_fqn": "CreateCustomersTable",
+    "signature": "public function up()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000001_create_customers_table.php",
+    "line": 9,
+    "end_line": 17,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "down",
+    "fqn": "CreateCustomersTable::down",
+    "parent_fqn": "CreateCustomersTable",
+    "signature": "public function down()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000001_create_customers_table.php",
+    "line": 19,
+    "end_line": 22,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "CreateOrdersTable",
+    "fqn": "CreateOrdersTable",
+    "parent_fqn": null,
+    "signature": "class CreateOrdersTable extends Migration",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000002_create_orders_table.php",
+    "line": 7,
+    "end_line": 26,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Migrations\\Migration"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "up",
+    "fqn": "CreateOrdersTable::up",
+    "parent_fqn": "CreateOrdersTable",
+    "signature": "public function up()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000002_create_orders_table.php",
+    "line": 9,
+    "end_line": 20,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "down",
+    "fqn": "CreateOrdersTable::down",
+    "parent_fqn": "CreateOrdersTable",
+    "signature": "public function down()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000002_create_orders_table.php",
+    "line": 22,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "class",
+    "name": "CreateOrderItemsTable",
+    "fqn": "CreateOrderItemsTable",
+    "parent_fqn": null,
+    "signature": "class CreateOrderItemsTable extends Migration",
+    "visibility": null,
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000003_create_order_items_table.php",
+    "line": 7,
+    "end_line": 25,
+    "doc_summary": null,
+    "meta": {
+      "extends": [
+        "Illuminate\\Database\\Migrations\\Migration"
+      ]
+    }
+  },
+  {
+    "kind": "method",
+    "name": "up",
+    "fqn": "CreateOrderItemsTable::up",
+    "parent_fqn": "CreateOrderItemsTable",
+    "signature": "public function up()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000003_create_order_items_table.php",
+    "line": 9,
+    "end_line": 19,
+    "doc_summary": null,
+    "meta": {}
+  },
+  {
+    "kind": "method",
+    "name": "down",
+    "fqn": "CreateOrderItemsTable::down",
+    "parent_fqn": "CreateOrderItemsTable",
+    "signature": "public function down()",
+    "visibility": "public",
+    "is_static": false,
+    "is_abstract": false,
+    "is_final": false,
+    "file": "database/migrations/2023_01_01_000003_create_order_items_table.php",
+    "line": 21,
+    "end_line": 24,
+    "doc_summary": null,
+    "meta": {}
+  }
+]

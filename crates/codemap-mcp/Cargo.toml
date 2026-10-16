@@ -1,0 +1,33 @@
+[package]
+name = "codemap-mcp"
+description = "MCP stdio server exposing the codemap index as tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+codemap-core.workspace = true
+codemap-js.workspace = true
+codemap-laravel.workspace = true
+codemap-php.workspace = true
+codemap-vue.workspace = true
+jiff.workspace = true
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+rusqlite.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strsim.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+tracing.workspace = true
+tree-sitter.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
+
+[lints]
+workspace = true

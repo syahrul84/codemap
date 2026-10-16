@@ -20,4 +20,19 @@ class CartController extends Controller
 
         return new CartItemResource($item);
     }
+
+    public function update(Request $request, int $merchant, int $item)
+    {
+        $line = $request->user()->cartItems()->findOrFail($item);
+        $line->update($request->only('quantity'));
+
+        return new CartItemResource($line);
+    }
+
+    public function remove(Request $request, int $merchant, int $item)
+    {
+        $request->user()->cartItems()->whereKey($item)->delete();
+
+        return response()->noContent();
+    }
 }

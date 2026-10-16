@@ -16,25 +16,26 @@ FROM chef AS builder
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked --bin pidx \
- && cp target/release/pidx /usr/local/bin/pidx
+RUN cargo build --release --locked --bin codemap \
+ && cp target/release/codemap /usr/local/bin/codemap
 
 # ---- runtime: small image, non-root, git for commit/dirty info ----
 FROM debian:${DEBIAN}-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- # The project is mounted with the host's UID; without this git refuses with "dubious ownership".
- && git config --system --add safe.directory /workspace \
- && useradd --system --uid 10001 --create-home --home-dir /home/pidx --shell /usr/sbin/nologin pidx \
+ # Projects are mounted with the host's UID; without this git refuses with "dubious ownership".
+ # Any path: workspace apps and linked repos (/links/backend) are mounted too. git is only read.
+ && git config --system --add safe.directory '*' \
+ && useradd --system --uid 10001 --create-home --home-dir /home/codemap --shell /usr/sbin/nologin codemap \
  && mkdir -p /data /workspace \
- && chown pidx:pidx /data
-COPY --from=builder /usr/local/bin/pidx /usr/local/bin/pidx
-ENV PIDX_DATA_DIR=/data
-USER pidx
+ && chown codemap:codemap /data
+COPY --from=builder /usr/local/bin/codemap /usr/local/bin/codemap
+ENV CODEMAP_DATA_DIR=/data
+USER codemap
 WORKDIR /workspace
 VOLUME ["/data"]
-ENTRYPOINT ["pidx"]
+ENTRYPOINT ["codemap"]
 CMD ["--help"]
 
 # ---- runtime-php: adds php-cli for `artisan route:list` (artisan mode) ----
@@ -45,7 +46,7 @@ RUN apt-get update \
       php-cli php-mbstring php-xml php-curl php-zip php-bcmath php-intl \
       php-sqlite3 php-mysql php-pgsql \
  && rm -rf /var/lib/apt/lists/*
-USER pidx
+USER codemap
 
 # ---- dev: toolchain for `docker compose run --rm dev cargo ...` ----
 FROM rust:${RUST_VERSION}-slim-${DEBIAN} AS dev

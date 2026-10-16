@@ -5,7 +5,7 @@ services:
     build:
       context: .
       target: dev
-    image: pidx-dev:latest
+    image: codemap-dev:latest
     working_dir: /src
     volumes:
       - .:/src
@@ -16,21 +16,21 @@ services:
       CARGO_TARGET_DIR: /target
       CARGO_TERM_COLOR: always
 
-  # Runtime image for manual testing: PROJECT=/path/to/laravel docker compose run --rm pidx scan --project /workspace
+  # Runtime image for manual testing: PROJECT=/path/to/laravel docker compose run --rm codemap scan --project /workspace
   # stdin_open without tty: a TTY would corrupt the MCP stdio stream.
-  pidx:
+  codemap:
     build:
       context: .
       target: runtime
-    image: pidx:latest
+    image: codemap:latest
     stdin_open: true
     tty: false
     volumes:
       - ${PROJECT:-./fixtures}:/workspace:ro
-      - pidx-data:/data
+      - codemap-data:/data
 
 volumes:
   cargo-registry:
   cargo-git:
   cargo-target:
-  pidx-data:
+  codemap-data:

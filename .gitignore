@@ -8,3 +8,4 @@
 fixtures/**/out/
 .env*
 .DS_Store
+/codemap-out/
