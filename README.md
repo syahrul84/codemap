@@ -45,21 +45,82 @@ The full specification is in [BUILD_PROMPT.md](BUILD_PROMPT.md).
 
 ## Install
 
-Everything runs in Docker; you don't need Rust or PHP on the host.
+codemap is one program with no dependencies. Pick one way to get it:
+
+| | Needs | Good for |
+|---|---|---|
+| **Download** (recommended) | nothing | most developers |
+| **Cargo** | Rust 1.99+ and a C compiler | building from source |
+| **Docker** | Docker | keeping the program away from your machine; the project is mounted read-only |
+
+### Download
+
+Ready-made programs for macOS (Apple Silicon and Intel) and Linux (x86-64 and ARM64) are on the [Releases](https://github.com/syahrul84/codemap/releases) page. To install the latest one:
 
 ```bash
+curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-aarch64-apple-darwin.tar.gz | tar xz
+```
+
+Use the file for your machine: `codemap-aarch64-apple-darwin` (Mac with Apple Silicon), `codemap-x86_64-apple-darwin` (Intel Mac), `codemap-x86_64-unknown-linux-gnu` or `codemap-aarch64-unknown-linux-gnu` (Linux). Then put it on your `PATH` and check it:
+
+```bash
+mkdir -p ~/.local/bin && mv codemap ~/.local/bin/
+codemap --version
+```
+
+If macOS refuses to open a file downloaded with a browser, remove the download flag once: `xattr -d com.apple.quarantine ~/.local/bin/codemap`. Each release has a `SHA256SUMS` file to check the downloads against.
+
+### Cargo
+
+```bash
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.0 codemap-cli
+```
+
+### Docker
+
+```bash
+git clone https://github.com/syahrul84/codemap && cd codemap
 docker build -t codemap:latest --target runtime .
 ```
+
+## Quick start
+
+Inside a project folder:
+
+```bash
+codemap scan      # build the index (the first time takes a few seconds; later runs only re-read changed files)
+codemap doctor    # what was detected, and anything codemap could not read
+codemap map --out codemap.html   # the code map page; open it in a browser
+```
+
+The index lives outside the project (`~/Library/Caches/codemap` on macOS, `~/.cache/codemap` on Linux; `--data-dir` or `CODEMAP_DATA_DIR` to change it). codemap only reads the project: it never writes to it and never runs its code (unless you turn on artisan mode).
 
 ## Use it from Claude Code
 
 Register it for a project (run inside that project's folder):
 
 ```bash
-claude mcp add codemap -- docker run -i --rm -v "$(pwd)":/workspace:ro -v codemap-data:/data -e CODEMAP_PROJECT_ID="$(pwd | shasum | cut -c1-12)" codemap:latest serve --project /workspace
+claude mcp add codemap -- codemap serve --project "$(pwd)"
 ```
 
-Or commit a `.mcp.json` in the project root. Claude Code expands `${VAR}` and `${VAR:-default}` in `command`, `args` and `env`:
+Or commit a `.mcp.json` in the project root, so everyone on the team gets it. Claude Code expands `${VAR}` and `${VAR:-default}` in `command`, `args` and `env`:
+
+```json
+{
+  "mcpServers": {
+    "codemap": {
+      "command": "codemap",
+      "args": ["serve", "--project", "${PWD}"]
+    }
+  }
+}
+```
+
+### With Docker
+
+```bash
+claude mcp add codemap -- docker run -i --rm -v "$(pwd)":/workspace:ro -v codemap-data:/data -e CODEMAP_PROJECT_ID="$(pwd | shasum | cut -c1-12)" codemap:latest serve --project /workspace
+```
 
 ```json
 {
@@ -80,7 +141,7 @@ Or commit a `.mcp.json` in the project root. Claude Code expands `${VAR}` and `$
 Notes:
 - **Project id:** without `CODEMAP_PROJECT_ID`, the index id comes from the git remote + root commit, so it is stable per repository. Set it explicitly if you keep several checkouts of the same repository.
 - **`-i`, never `-t`:** a TTY corrupts the MCP stdio stream. All logs go to stderr.
-- **Read-only:** the project is mounted read-only and codemap never writes to it. The index lives in the `codemap-data` volume.
+- **Read-only:** the project is mounted read-only and codemap never writes to it. The index lives in the `codemap-data` volume. Commands that write a file (`codemap map`) need a writable folder mounted for it (see [Code map page](#code-map-page)).
 
 Then add [CLAUDE.snippet.md](CLAUDE.snippet.md) to the project's `CLAUDE.md`, so Claude uses the tools at the right moments.
 
@@ -117,14 +178,16 @@ If re-indexing takes longer than 1 s, the answer comes from the previous index w
 
 ## CLI
 
+`--project` defaults to the current folder.
+
 ```bash
-codemap scan   --project <path> [--full] [--json]   # build/update the index
-codemap serve  --project <path>                     # MCP server on stdio
-codemap query  --project <path> <tool> '<json>'     # call any MCP tool from the shell
-codemap stats  --project <path> [--json]            # counts, timings, index size
-codemap doctor --project <path> [--json]            # detection reasons, warnings, unresolved routes, broken routes
-codemap map    --project <path> --out <file.html>   # the code map: one page to open in a browser
-codemap misses --project <path> [--json] [--clear]  # names the AI asked for that don't exist, ranked
+codemap scan   [--project <path>] [--full] [--json]   # build/update the index
+codemap serve  [--project <path>]                     # MCP server on stdio
+codemap query  [--project <path>] <tool> '<json>'     # call any MCP tool from the shell
+codemap stats  [--project <path>] [--json]            # counts, timings, index size
+codemap doctor [--project <path>] [--json]            # detection reasons, warnings, unresolved routes, broken routes
+codemap map    [--project <path>] --out <file.html>   # the code map: one page to open in a browser
+codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
 ```
 
 Global options: `--name` / `CODEMAP_PROJECT_NAME` (display name; inside Docker the folder is always `workspace`), `--link name=path` / `CODEMAP_LINKS`, `--project-id` / `CODEMAP_PROJECT_ID`, `--data-dir` / `CODEMAP_DATA_DIR` (default `/data` in Docker, the platform cache dir elsewhere), `--log-level` / `CODEMAP_LOG`.

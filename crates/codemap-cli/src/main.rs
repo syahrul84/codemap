@@ -51,7 +51,8 @@ struct Cli {
 enum Command {
     /// Build or update the index, then print a summary.
     Scan {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Ignore the existing index and re-parse every file.
         #[arg(long)]
@@ -62,12 +63,14 @@ enum Command {
     },
     /// Run the MCP server on stdio.
     Serve {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
     },
     /// Call an MCP tool from the command line (for debugging).
     Query {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Tool name, e.g. `search_symbol`.
         tool: String,
@@ -76,7 +79,8 @@ enum Command {
     },
     /// Show counts, timings and index size.
     Stats {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Print stats as JSON.
         #[arg(long)]
@@ -85,7 +89,8 @@ enum Command {
     /// Write the code map: one HTML page with screens, API calls, endpoints,
     /// controllers, models, tables and their problems.
     Map {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Where to write the page (in Docker, a folder mounted writable).
         #[arg(long, default_value = "codemap.html")]
@@ -94,7 +99,8 @@ enum Command {
     /// Names the AI asked for that do not exist, most frequent first, with
     /// the real name and what to do about it.
     Misses {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Print as JSON.
         #[arg(long)]
@@ -105,7 +111,8 @@ enum Command {
     },
     /// Explain detection, warnings and unresolved items.
     Doctor {
-        #[arg(long)]
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Print the report as JSON.
         #[arg(long)]
@@ -711,7 +718,10 @@ mod tests {
     }
 
     #[test]
-    fn project_is_required() {
-        assert!(Cli::try_parse_from(["codemap", "scan"]).is_err());
+    fn project_defaults_to_the_current_folder() {
+        let cli = Cli::try_parse_from(["codemap", "scan"]).unwrap();
+        assert!(
+            matches!(cli.command, Command::Scan { ref project, .. } if project == &PathBuf::from("."))
+        );
     }
 }
