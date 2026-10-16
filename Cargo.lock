@@ -405,6 +405,7 @@ name = "codemap-mcp"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "blake3",
  "codemap-core",
  "codemap-js",
  "codemap-laravel",
@@ -2154,6 +2155,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 

@@ -10,4 +10,9 @@
 - Before finishing, call `verify` with every class, method, route, table, column, component, endpoint and translation key your change relies on. Fix all `not_found` items.
 - Before finishing a change, call `find_usages` with `git_changes: true`: it summarises what the change affects (including frontend calls to changed backend routes) and gives the test commands to run instead of the whole suite.
 - Before a release (or a merge to production), call `verify` with `release_check: true` and fix or report every problem it lists.
+- After running the project's type check (vue-tsc, nuxi typecheck, tsc, PHPStan `--error-format=raw`), pass its output to `verify` as `type_errors` (with `app` in a workspace); fix the errors it reports as new.
 - If a tool response says `stale: true`, mention it and re-check files directly.
+- If a codemap answer turns out wrong after you checked the files or the database, call `report_wrong_answer` once with that answer's `meta.call_id`, then carry on. Give evidence (file:line) and, when you can, an `expect` check. Add a made-up `example`: the smallest project that gives the same wrong answer, with neutral names and none of the real code. If codemap says it does not reproduce or names a real name in it, fix and resend. Never ask the person to approve sending yourself; codemap asks them. Do not report:
+  - `found: false` when you were checking that something does not exist yet
+  - answers marked `stale: true` (re-check files instead)
+  - your own wrong question; that is a miss, not a codemap bug

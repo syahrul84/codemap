@@ -13,6 +13,7 @@ pub mod map;
 pub mod misses;
 pub mod refresh;
 pub mod release;
+pub mod reports;
 pub mod server;
 pub mod tools;
 pub mod typecheck;

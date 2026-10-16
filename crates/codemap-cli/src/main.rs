@@ -111,6 +111,31 @@ enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// Answers codemap got wrong (reported by the AI or found by codemap),
+    /// re-checked; export them as test cases or send one to the codemap repo.
+    Reports {
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Also list closed reports.
+        #[arg(long)]
+        all: bool,
+        /// Write one folder per open report into this folder.
+        #[arg(long)]
+        export: Option<PathBuf>,
+        /// Close one report by hand (not a real bug).
+        #[arg(long)]
+        close: Option<String>,
+        /// Send one report (with a reproducing made-up example) to the codemap repository, after asking.
+        #[arg(long)]
+        send: Option<String>,
+        /// Empty the log.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Install the latest release of codemap (checked against its SHA256SUMS).
     Update {
         /// Only say whether a newer version exists.
@@ -183,6 +208,24 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         } => cmd_query(&cli, project, tool, args.as_deref()),
         Command::Doctor { project, json } => cmd_doctor(&cli, project, *json),
         Command::Map { project, out } => cmd_map(&cli, project, out),
+        Command::Reports {
+            project,
+            json,
+            all,
+            export,
+            close,
+            send,
+            clear,
+        } => cmd_reports(
+            &cli,
+            project,
+            *json,
+            *all,
+            export.as_deref(),
+            close.as_deref(),
+            send.as_deref(),
+            *clear,
+        ),
         Command::Update { check, force } => {
             let data_dir = paths::resolve_data_dir(cli.data_dir.clone())?;
             update::run(&data_dir, *check, *force)?;
@@ -510,6 +553,167 @@ fn cmd_misses(cli: &Cli, project: &Path, json: bool, clear: bool) -> anyhow::Res
     Ok(ExitCode::SUCCESS)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cmd_reports(
+    cli: &Cli,
+    project: &Path,
+    json: bool,
+    all: bool,
+    export: Option<&Path>,
+    close: Option<&str>,
+    send: Option<&str>,
+    clear: bool,
+) -> anyhow::Result<ExitCode> {
+    use codemap_mcp::reports;
+    let projects = Project::resolve(cli, project)?;
+    let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
+    if clear {
+        for p in &mcp {
+            reports::clear(p)?;
+        }
+        eprintln!("the wrong-answer reports are cleared");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(id) = close {
+        let mut done = false;
+        for p in &mcp {
+            done |= reports::close(p, id)?;
+        }
+        anyhow::ensure!(done, "no report {id}");
+        eprintln!("closed {id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(id) = send {
+        let (p, r) = mcp
+            .iter()
+            .find_map(|p| {
+                reports::load(p)
+                    .into_iter()
+                    .find(|r| r.id == id)
+                    .map(|r| (p, r))
+            })
+            .with_context(|| format!("no report {id}"))?;
+        if let Some(why) = reports::sending_off(p) {
+            anyhow::bail!("sending is off: {why}");
+        }
+        let (title, body) = reports::issue(p, &r)
+            .context("only a report with a made-up example that reproduces can be sent")?;
+        println!(
+            "This goes to https://github.com/{}/issues (only the made-up example, never your code):\n\nTitle: {title}\n\n{body}",
+            codemap_core::updates::REPO
+        );
+        print!("Send? y/n ");
+        use std::io::Write as _;
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") && !answer.trim().eq_ignore_ascii_case("yes") {
+            println!("Not sent.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        match reports::send(p, &r, None) {
+            Ok(url) => {
+                reports::set_issue(p, &r.id, &url);
+                println!("Sent: {url}");
+            }
+            Err(e) => println!("{e}"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut stores = Vec::new();
+    for p in &projects {
+        let (store, _) = p.refresh(false)?;
+        stores.push(store);
+    }
+    let apps: Vec<(&Store, &codemap_mcp::Project)> = stores.iter().zip(&mcp).collect();
+    if let Some(dir) = export {
+        let mut n = 0;
+        for (store, p) in &apps {
+            n += reports::export(store, p, dir)?;
+        }
+        eprintln!("exported {n} open reports to {}", dir.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut rows = Vec::new();
+    for (_, p) in &apps {
+        for (r, note) in reports::recheck(&apps, p) {
+            if all || r.status == "open" {
+                rows.push((r, note));
+            }
+        }
+    }
+    rows.sort_by(|a, b| {
+        (
+            a.0.status != "open",
+            &a.0.tool,
+            &a.0.kind,
+            std::cmp::Reverse(a.0.times),
+        )
+            .cmp(&(
+                b.0.status != "open",
+                &b.0.tool,
+                &b.0.kind,
+                std::cmp::Reverse(b.0.times),
+            ))
+    });
+    if json {
+        let list: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(r, note)| {
+                let mut v = serde_json::to_value(r).unwrap_or_default();
+                if let Some(n) = note {
+                    v["note"] = serde_json::json!(n);
+                }
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&list)?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if rows.is_empty() {
+        println!("No open wrong-answer reports.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    for (r, note) in &rows {
+        let app = r
+            .app
+            .as_deref()
+            .map(|a| format!("[{a}] "))
+            .unwrap_or_default();
+        let mut tags = vec![r.source.clone()];
+        if let Some(n) = note {
+            tags.push((*n).to_owned());
+        }
+        if let Some(st) = &r.example_status {
+            tags.push(format!("example {st}"));
+        }
+        if let Some(i) = &r.issue {
+            tags.push(format!("sent {i}"));
+        }
+        if r.status == "closed" {
+            tags.push(format!(
+                "closed in {}",
+                r.closed_in.as_deref().unwrap_or("?")
+            ));
+        }
+        println!(
+            "{} {app}{} · {} · `{}` ({}×, seen on {}) [{}]",
+            r.id,
+            r.tool,
+            r.kind,
+            r.item,
+            r.times,
+            r.codemap,
+            tags.join(", ")
+        );
+        println!("    right: {}", r.right);
+        if !r.evidence.is_empty() {
+            println!("    evidence: {}", r.evidence.join(", "));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn cmd_serve(cli: &Cli, project: &Path) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
     // Once a day, in the background: is there a newer release?
@@ -532,6 +736,13 @@ fn cmd_doctor(cli: &Cli, project: &Path, json: bool) -> anyhow::Result<ExitCode>
         update::check_if_due(&data_dir, 5);
         if !json && let Some(n) = codemap_core::updates::notice(&data_dir) {
             println!("{n}\n");
+        }
+    }
+    if !json {
+        let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
+        let refs: Vec<&codemap_mcp::Project> = mcp.iter().collect();
+        if let Some(line) = codemap_mcp::reports::summary_line(&refs) {
+            println!("{line}\n");
         }
     }
     for p in &projects {

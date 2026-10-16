@@ -337,7 +337,7 @@ async fn vue_tools_over_stdio() {
         .map(|t| t.name.to_string())
         .collect();
     assert!(tools.contains(&"get_component".to_owned()));
-    assert!(tools.len() <= 10, "tool budget: {tools:?}");
+    assert!(tools.len() <= 11, "tool budget: {tools:?}");
 
     let overview = call(&client, "project_overview", json!({})).await;
     assert_envelope(&overview);
@@ -416,6 +416,99 @@ async fn vue_tools_over_stdio() {
     assert_eq!(
         v["data"]["results"][3]["suggestions"],
         json!(["OrderSummary"])
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_answers_are_reported_by_call_id() {
+    let data = tempfile::tempdir().unwrap();
+    let client = connect(&fixture("laravel11-slim"), data.path()).await;
+    let tools: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        tools.contains(&"report_wrong_answer".to_owned()),
+        "{tools:?}"
+    );
+
+    // Every answer has an id.
+    let answer = call(&client, "get_schema", json!({ "table": "orders" })).await;
+    let id = answer["meta"]["call_id"]
+        .as_str()
+        .expect("call_id")
+        .to_owned();
+
+    // A made-up example whose expect fails on codemap's answer reproduces;
+    // the real project's names are refused.
+    let example = json!({
+        "files": {
+            "composer.json": "{ \"require\": { \"laravel/framework\": \"^12.0\" } }",
+            "database/migrations/2024_01_01_000000_create_posts.php": "<?php\nuse Illuminate\\Database\\Migrations\\Migration;\nuse Illuminate\\Database\\Schema\\Blueprint;\nuse Illuminate\\Support\\Facades\\Schema;\nreturn new class extends Migration {\n    public function up(): void {\n        Schema::create('posts', function (Blueprint $table) {\n            $table->id();\n            $table->string('title');\n        });\n    }\n};\n"
+        },
+        "call": { "tool": "get_schema", "args": { "table": "posts" } },
+        "expect": { "tool": "get_schema", "args": { "table": "posts" }, "contains": "\"subtitle\"" },
+        "wrong": "subtitle is missing",
+        "right": "posts has subtitle"
+    });
+    let saved = call(
+        &client,
+        "report_wrong_answer",
+        json!({
+            "call_id": id, "kind": "said_missing", "item": "orders.collected_at",
+            "right": "The column exists; added by a later migration.",
+            "evidence": ["database/migrations/2024_01_01_000000_create_orders_table.php:12"],
+            "expect": { "verify": { "columns": ["orders.collected_at"] }, "is": "exists" },
+            "example": example
+        }),
+    )
+    .await;
+    assert_eq!(saved["data"]["status"], "saved", "{saved}");
+    assert_eq!(saved["data"]["example"]["status"], "reproduces", "{saved}");
+    // The test client cannot show forms: nothing is sent.
+    assert!(
+        saved["data"]["send"].as_str().unwrap().starts_with("not"),
+        "{saved}"
+    );
+
+    // Reporting the same thing again counts it.
+    let again = call(
+        &client,
+        "report_wrong_answer",
+        json!({ "call_id": id, "kind": "said_missing", "item": "orders.collected_at", "right": "x", "evidence": [] }),
+    )
+    .await;
+    assert_eq!(again["data"]["times"], 2);
+
+    // An example naming this project's own classes is blocked.
+    let mut leaky = example.clone();
+    leaky["files"]["app/Models/Customer.php"] = json!("<?php class Customer {}");
+    let blocked = call(
+        &client,
+        "report_wrong_answer",
+        json!({ "call_id": id, "kind": "wrong_detail", "item": "orders", "right": "x", "evidence": [], "example": leaky }),
+    )
+    .await;
+    assert_eq!(blocked["data"]["example"]["status"], "blocked", "{blocked}");
+
+    // An unknown id is refused with how to fix it.
+    let err = client
+        .call_tool(
+            CallToolRequestParams::new("report_wrong_answer").with_arguments(
+                json!({ "call_id": "c999", "kind": "said_missing", "item": "x", "right": "x", "evidence": [] })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await;
+    assert!(
+        format!("{err:?}").contains("call the tool again"),
+        "{err:?}"
     );
     client.cancel().await.unwrap();
 }

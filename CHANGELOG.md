@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Wrong-answer reports: an 11th tool, `report_wrong_answer`, records an answer codemap got wrong (every answer now has `meta.call_id`). codemap also records contradictions, tool failures and slow answers on its own. `codemap reports` lists, re-checks, exports, closes and clears them. A report with a made-up example that reproduces (checked to hold nothing from the real project) can be sent as a GitHub issue after the person agrees.
 - Release check: `release_steps`, the server steps a release needs (installs, migrations, caches, queue and server restarts, rebuilds, new environment variables), worked out from what changed.
 - Project rules tied to files (`[[rules]]` in `.codemap.toml`), returned by the release check and by change impact when a matching file changes.
 - Leftover mentions: names deleted or renamed on the branch that code, tests, comments or docs still use.

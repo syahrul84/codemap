@@ -149,6 +149,31 @@ pub fn found_in(tool: &str, args: &Value, data: &Value) -> Vec<Miss> {
     out
 }
 
+/// The names an answer says exist: `(kind, item)`, in the same terms as
+/// [`found_in`], to spot an answer contradicting an earlier "not found".
+pub fn found_items(tool: &str, args: &Value, data: &Value) -> Vec<(String, String)> {
+    if tool == "verify" {
+        return data["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["status"] == "exists")
+            .filter_map(|r| {
+                Some((
+                    r["kind"].as_str()?.to_owned(),
+                    r["item"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+    }
+    if data["found"] == true
+        && let Some((kind, item)) = asked(tool, args)
+    {
+        return vec![(kind.to_owned(), item)];
+    }
+    Vec::new()
+}
+
 /// Appends the wrong guesses in an answer to the log of the app they
 /// belong to (the first app when not known). Failures only warn: the log
 /// must never break a tool call.

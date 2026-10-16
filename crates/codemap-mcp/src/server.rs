@@ -2,6 +2,8 @@
 //! to date within a time budget; past the budget the answer comes from the
 //! previous index with `stale: true`.
 
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -28,7 +30,8 @@ before creating any class, method or helper and reuse what exists. Call get_sche
 queries, migrations or model code; never assume column names. Prefer get_symbol over reading whole \
 files. For Vue/Nuxt code, call get_component before using or changing a component and search_symbol \
 for composables and stores. Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true, re-check files directly. found: false means it does not exist \
-in the project.";
+in the project. If an answer turns out wrong after you checked the files, report it once with \
+report_wrong_answer (pass its meta.call_id), then carry on.";
 
 /// One indexed project (the root, or one app of a workspace).
 struct App {
@@ -39,8 +42,75 @@ struct App {
     writer: Mutex<Store>,
 }
 
+/// `report_wrong_answer` input.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReportParams {
+    /// `meta.call_id` of the answer that was wrong.
+    pub call_id: String,
+    /// said_missing | said_exists | wrong_detail | left_out | false_problem | wrong_command | cannot_answer
+    pub kind: String,
+    /// The exact thing that was wrong: `orders.status`, `GET /api/v1/malls`, `MallCard.vue`.
+    pub item: String,
+    /// What is actually true, in one sentence.
+    pub right: String,
+    /// Where it was proved: `file:line` entries, or a command and a short output line.
+    pub evidence: Vec<String>,
+    /// A check codemap can re-run: `{ "verify": { "columns": ["orders.x"] }, "is": "exists" }`
+    /// or `{ "tool": "get_schema", "args": {...}, "contains": "text" }` (or `"lacks"`).
+    #[serde(default)]
+    pub expect: Option<serde_json::Value>,
+    /// A made-up mini project giving the same wrong answer, with neutral names and none of the
+    /// real code: `{ "files": { "path": "content" }, "call": { "tool": ..., "args": ... },
+    /// "expect": <check of the right answer>, "wrong": "...", "right": "..." }`.
+    #[serde(default)]
+    pub example: Option<serde_json::Value>,
+    /// Workspace app (default: the app of the call).
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+/// The person's answer to "send this report to the codemap repository?".
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct SendChoice {
+    /// Send the issue shown above to the codemap repository on GitHub.
+    pub send: bool,
+    /// Don't ask again for this project (this means don't send).
+    #[serde(default)]
+    pub dont_ask_again: bool,
+    /// Optional: your edited issue text, to send instead of the text shown.
+    #[serde(default)]
+    pub edited_text: Option<String>,
+}
+rmcp::elicit_safe!(SendChoice);
+
+/// One answer, kept so a wrong-answer report can point at it.
+#[derive(Clone)]
+struct Answer {
+    id: String,
+    tool: String,
+    args: serde_json::Value,
+    data: serde_json::Value,
+    indexed_at: Option<String>,
+    git_commit: Option<String>,
+    git_dirty: bool,
+    stale: bool,
+}
+
+/// How many answers are kept for reports.
+const KEPT_ANSWERS: usize = 50;
+/// An answer slower than this (after the first index) is reported.
+const SLOW: Duration = Duration::from_secs(5);
+
 struct Shared {
     apps: Vec<App>,
+    /// The last answers, newest last.
+    answers: Mutex<VecDeque<Answer>>,
+    next_call: AtomicU64,
+    /// Bumped whenever re-indexing changed files: answers from the same
+    /// generation saw the same code.
+    generation: AtomicU64,
+    /// Names answered "not found": `kind/item` → (call id, generation).
+    said_missing: Mutex<HashMap<String, (String, u64)>>,
     last_check: Mutex<Option<Instant>>,
     interval: Duration,
     /// Held while a refresh runs, so a call never answers "fresh" from an
@@ -82,11 +152,15 @@ impl CodemapServer {
         Ok(Self {
             shared: Arc::new(Shared {
                 apps,
+                answers: Mutex::new(VecDeque::new()),
+                next_call: AtomicU64::new(1),
+                generation: AtomicU64::new(0),
+                said_missing: Mutex::new(HashMap::new()),
                 last_check: Mutex::new(None),
                 interval,
                 gate: tokio::sync::Mutex::new(()),
             }),
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::report_router(),
         })
     }
 
@@ -176,7 +250,13 @@ impl CodemapServer {
         let args = serde_json::to_value(params)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         let fresh = self.freshness().await;
+        if fresh.reindexed_files > 0 {
+            self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        let started = Instant::now();
         let shared = self.shared.clone();
+        let call_args = args.clone();
+        let (reindexed, was_stale) = (fresh.reindexed_files, fresh.stale);
         let result = tokio::task::spawn_blocking(move || {
             let guards: Vec<_> = shared.apps.iter().map(|a| lock(&a.reader)).collect();
             let apps: Vec<(&Store, &Project)> = guards
@@ -193,16 +273,166 @@ impl CodemapServer {
             }
             result
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                // A panic inside the tool: report it, then answer with the error.
+                self.auto_report(
+                    name,
+                    &call_args,
+                    "tool_failure",
+                    name,
+                    &format!("the tool crashed: {e}"),
+                    serde_json::Value::Null,
+                );
+                return Err(ErrorData::internal_error(e.to_string(), None));
+            }
+        };
         match result {
-            Ok(envelope) => {
+            Ok(mut envelope) => {
+                let id = format!("c{}", self.shared.next_call.fetch_add(1, Ordering::SeqCst));
+                envelope.meta.call_id = Some(id.clone());
+                self.after_answer(
+                    &id,
+                    name,
+                    &call_args,
+                    &envelope,
+                    started.elapsed(),
+                    reindexed,
+                    was_stale,
+                );
                 let text = serde_json::to_string(&envelope)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(ToolError::InvalidParams(m)) => Err(ErrorData::invalid_params(m, None)),
-            Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+            Err(e) => {
+                self.auto_report(
+                    name,
+                    &call_args,
+                    "tool_failure",
+                    name,
+                    &format!("the tool failed: {e}"),
+                    serde_json::Value::Null,
+                );
+                Err(ErrorData::internal_error(e.to_string(), None))
+            }
+        }
+    }
+
+    /// The project an app name (or the first app) belongs to.
+    fn project_for(&self, app: Option<&str>) -> &Project {
+        let apps = &self.shared.apps;
+        &app.and_then(|a| apps.iter().find(|x| x.project.app.as_deref() == Some(a)))
+            .unwrap_or(&apps[0])
+            .project
+    }
+
+    /// Records a wrong answer codemap can tell by itself.
+    fn auto_report(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        kind: &str,
+        item: &str,
+        right: &str,
+        answer: serde_json::Value,
+    ) {
+        let app = args["app"].as_str().or_else(|| answer["app"].as_str());
+        let project = self.project_for(app);
+        let r = crate::reports::Report {
+            id: crate::reports::id_for(tool, args, kind, item),
+            at: jiff::Timestamp::now().to_string(),
+            source: "auto".into(),
+            app: app.map(str::to_owned),
+            tool: tool.into(),
+            args: args.clone(),
+            kind: kind.into(),
+            item: item.into(),
+            answer,
+            right: right.into(),
+            ..Default::default()
+        };
+        if let Err(e) = crate::reports::add(project, r) {
+            tracing::warn!("cannot save a wrong-answer report: {e}");
+        }
+    }
+
+    /// Keeps the answer for reports, and records the ones that prove
+    /// themselves wrong: contradicting an earlier "not found" with no file
+    /// changed in between, or very slow.
+    #[allow(clippy::too_many_arguments)]
+    fn after_answer(
+        &self,
+        id: &str,
+        tool: &str,
+        args: &serde_json::Value,
+        env: &codemap_core::envelope::Envelope<serde_json::Value>,
+        took: Duration,
+        reindexed: usize,
+        stale: bool,
+    ) {
+        let generation = self.shared.generation.load(Ordering::SeqCst);
+        {
+            let mut answers = lock(&self.shared.answers);
+            answers.push_back(Answer {
+                id: id.to_owned(),
+                tool: tool.to_owned(),
+                args: args.clone(),
+                data: env.data.clone(),
+                indexed_at: env.meta.indexed_at.clone(),
+                git_commit: env.meta.git_commit.clone(),
+                git_dirty: env.meta.git_dirty == Some(true),
+                stale: env.meta.stale,
+            });
+            while answers.len() > KEPT_ANSWERS {
+                answers.pop_front();
+            }
+        }
+        if stale {
+            return;
+        }
+        let key = |k: &str, i: &str| format!("{k}/{}", i.to_lowercase());
+        // Found now, but said missing earlier on the same code.
+        for (kind, item) in crate::misses::found_items(tool, args, &env.data) {
+            let earlier = lock(&self.shared.said_missing).remove(&key(&kind, &item));
+            if let Some((earlier_id, g)) = earlier
+                && g == generation
+            {
+                let before = lock(&self.shared.answers)
+                    .iter()
+                    .find(|a| a.id == earlier_id)
+                    .cloned();
+                if let Some(a) = before {
+                    self.auto_report(
+                        &a.tool,
+                        &a.args,
+                        "said_missing",
+                        &item,
+                        &format!("call {id} ({tool}) found it, with no file changed since call {earlier_id}"),
+                        a.data,
+                    );
+                }
+            }
+        }
+        for m in crate::misses::found_in(tool, args, &env.data) {
+            lock(&self.shared.said_missing)
+                .entry(key(&m.kind, &m.item))
+                .or_insert((id.to_owned(), generation));
+        }
+        if took > SLOW && reindexed == 0 {
+            self.auto_report(
+                tool,
+                args,
+                "slow",
+                tool,
+                &format!(
+                    "answered in {:.1} s with nothing to re-index",
+                    took.as_secs_f64()
+                ),
+                serde_json::Value::Null,
+            );
         }
     }
 }
@@ -326,6 +556,182 @@ impl CodemapServer {
         params: Parameters<VerifyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run("verify", params.0).await
+    }
+}
+
+#[tool_router(router = report_router)]
+impl CodemapServer {
+    #[tool(
+        name = "report_wrong_answer",
+        description = "Use when a codemap answer turned out wrong after you checked the files or the database: report it once with that answer's `meta.call_id`, then carry on. Give `kind`, the exact `item`, what is `right`, and `evidence` (file:line). Add an `expect` check codemap can re-run, and when you can a made-up `example`: the smallest project giving the same wrong answer, with neutral names and none of the real code (codemap checks it reproduces and contains nothing from this project; fix and resend if it says otherwise). Never ask the person to approve sending; codemap asks them itself. Do not report found: false when you were checking that something does not exist yet, answers marked stale, or your own wrong question."
+    )]
+    pub async fn report_wrong_answer(
+        &self,
+        params: Parameters<ReportParams>,
+        peer: rmcp::Peer<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        if !crate::reports::KINDS.contains(&p.kind.as_str()) {
+            return Err(ErrorData::invalid_params(
+                format!("kind must be one of: {}", crate::reports::KINDS.join(", ")),
+                None,
+            ));
+        }
+        let Some(answer) = lock(&self.shared.answers)
+            .iter()
+            .find(|a| a.id == p.call_id)
+            .cloned()
+        else {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "unknown or expired call_id `{}` (the last {KEPT_ANSWERS} answers are kept): call the tool again and report that response",
+                    p.call_id
+                ),
+                None,
+            ));
+        };
+        let app = p
+            .app
+            .clone()
+            .or_else(|| answer.args["app"].as_str().map(str::to_owned))
+            .or_else(|| answer.data["app"].as_str().map(str::to_owned));
+        let shared = self.shared.clone();
+        let saved = tokio::task::spawn_blocking(move || {
+            let guards: Vec<_> = shared.apps.iter().map(|a| lock(&a.reader)).collect();
+            let apps: Vec<(&Store, &Project)> = guards
+                .iter()
+                .zip(&shared.apps)
+                .map(|(g, a)| (&**g, &a.project))
+                .collect();
+            let project = app
+                .as_deref()
+                .and_then(|a| {
+                    shared
+                        .apps
+                        .iter()
+                        .find(|x| x.project.app.as_deref() == Some(a))
+                })
+                .unwrap_or(&shared.apps[0])
+                .project
+                .clone();
+            let proof = p
+                .example
+                .as_ref()
+                .map(|ex| crate::reports::prove(&apps, ex));
+            let r = crate::reports::Report {
+                id: crate::reports::id_for(&answer.tool, &answer.args, &p.kind, &p.item),
+                at: jiff::Timestamp::now().to_string(),
+                source: "ai".into(),
+                app: app.clone(),
+                tool: answer.tool.clone(),
+                args: answer.args.clone(),
+                kind: p.kind.clone(),
+                item: p.item.clone(),
+                answer: answer.data.clone(),
+                right: p.right.clone(),
+                evidence: p.evidence.clone(),
+                expect: p.expect.clone(),
+                example: p.example.clone(),
+                example_status: proof.as_ref().map(|x| x.status.clone()),
+                example_hits: proof.as_ref().map(|x| x.hits.clone()).unwrap_or_default(),
+                example_answer: proof.as_ref().and_then(|x| x.answer.clone()),
+                git_commit: answer.git_commit.clone(),
+                git_dirty: answer.git_dirty,
+                indexed_at: answer.indexed_at.clone(),
+                stale: answer.stale,
+                ..Default::default()
+            };
+            crate::reports::add(&project, r).map(|(r, dup)| (r, dup, project))
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let (report, duplicate, project) = match saved {
+            Ok(x) => x,
+            Err(e) => {
+                // Reporting must never break a session.
+                tracing::warn!("cannot save a wrong-answer report: {e}");
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::json!({ "data": { "status": "not saved", "why": e.to_string() } })
+                        .to_string(),
+                )]));
+            }
+        };
+        let mut data = serde_json::json!({
+            "report_id": report.id,
+            "status": if duplicate { "updated" } else { "saved" },
+            "duplicate_of": if duplicate { serde_json::json!(report.id) } else { serde_json::Value::Null },
+            "times": report.times,
+        });
+        if let Some(st) = &report.example_status {
+            data["example"] = serde_json::json!({ "status": st, "problems": report.example_hits });
+        }
+        data["send"] = serde_json::json!(self.offer_send(&peer, &project, &report).await);
+        let text = serde_json::json!({ "data": data }).to_string();
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    }
+}
+
+impl CodemapServer {
+    /// Asks the person (never the AI) whether to send a report with a proved
+    /// example to the codemap repository. Returns what happened.
+    async fn offer_send(
+        &self,
+        peer: &rmcp::Peer<rmcp::RoleServer>,
+        project: &Project,
+        report: &crate::reports::Report,
+    ) -> String {
+        if report.example_status.as_deref() != Some("reproduces") {
+            return "not offered: only a report with a made-up example that reproduces can be sent"
+                .into();
+        }
+        if let Some(why) = crate::reports::sending_off(project) {
+            return format!("not offered: {why}");
+        }
+        let Some((title, body)) = crate::reports::issue(project, report) else {
+            return "not offered".into();
+        };
+        if !peer
+            .supported_elicitation_modes()
+            .contains(&rmcp::service::ElicitationMode::Form)
+        {
+            return format!(
+                "not asked (this app cannot show codemap's question): the person can send it with `codemap reports --send {}`",
+                report.id
+            );
+        }
+        let message = format!(
+            "codemap found a bug in its own answer and can send it to the codemap repository on GitHub, so it gets fixed. Only this made-up example is sent, never your code.\n\nTitle: {title}\n\n{body}"
+        );
+        let choice = peer
+            .elicit_with_timeout::<SendChoice>(message, Some(Duration::from_secs(600)))
+            .await;
+        match choice {
+            Ok(Some(c)) if c.send => {
+                let project = project.clone();
+                let report = report.clone();
+                let edited = c.edited_text.filter(|t| !t.trim().is_empty());
+                let sent = tokio::task::spawn_blocking(move || {
+                    let r = crate::reports::send(&project, &report, edited.as_deref());
+                    if let Ok(url) = &r {
+                        crate::reports::set_issue(&project, &report.id, url);
+                    }
+                    r
+                })
+                .await;
+                match sent {
+                    Ok(Ok(url)) => format!("sent: {url}"),
+                    Ok(Err(e)) => format!("not sent: {e}"),
+                    Err(e) => format!("not sent: {e}"),
+                }
+            }
+            Ok(Some(c)) => {
+                if c.dont_ask_again {
+                    crate::reports::never_ask_again(project);
+                }
+                "the person chose not to send it".into()
+            }
+            Ok(None) | Err(_) => "not sent (no answer from the person)".into(),
+        }
     }
 }
 

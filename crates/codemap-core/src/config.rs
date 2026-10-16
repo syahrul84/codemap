@@ -32,6 +32,17 @@ pub struct Config {
     pub databases: Vec<DatabaseConfig>,
     /// Project rules tied to files: a note returned when a matching file changes.
     pub rules: Vec<RuleConfig>,
+    /// Wrong-answer reports.
+    pub report: ReportConfig,
+}
+
+/// `[report] send = "ask" | "never"`: whether a wrong-answer report may be
+/// offered for sending to the codemap repository (always after asking).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<String>,
 }
 
 /// `[[rules]] files = ["database/migrations/**"], when = "modified",
@@ -284,6 +295,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("release", &["ignore"]),
     ("databases", &["name", "env", "app", "table"]),
     ("rules", &["files", "note", "when", "level", "app"]),
+    ("report", &["send"]),
 ];
 
 impl Config {

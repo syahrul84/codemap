@@ -32,6 +32,9 @@ pub struct Meta {
     pub next_cursor: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// This answer's id, for `report_wrong_answer` (MCP server only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 fn not_true(v: &Option<bool>) -> bool {

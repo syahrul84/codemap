@@ -200,6 +200,10 @@ Notes:
 
 Then add [CLAUDE.snippet.md](CLAUDE.snippet.md) to the project's `CLAUDE.md`, so Claude uses the tools at the right moments.
 
+### Other AI tools
+
+codemap is an MCP server, and MCP is an open standard: Cursor, Windsurf, VS Code (Copilot), Zed, OpenAI Codex CLI, Gemini CLI and other MCP clients use the same tools. Register `codemap serve --project <folder>` (or the Docker command) as an MCP server in that tool's settings. The tool descriptions and server instructions every client reads already say when to use each tool; for stronger guidance, put the contents of [CLAUDE.snippet.md](CLAUDE.snippet.md) in that tool's rules file (`AGENTS.md`, `.cursor/rules`, `GEMINI.md`, `.github/copilot-instructions.md`). The one feature that depends on the client is the question codemap asks before sending a wrong-answer report: a client that cannot show it simply never sends (see [Wrong-answer reports](#wrong-answer-reports)).
+
 ### Tools
 
 | Tool | When Claude should use it |
@@ -243,6 +247,7 @@ codemap stats  [--project <path>] [--json]            # counts, timings, index s
 codemap doctor [--project <path>] [--json]            # detection reasons, warnings, unresolved routes, broken routes
 codemap map    [--project <path>] --out <file.html>   # the code map: one page to open in a browser
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
+codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear]
 codemap update [--check] [--force]                    # install the latest release
 ```
 
@@ -284,6 +289,33 @@ While Claude works through the MCP server, every name it asks for that does not 
 - `project_overview` lists the ones made more than once (`often_mistaken`), so Claude avoids them in the next session.
 - The code map has an **AI mistakes** tab, and marks the real item each wrong name was closest to.
 - `codemap misses --clear` empties the log.
+
+### Wrong-answer reports
+
+When a codemap answer turns out to be wrong, the AI reports it with `report_wrong_answer`, pointing at the answer by its `meta.call_id` (every answer has one; the server keeps the last 50). The report keeps codemap's real answer, what is right, the evidence (`file:line`), the codemap version and the git commit, and optionally:
+
+- an **`expect` check** codemap re-runs: `{ "verify": { "columns": ["orders.collected_at"] }, "is": "exists" }`, or `{ "tool": "get_schema", "args": { "table": "orders" }, "contains": "collected_at" }` (or `"lacks"`). When it passes, the report closes, noting the version that fixed it.
+- a **made-up `example`**: the smallest project that makes codemap give the same wrong answer, with neutral names (`Post`, `posts.title`) and none of the real code. codemap indexes it in a temporary folder and keeps it only if it really reproduces, and blocks it when it contains a name from your project, a long line copied from your files, or something that looks like a secret, an email, an IP address or a private link.
+
+codemap also records some wrong answers itself: an answer saying something is missing that a later answer finds with no file changed in between, a tool that fails, and an answer slower than 5 seconds with nothing to re-index.
+
+Reports stay in `reports.jsonl` next to each app's index (at most 2 MB). `project_overview` and `codemap doctor` show how many are open.
+
+```bash
+codemap reports                 # open reports, re-checked, most frequent first
+codemap reports --all           # with the closed ones and the version that fixed them
+codemap reports --export dir    # one folder per report: report, cited lines, example, test name
+codemap reports --close r_8f3a  # not a real bug
+codemap reports --send r_8f3a   # show the issue text and ask y/n before sending
+codemap reports --clear
+```
+
+**Sending to the codemap repository.** A report whose made-up example reproduces can become a GitHub issue on [syahrul84/codemap](https://github.com/syahrul84/codemap/issues), so the bug gets fixed for everyone:
+
+- codemap asks **the person**, never the AI: through the AI app's question form (MCP elicitation) when the app supports it, or with `codemap reports --send <id>` in a terminal. No answer means nothing is sent.
+- Only the made-up example, codemap's answer on it, the codemap version, the operating system and the project type (e.g. "Laravel + Nuxt") are sent. Your code, file paths and names, and codemap's answers about your project are never sent.
+- It is filed with your own GitHub login through `gh`; a matching open issue gets a comment instead of a new issue. Without `gh`, you get a filled-in link to submit yourself.
+- Turn it off with `[report] send = "never"` in `.codemap.toml`, `CODEMAP_NO_REPORT_SEND=1`, or "don't ask again" in the question (which means don't send).
 
 ### Renamed from pidx
 

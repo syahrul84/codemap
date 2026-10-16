@@ -716,6 +716,10 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
     {
         v["update"] = json!(n);
     }
+    // Answers codemap got wrong, waiting for a fix.
+    if let Some(line) = crate::reports::summary_line(&[project]) {
+        v["wrong_answer_reports"] = json!(line);
+    }
     // Names the AI got wrong before in this project, so it avoids them now.
     let mistaken = crate::misses::often_mistaken(store, project);
     if !mistaken.is_empty() {
