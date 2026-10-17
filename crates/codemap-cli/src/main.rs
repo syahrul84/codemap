@@ -694,7 +694,13 @@ fn cmd_reports(
             tags.push((*n).to_owned());
         }
         if let Some(st) = &r.example_status {
-            tags.push(format!("example {st}"));
+            // A closed report's example is history: say when it reproduced.
+            if r.status == "closed" && st == "reproduces" {
+                let on = r.reproduced_on.as_deref().unwrap_or(&r.codemap);
+                tags.push(format!("example reproduced on {on}"));
+            } else {
+                tags.push(format!("example {st}"));
+            }
         }
         if let Some(i) = &r.issue {
             tags.push(format!("sent {i}"));

@@ -1357,6 +1357,10 @@ pub fn prepare_send(
             Ok(out)
         }
         "does not reproduce" => {
+            // Keep the earlier result as history; the status is today's.
+            let was = r.reproduced_on.clone().unwrap_or_else(|| r.codemap.clone());
+            r.example_status = Some(format!("does not reproduce (reproduced on {was})"));
+            r.example_answer = proof.answer;
             close(r, "the example no longer reproduces");
             let msg = format!(
                 "{id}'s example no longer gives the wrong answer on {VERSION}: closed as fixed, nothing to send"
@@ -1442,6 +1446,14 @@ mod tests {
         add(&project, report("r_fixed", example("Widget"))).unwrap();
         let err = prepare_send(&apps, &project, "r_fixed").unwrap_err();
         assert!(err.contains("no longer"), "{err}");
+        let fixed = load(&project)
+            .into_iter()
+            .find(|r| r.id == "r_fixed")
+            .unwrap();
+        assert_eq!(
+            fixed.example_status.as_deref(),
+            Some("does not reproduce (reproduced on 0.0.9)")
+        );
         let err = prepare_send(&apps, &project, "r_fixed").unwrap_err();
         assert!(err.contains("is closed"), "{err}");
     }
