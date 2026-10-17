@@ -639,6 +639,7 @@ impl CodemapServer {
                 git_dirty: answer.git_dirty,
                 indexed_at: answer.indexed_at.clone(),
                 stale: answer.stale,
+                last_call: Some(p.call_id.clone()),
                 ..Default::default()
             };
             crate::reports::add(&project, r).map(|(r, dup)| (r, dup, project))
@@ -694,8 +695,12 @@ impl CodemapServer {
             .supported_elicitation_modes()
             .contains(&rmcp::service::ElicitationMode::Form)
         {
+            let client = peer
+                .peer_info()
+                .map(|i| format!("{} {}", i.client_info.name, i.client_info.version))
+                .unwrap_or_else(|| "this app".into());
             return format!(
-                "not asked (this app cannot show codemap's question): the person can send it with `codemap reports --send {}`",
+                "not asked: send it with `codemap reports --send {}` in a terminal ({client} did not offer question forms (MCP elicitation) when it connected, so codemap cannot ask the person here)",
                 report.id
             );
         }

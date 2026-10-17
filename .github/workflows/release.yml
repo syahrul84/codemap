@@ -13,6 +13,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Release builds report the plain version (others add -dev+<commit>).
+  CODEMAP_RELEASE: "1"
   RUST_TOOLCHAIN: "1.99.0"
 
 jobs:

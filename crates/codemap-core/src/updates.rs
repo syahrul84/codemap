@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub const REPO: &str = "syahrul84/codemap";
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = crate::VERSION;
 const FILE: &str = "update-check.json";
 pub const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const OFF_ENV: &str = "CODEMAP_NO_UPDATE_CHECK";

@@ -475,18 +475,29 @@ async fn wrong_answers_are_reported_by_call_id() {
         "{saved}"
     );
 
-    // Reporting the same thing again counts it.
+    // Sending it again for the same answer updates it; the same mistake in
+    // a new answer counts as a repeat.
     let again = call(
         &client,
         "report_wrong_answer",
         json!({ "call_id": id, "kind": "said_missing", "item": "orders.collected_at", "right": "x", "evidence": [] }),
     )
     .await;
-    assert_eq!(again["data"]["times"], 2);
+    assert_eq!(again["data"]["status"], "updated");
+    assert_eq!(again["data"]["times"], 1);
+    let second = call(&client, "get_schema", json!({ "table": "orders" })).await;
+    let id2 = second["meta"]["call_id"].as_str().unwrap().to_owned();
+    let repeat = call(
+        &client,
+        "report_wrong_answer",
+        json!({ "call_id": id2, "kind": "said_missing", "item": "orders.collected_at", "right": "x", "evidence": [] }),
+    )
+    .await;
+    assert_eq!(repeat["data"]["times"], 2);
 
     // An example naming this project's own classes is blocked.
     let mut leaky = example.clone();
-    leaky["files"]["app/Models/Customer.php"] = json!("<?php class Customer {}");
+    leaky["files"]["app/Models/OrderItem.php"] = json!("<?php class OrderItem {}");
     let blocked = call(
         &client,
         "report_wrong_answer",

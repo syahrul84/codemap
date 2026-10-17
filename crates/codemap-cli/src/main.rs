@@ -14,7 +14,7 @@ mod update;
 #[derive(Debug, Parser)]
 #[command(
     name = "codemap",
-    version,
+    version = codemap_core::VERSION,
     about = "Project index for Laravel projects, served over MCP"
 )]
 struct Cli {

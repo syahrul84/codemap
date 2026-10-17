@@ -78,6 +78,10 @@ pub struct Report {
     pub times: u32,
     /// `open` or `closed`.
     pub status: String,
+    /// The answer reported last (its `call_id`): a resend for the same answer
+    /// updates the report instead of counting as a repeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_call: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_in: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,8 +158,16 @@ pub fn add(project: &Project, mut r: Report) -> std::io::Result<(Report, bool)> 
         .collect();
     r.files = file_hashes(&project.root, &r.evidence);
     if let Some(old) = all.iter_mut().find(|o| o.id == r.id) {
-        old.times += 1;
+        let resend = r.last_call.is_some() && old.last_call == r.last_call;
+        if !resend {
+            old.times += 1;
+        }
         old.at = r.at.clone();
+        old.last_call = r.last_call.clone();
+        // The newest report of the answer is the one to keep.
+        old.right = r.right.clone();
+        old.evidence = r.evidence.clone();
+        old.files = r.files.clone();
         if old.status == "closed" {
             old.status = "open".into();
             old.closed_in = None;
@@ -610,6 +622,241 @@ fn real_names(apps: &[(&Store, &Project)]) -> HashSet<String> {
     out
 }
 
+/// The project's own name (folder, composer.json, package.json, config):
+/// a plain word that still identifies it.
+fn brand_words(apps: &[(&Store, &Project)]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for (_, p) in apps {
+        let mut add = |s: &str| {
+            for t in tokens(s) {
+                let t = t.to_lowercase();
+                if !NEUTRAL.contains(&t.as_str()) && !COMMON_WORDS.contains(&t.as_str()) {
+                    out.insert(t);
+                }
+            }
+        };
+        for dir in [Some(p.root.as_path()), p.root.parent()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(n) = dir.file_name() {
+                let n = n.to_string_lossy();
+                if n != "workspace" {
+                    add(&n);
+                }
+            }
+        }
+        if let Some(n) = &p.config.project.name {
+            add(n);
+        }
+        for f in ["composer.json", "package.json"] {
+            let v: Value = std::fs::read_to_string(p.root.join(f))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or(Value::Null);
+            if let Some(n) = v["name"].as_str() {
+                add(n);
+            }
+        }
+    }
+    out
+}
+
+/// Everyday words a project often also uses as a name; they say nothing
+/// about the project on their own.
+const COMMON_WORDS: &[&str] = &[
+    "save",
+    "saved",
+    "saving",
+    "error",
+    "errors",
+    "phone",
+    "address",
+    "message",
+    "messages",
+    "search",
+    "filter",
+    "filters",
+    "result",
+    "results",
+    "submit",
+    "cancel",
+    "close",
+    "open",
+    "delete",
+    "remove",
+    "edit",
+    "view",
+    "views",
+    "load",
+    "loading",
+    "loaded",
+    "send",
+    "sent",
+    "check",
+    "valid",
+    "invalid",
+    "required",
+    "number",
+    "code",
+    "codes",
+    "token",
+    "session",
+    "cache",
+    "queue",
+    "event",
+    "events",
+    "notification",
+    "notifications",
+    "mail",
+    "upload",
+    "download",
+    "file",
+    "files",
+    "photo",
+    "photos",
+    "image",
+    "images",
+    "video",
+    "link",
+    "links",
+    "menu",
+    "modal",
+    "dialog",
+    "form",
+    "field",
+    "fields",
+    "input",
+    "option",
+    "options",
+    "select",
+    "toggle",
+    "badge",
+    "banner",
+    "banners",
+    "icon",
+    "icons",
+    "logo",
+    "theme",
+    "color",
+    "size",
+    "small",
+    "large",
+    "first",
+    "last",
+    "next",
+    "previous",
+    "back",
+    "start",
+    "stop",
+    "done",
+    "pending",
+    "paid",
+    "failed",
+    "success",
+    "warning",
+    "info",
+    "member",
+    "members",
+    "customer",
+    "customers",
+    "merchant",
+    "merchants",
+    "shop",
+    "shops",
+    "cart",
+    "carts",
+    "checkout",
+    "payment",
+    "payments",
+    "invoice",
+    "voucher",
+    "vouchers",
+    "coupon",
+    "coupons",
+    "discount",
+    "review",
+    "reviews",
+    "rating",
+    "ratings",
+    "booking",
+    "bookings",
+    "room",
+    "rooms",
+    "city",
+    "country",
+    "state",
+    "location",
+    "locations",
+    "date",
+    "dates",
+    "today",
+    "week",
+    "month",
+    "year",
+    "hour",
+    "minute",
+    "time",
+    "times",
+    "price",
+    "prices",
+    "amount",
+    "total",
+    "subtotal",
+    "balance",
+    "credit",
+    "wallet",
+    "report",
+    "reports",
+    "stock",
+    "brand",
+    "brands",
+    "category",
+    "outlet",
+    "outlets",
+    "mall",
+    "malls",
+    "listing",
+    "listings",
+    "offer",
+    "offers",
+    "deal",
+    "deals",
+    "favourite",
+    "favorite",
+    "help",
+    "support",
+    "ticket",
+    "tickets",
+    "team",
+    "role",
+    "roles",
+    "permission",
+    "permissions",
+];
+
+/// A word that identifies the person's project: one of its own compound
+/// names (`MerchantBusinessProfile`, `order_status`), or its brand. Plain
+/// words (`Save`, `phone`, `error`) pass even when the project uses them.
+fn is_project_name(token: &str, names: &HashSet<String>, brand: &HashSet<String>) -> bool {
+    let lower = token.to_lowercase();
+    if brand.contains(&lower) {
+        return true;
+    }
+    if !names.contains(&lower) || COMMON_WORDS.contains(&lower.as_str()) {
+        return false;
+    }
+    let humps = token
+        .chars()
+        .skip(1)
+        .filter(|c| c.is_ascii_uppercase())
+        .count();
+    token.contains('_')
+        || token.chars().any(|c| c.is_ascii_digit())
+        || humps >= 1
+        || token.len() >= 13
+}
+
 /// Long lines of the person's files (to catch copied code).
 fn real_lines(apps: &[(&Store, &Project)]) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -743,6 +990,7 @@ pub fn prove(apps: &[(&Store, &Project)], example: &Value) -> Proof {
 
     // 1. Nothing from the real project.
     let names = real_names(apps);
+    let brand = brand_words(apps);
     let lines = real_lines(apps);
     let mut hits = Vec::new();
     for (path, content) in files {
@@ -753,7 +1001,7 @@ pub fn prove(apps: &[(&Store, &Project)], example: &Value) -> Proof {
             return invalid("example files must be short and inside the example folder");
         }
         for t in tokens(path).into_iter().chain(tokens(text)) {
-            if names.contains(&t.to_lowercase()) {
+            if is_project_name(&t, &names, &brand) {
                 hits.push(format!(
                     "`{t}` is a name from this project ({path}); use a neutral one"
                 ));
@@ -763,7 +1011,7 @@ pub fn prove(apps: &[(&Store, &Project)], example: &Value) -> Proof {
             let t = l.trim();
             if t.len() >= 30
                 && lines.contains(t)
-                && tokens(t).iter().any(|w| names.contains(&w.to_lowercase()))
+                && tokens(t).iter().any(|w| is_project_name(w, &names, &brand))
             {
                 hits.push(format!("{path}:{} is copied from this project", i + 1));
             }

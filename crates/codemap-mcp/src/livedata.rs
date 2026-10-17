@@ -117,6 +117,175 @@ fn seeds_everything(root: &Path) -> (bool, bool) {
     (browser, php)
 }
 
+/// The app's own text (source files and translations, also the backend's
+/// `lang/` in a workspace): a message from it is app text, not stored data.
+struct AppText {
+    root: std::path::PathBuf,
+    text: Option<String>,
+}
+
+impl AppText {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            text: None,
+        }
+    }
+
+    fn has(&mut self, needle: &str) -> bool {
+        let root = self.root.clone();
+        self.text
+            .get_or_insert_with(|| load_app_text(&root))
+            .contains(needle)
+    }
+}
+
+fn load_app_text(root: &Path) -> String {
+    let mut text = String::new();
+    let mut read_tree = |dir: &Path, exts: &[&str]| {
+        let walker = ignore::WalkBuilder::new(dir)
+            .require_git(false)
+            .filter_entry(|e| {
+                let n = e.file_name().to_string_lossy();
+                !matches!(
+                    n.as_ref(),
+                    "node_modules"
+                        | "vendor"
+                        | ".nuxt"
+                        | ".output"
+                        | ".next"
+                        | "dist"
+                        | "storage"
+                        | ".git"
+                )
+            })
+            .build();
+        for e in walker.flatten() {
+            let p = e.path();
+            let rel = p
+                .strip_prefix(dir)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let ok = p
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| exts.contains(&x))
+                && !is_test_path(&rel)
+                && e.metadata().is_ok_and(|m| m.is_file() && m.len() < 300_000);
+            if ok {
+                text.push_str(&std::fs::read_to_string(p).unwrap_or_default());
+                text.push('\n');
+            }
+        }
+    };
+    read_tree(
+        root,
+        &[
+            "vue", "ts", "js", "tsx", "jsx", "json", "php", "yml", "yaml",
+        ],
+    );
+    // In a workspace, the backend's translations (validation messages).
+    if let Some(parent) = root.parent()
+        && let Ok(rd) = std::fs::read_dir(parent)
+    {
+        for e in rd.flatten() {
+            let d = e.path();
+            if d == root || !d.is_dir() {
+                continue;
+            }
+            for lang in [d.join("lang"), d.join("resources/lang")] {
+                if lang.is_dir() {
+                    read_tree(&lang, &["php", "json"]);
+                }
+            }
+        }
+    }
+    text
+}
+
+/// The first quoted text after `at` on a line.
+fn literal_after(line: &str, at: usize) -> Option<&str> {
+    let rest = &line[at..];
+    let q = rest.find(['\'', '"', '`'])?;
+    let close_paren = rest.find(')').unwrap_or(rest.len());
+    if q > close_paren {
+        return None;
+    }
+    let quote = rest.as_bytes()[q] as char;
+    let body = &rest[q + 1..];
+    body.find(quote).map(|e| &body[..e])
+}
+
+/// Checks on page content that only stored data can satisfy. Left out:
+/// negated checks and `toHaveCount(0)`; text the test itself typed or sent;
+/// sentences and text found in the app's own code or translations.
+fn data_checks(src: &str, app_text: &mut AppText) -> usize {
+    let mut typed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for line in src.lines() {
+        let entering = [
+            "fill(",
+            "type(",
+            "selectOption(",
+            "pressSequentially(",
+            "data:",
+            "body:",
+            "form:",
+            "post(",
+            "put(",
+            "patch(",
+        ]
+        .iter()
+        .any(|k| line.contains(k));
+        if entering {
+            let mut rest = line;
+            while let Some(q) = rest.find(['\'', '"', '`']) {
+                let quote = rest.as_bytes()[q] as char;
+                let body = &rest[q + 1..];
+                let Some(e) = body.find(quote) else { break };
+                typed.insert(&body[..e]);
+                rest = &body[e + 1..];
+            }
+        }
+    }
+    let mut n = 0;
+    for line in src.lines() {
+        if line.contains(".not.") || line.contains("not.to") {
+            continue;
+        }
+        for check in BROWSER_CHECKS {
+            for (at, _) in line.match_indices(check) {
+                let after = at + check.len();
+                if *check == "toHaveCount(" && line[after..].trim_start().starts_with('0') {
+                    continue;
+                }
+                // `getByText('x')` inside a line: its own literal; otherwise
+                // the literal the assertion compares with.
+                match literal_after(line, after) {
+                    Some(lit) => {
+                        let sentence = lit.split_whitespace().count() >= 4;
+                        if typed.contains(lit)
+                            || sentence
+                            || lit.trim().is_empty()
+                            || app_text.has(lit)
+                        {
+                            continue;
+                        }
+                        n += 1;
+                    }
+                    // A count depends on how much is stored; a text pattern
+                    // (`/at least 8 characters/`) is the app's own wording.
+                    None => {
+                        if matches!(*check, "toHaveCount(" | "have.length") {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
 /// `class XTest extends Base` → `Base`.
 fn parent_class(src: &str) -> Option<String> {
     let after = src.split(" extends ").nth(1)?;
@@ -167,6 +336,7 @@ fn imports(spec: &str, src: &str) -> Vec<String> {
 /// `(test file, why)` for tests that read data they never create.
 pub fn find(root: &Path, files: &[String]) -> Vec<(String, String)> {
     let (browser_seeded, php_seeded) = seeds_everything(root);
+    let mut app_text = AppText::new(root);
     let mut out = Vec::new();
     for f in files.iter().filter(|f| is_test_path(f)) {
         let Ok(src) = std::fs::read_to_string(root.join(f)) else {
@@ -198,8 +368,7 @@ pub fn find(root: &Path, files: &[String]) -> Vec<(String, String)> {
                 continue;
             }
             // `toHaveCount(0)` checks that something is absent: no data needed.
-            let absent = count(&src, &["toHaveCount(0)"]);
-            let checks = count(&src, BROWSER_CHECKS).saturating_sub(absent);
+            let checks = data_checks(&src, &mut app_text);
             // Setup can live in helpers the spec imports (`../support/cart`).
             let helpers: usize = imports(f, &src)
                 .iter()

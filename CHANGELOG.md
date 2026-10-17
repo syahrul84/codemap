@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest:
+  - Release steps: static Nuxt apps (`nuxt generate`, `ssr: false`, a static preset) get `generate` and "deploy .output/public" instead of a Node server restart; Next.js `output: 'export'` too. Laravel + Vite cites only files the bundler reads.
+  - Live-data tests: text the test typed or sent itself, negated checks, sentences, text patterns and text from the app's own code or translations no longer count.
+  - Made-up examples: everyday words (`save`, `phone`, `error`) pass; only the project's compound names and its own name are blocked.
+  - Resending a report for the same answer updates it instead of counting a repeat, and replaces the evidence.
+  - The send result names the AI app when it does not offer question forms, with the terminal command first.
+  - Development builds report `<version>-dev+<commit>`; release builds (and a checkout of the release tag) report the plain version.
 - Wrong-answer reports: an 11th tool, `report_wrong_answer`, records an answer codemap got wrong (every answer now has `meta.call_id`). codemap also records contradictions, tool failures and slow answers on its own. `codemap reports` lists, re-checks, exports, closes and clears them. A report with a made-up example that reproduces (checked to hold nothing from the real project) can be sent as a GitHub issue after the person agrees.
 - Release check: `release_steps`, the server steps a release needs (installs, migrations, caches, queue and server restarts, rebuilds, new environment variables), worked out from what changed.
 - Project rules tied to files (`[[rules]]` in `.codemap.toml`), returned by the release check and by change impact when a matching file changes.

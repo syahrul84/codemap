@@ -20,4 +20,5 @@ pub use scan::{ScanOptions, ScanReport};
 pub use store::Store;
 
 /// Version of the `codemap` workspace.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// `0.1.2` for a release build, `0.1.2-dev+abc1234` otherwise (see build.rs).
+pub const VERSION: &str = env!("CODEMAP_VERSION");

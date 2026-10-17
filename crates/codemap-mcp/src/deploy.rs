@@ -68,6 +68,114 @@ fn js_install(root: &Path) -> (&'static str, &'static str) {
     ("npm install", "npm run build")
 }
 
+/// How a JavaScript app is served in production.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Served {
+    /// Static files (`nuxt generate`, `ssr: false`, Next.js `output: 'export'`):
+    /// the folder they are written to.
+    Static(&'static str),
+    /// A Node server (`nuxt build` + `node .output/server`, `next start`).
+    Node,
+    /// A plain single-page app (Vite): its build folder is uploaded.
+    Files,
+}
+
+/// Build and deploy scripts next to the app (and one folder up, where a
+/// workspace keeps them): Makefiles, shell scripts, Dockerfiles, CI files.
+fn deploy_scripts(root: &Path) -> String {
+    let mut text = String::new();
+    let mut dirs = vec![root.to_path_buf()];
+    if let Some(parent) = root.parent() {
+        dirs.push(parent.to_path_buf());
+        if let Ok(rd) = std::fs::read_dir(parent) {
+            dirs.extend(
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir() && p != root),
+            );
+        }
+    }
+    for d in [".github/workflows", "scripts", "docker", "deploy"] {
+        dirs.push(root.join(d));
+    }
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let script = name == "Makefile"
+                || name.starts_with("Dockerfile")
+                || name.ends_with(".sh")
+                || name.ends_with(".yml")
+                || name.ends_with(".yaml")
+                || name.starts_with("ecosystem.config")
+                || name == "Procfile";
+            if script
+                && !name.ends_with("lock.yaml")
+                && e.metadata().is_ok_and(|m| m.is_file() && m.len() < 500_000)
+            {
+                text.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
+
+fn how_served(root: &Path, package: &str) -> Served {
+    let read = |f: &str| std::fs::read_to_string(root.join(f)).unwrap_or_default();
+    let config = [
+        "nuxt.config.ts",
+        "nuxt.config.js",
+        "nuxt.config.mjs",
+        "next.config.js",
+        "next.config.mjs",
+        "next.config.ts",
+    ]
+    .iter()
+    .map(|f| read(f))
+    .collect::<String>();
+    let scripts = deploy_scripts(root);
+    let compact: String = config.split_whitespace().collect();
+    if package.contains("\"next\"") {
+        return if compact.contains("output:'export'") || compact.contains("output:\"export\"") {
+            Served::Static("out/")
+        } else {
+            Served::Node
+        };
+    }
+    if !package.contains("\"nuxt\"") {
+        return Served::Files;
+    }
+    // A top-level `ssr: false` (route rules set it inside `{ … }` on one line).
+    let spa = config.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("ssr:") && t.contains("false") && !t.contains('{')
+    });
+    let static_preset =
+        compact.contains("preset:'static'") || compact.contains("preset:\"static\"");
+    let generated = [
+        "pnpm generate",
+        "npm run generate",
+        "yarn generate",
+        "bun run generate",
+        "nuxt generate",
+        "nuxi generate",
+        "pnpm run generate",
+    ]
+    .iter()
+    .any(|g| scripts.contains(g));
+    let node = scripts.contains(".output/server")
+        || scripts.contains("pm2 ")
+        || read("package.json").contains("node .output/server");
+    if (spa || static_preset || generated) && !node {
+        Served::Static(".output/public/")
+    } else {
+        Served::Node
+    }
+}
+
 fn is_doc_or_test(path: &str) -> bool {
     crate::usages::is_test_path(path)
         || path.ends_with(".md")
@@ -240,10 +348,23 @@ pub fn steps(store: &Store, project: &Project, from: &str, changes: &[Change]) -
             }
             if laravel {
                 // Laravel + Vite: only what the bundler builds.
-                (p.starts_with("resources/")
-                    && !p.starts_with("resources/views/")
-                    && !p.starts_with("resources/lang/"))
+                // Laravel + Vite: what the bundler reads (scripts, styles,
+                // and Blade views when Tailwind scans them), not files PHP
+                // reads at runtime such as icons.
+                let tailwind = package.contains("tailwindcss");
+                [
+                    "resources/js/",
+                    "resources/ts/",
+                    "resources/css/",
+                    "resources/sass/",
+                    "resources/scss/",
+                    "resources/vue/",
+                ]
+                .iter()
+                .any(|d| p.starts_with(d))
+                    || (tailwind && p.starts_with("resources/views/") && p.ends_with(".blade.php"))
                     || config_file(p)
+                    || p == "package.json"
             } else {
                 !p.ends_with(".php")
                     && !p.starts_with("database/")
@@ -253,26 +374,42 @@ pub fn steps(store: &Store, project: &Project, from: &str, changes: &[Change]) -
             }
         });
         if !source.is_empty() {
-            let server = package.contains("\"nuxt\"") || package.contains("\"next\"");
+            let how = how_served(root, &package);
+            let (build_cmd, output) = match how {
+                Served::Static(out_dir) => (
+                    build
+                        .replace("run build", "run generate")
+                        .replace("yarn build", "yarn generate"),
+                    Some(out_dir),
+                ),
+                _ => (build.to_owned(), None),
+            };
+            let build_cmd = if package.contains("\"next\"") {
+                build.to_owned()
+            } else {
+                build_cmd
+            };
             out.push(step(
-                build,
+                &build_cmd,
                 format!(
                     "the app changed ({}); its built files must be rebuilt",
                     some(&source)
                 ),
             ));
-            out.push(step(
-                if server {
-                    "restart the app's Node server"
-                } else {
-                    "deploy the new build output"
-                },
-                if server {
-                    "the server keeps serving the old build until restarted".into()
-                } else {
-                    "browsers load the files from the build folder".into()
-                },
-            ));
+            match (how, output) {
+                (Served::Static(_), Some(dir)) => out.push(step(
+                    &format!("deploy the static files in {dir}"),
+                    "the app is built as static files (no Node server to restart)".into(),
+                )),
+                (Served::Node, _) => out.push(step(
+                    "restart the app's Node server",
+                    "the server keeps serving the old build until restarted".into(),
+                )),
+                _ => out.push(step(
+                    "deploy the new build output",
+                    "browsers load the files from the build folder".into(),
+                )),
+            }
         }
     }
 
