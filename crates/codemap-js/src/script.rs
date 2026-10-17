@@ -124,6 +124,40 @@ struct Analyzer<'s, 'a> {
     /// Names bound to props: `(binding, prop)`; prop is empty for the whole
     /// props object (`const props = defineProps()`).
     prop_bindings: Vec<(String, String)>,
+    /// Request bodies that spoof a method: `const payload = { _method: 'PATCH' }`,
+    /// `payload._method = 'PUT'`, `form.append('_method', 'PUT')`.
+    /// Keyed by name, each with the function it is declared in; `None` hides
+    /// an outer one. A method starting with `?` is set only on some paths.
+    spoofs: HashMap<String, Vec<ScopedSpoof>>,
+    /// Code that runs only sometimes: `if` branches, `?:` branches, the right
+    /// side of `&&` / `||` / `??`.
+    cond_spans: Vec<(u32, u32)>,
+    /// Parameters typed as a small choice of strings (`kind: 'a' | 'b'`, or
+    /// an alias of one): `(name, (start of the parameter, end of the
+    /// parameter list), the values)`.
+    /// Every parameter is kept (`None`: not such a type), so one hides an
+    /// outer one of the same name.
+    param_types: Vec<TypedParam>,
+    /// End of the parameter list being visited.
+    params_end: u32,
+    /// Every parameter's position: `(name, index, (start, end of the list))`.
+    param_index: Vec<(String, u32, (u32, u32))>,
+    /// Named code spans: functions bound to a name, objects bound to a name,
+    /// and functions in an object property (`api = { save: (…) => … }`).
+    names: Vec<(u32, u32, String)>,
+    /// Component computed properties / methods that return a small choice of
+    /// strings (`reportSegment() { return v ? 'a' : 'b' }`), for `this.x`.
+    member_options: HashMap<String, Vec<String>>,
+    /// Callbacks and loop bodies that copy an object into a body built here
+    /// (`Object.entries(payload).forEach(…)`): calls inside them hand nothing off.
+    copied_spans: Vec<(u32, u32)>,
+    /// Request bodies built in a variable: an object literal, `new FormData()`
+    /// with `.append('k', …)`, plus `x.k = …` assignments.
+    /// Keyed by name, each with the function it is declared in.
+    bodies: HashMap<String, Vec<ScopedBody>>,
+    /// Constants anywhere (also inside functions) holding a small choice of
+    /// strings: `const prefix = kind === 'x' ? '/area/x' : '/area'`.
+    local_options: HashMap<String, Vec<String>>,
 }
 
 /// A small URL builder: `(id, suffix = '') => \`/outlets/${id}${suffix}\``.
@@ -151,7 +185,7 @@ type ResultBinding = (u32, String, (u32, u32), Vec<String>);
 enum TypeDef<'a> {
     Interface(&'a TSInterfaceDeclaration<'a>),
     Literal(&'a TSTypeLiteral<'a>),
-    Other,
+    Other(&'a TSType<'a>),
 }
 
 const MAX_SIG: usize = 160;
@@ -196,6 +230,16 @@ where
             returns: Vec::new(),
             direct_returns: HashSet::new(),
             prop_bindings: Vec::new(),
+            spoofs: HashMap::new(),
+            cond_spans: Vec::new(),
+            param_types: Vec::new(),
+            params_end: 0,
+            param_index: Vec::new(),
+            names: Vec::new(),
+            member_options: HashMap::new(),
+            copied_spans: Vec::new(),
+            bodies: HashMap::new(),
+            local_options: HashMap::new(),
         }
     }
 
@@ -346,6 +390,7 @@ where
             self.facts.registration_globs.clear();
         }
         self.finish_api_calls();
+        self.finish_fn_spoofs();
         dedupe(&mut self.facts.composables);
         dedupe(&mut self.facts.emitted);
     }
@@ -458,7 +503,7 @@ where
             Declaration::TSTypeAliasDeclaration(t) => {
                 let def = match &t.type_annotation {
                     TSType::TSTypeLiteral(l) => TypeDef::Literal(l),
-                    _ => TypeDef::Other,
+                    other => TypeDef::Other(other),
                 };
                 self.types.insert(t.id.name.as_str(), def);
                 let def = TsTypeDef {
@@ -2304,12 +2349,54 @@ where
         else {
             return;
         };
-        let spoofed = c
+        let found = c
             .arguments
             .iter()
             .skip(1)
             .filter_map(|a| a.as_expression())
-            .find_map(|a| spoofed_method(a, 0))
+            .find_map(|a| self.spoof_of(a));
+        // `@helper`: built by a function in another file, resolved later.
+        let (found, mut spoof_via) = match found {
+            Some(m) if m.starts_with('@') => (None, Some(m)),
+            other => (other, None),
+        };
+        // `?_method=PUT` in the URL: Laravel reads it from the query string too.
+        let found = found.or_else(|| {
+            let text = self.compact(url_expr.span(), 300);
+            let at = text.find("_method=")?;
+            let m: String = text[at + 8..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphabetic())
+                .collect::<String>()
+                .to_ascii_uppercase();
+            matches!(m.as_str(), "PUT" | "PATCH" | "DELETE").then_some(m)
+        });
+        // The body is a parameter (or spreads one, or converts one:
+        // `toFormData({ ...record })`): its callers decide.
+        let body_param = c
+            .arguments
+            .get(1)
+            .and_then(|a| a.as_expression())
+            .and_then(|e| {
+                body_params(e, 0)
+                    .into_iter()
+                    .find(|id| self.param_of(id.name.as_str(), id.span.start).is_some())
+            });
+        // Both may apply (`toFormData(payload)` with `payload` a parameter):
+        // tried in order when files are linked.
+        if found.is_none()
+            && let Some(id) = body_param
+            && let Some((key, idx)) = self.param_of(id.name.as_str(), id.span.start)
+        {
+            let param = format!("param:{key}#{idx}");
+            spoof_via = Some(match spoof_via {
+                Some(h) => format!("{h};{param}"),
+                None => param,
+            });
+        }
+        let spoofed = found
+            .clone()
+            .map(|m| either(method.as_deref(), m))
             .or(method.clone());
         self.record_url_template(c, url_expr, spoofed);
         // Through a project wrapper: keep the arguments to fill in its URL.
@@ -2330,19 +2417,50 @@ where
         let Some((url, base_var, optional_tail)) = self.url_of(url_expr, trusted) else {
             return;
         };
-        // Laravel method spoofing: `api.post(url, { …, _method: 'PUT' })`.
-        let method = c
-            .arguments
-            .iter()
-            .skip(1)
-            .filter_map(|a| a.as_expression())
-            .find_map(|a| spoofed_method(a, 0))
-            .or(method);
+        // Laravel method spoofing: `api.post(url, { …, _method: 'PUT' })`,
+        // also through a variable, an assignment or a helper's object.
+        let method = found.map(|m| either(method.as_deref(), m)).or(method);
         let external =
             (url.starts_with("http://") || url.starts_with("https://") || url.starts_with("//"))
                 && !url.contains("localhost");
         let url = normalize_url(&url);
+        let (prefixes, prefix_note) = if base_var {
+            self.prefix_options(url_expr)
+        } else {
+            (Vec::new(), None)
+        };
+        let (variants, variants_loose) = if base_var {
+            (Vec::new(), false)
+        } else {
+            self.url_variants(url_expr)
+        };
+        let sends = trusted.then(|| {
+            let mut s = self.payload(c, method.as_deref());
+            s.merge(self.url_query(url_expr));
+            s
+        });
+        // `draftInvoiceApi.post`: the names of the spans around the call.
+        let mut around: Vec<&(u32, u32, String)> = self
+            .names
+            .iter()
+            .filter(|(a, b, _)| *a <= c.span.start && c.span.start <= *b)
+            .collect();
+        around.sort_by_key(|(a, _, _)| *a);
+        let in_member = (!around.is_empty()).then(|| {
+            around
+                .iter()
+                .map(|(_, _, n)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(".")
+        });
         let call = ApiCall {
+            variants_loose,
+            in_member,
+            spoof_via,
+            variants,
+            sends,
+            prefixes,
+            prefix_note,
             method,
             raw: self.compact(url_expr.span(), 100),
             url,
@@ -2621,6 +2739,41 @@ where
             .calls
             .last()
             .is_some_and(|(_, start, _, _)| *start == c.span.start);
+        if let Expression::StaticMemberExpression(mm) = c.callee.without_parentheses()
+            && matches!(mm.object.without_parentheses(), Expression::Identifier(_))
+            && self.facts.member_calls.len() < 2000
+        {
+            let n = self.compact(mm.span, 80);
+            if !self.facts.member_calls.contains(&n) {
+                self.facts.member_calls.push(n);
+            }
+        }
+        // A body that spoofs its method, passed to a project function.
+        if !is_api && self.facts.spoof_calls.len() < 2000 {
+            let callee = match c.callee.without_parentheses() {
+                Expression::Identifier(i) => Some(i.name.to_string()),
+                Expression::StaticMemberExpression(m) => match m.object.without_parentheses() {
+                    Expression::Identifier(o) => Some(format!("{}.{}", o.name, m.property.name)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(callee) =
+                callee.filter(|c| !c.starts_with("Object.") && !c.starts_with("console."))
+            {
+                for (i, a) in c.arguments.iter().enumerate() {
+                    // `@helper` (built by an imported helper) is resolved when
+                    // files are linked.
+                    if let Some(m) = a.as_expression().and_then(|e| self.spoof_of(e)) {
+                        self.facts.spoof_calls.push(SpoofCall {
+                            callee: callee.clone(),
+                            index: i as u32,
+                            method: m,
+                        });
+                    }
+                }
+            }
+        }
         if !is_api
             && let Expression::Identifier(id) = c.callee.without_parentheses()
             && !NOT_DATA_FNS.contains(&id.name.as_str())
@@ -3075,6 +3228,81 @@ where
     's: 'a,
 {
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        let in_copy = self
+            .copied_spans
+            .iter()
+            .any(|(a, b)| *a <= it.span.start && it.span.start <= *b);
+        // `Object.entries(payload).forEach(([k, v]) => form.append(k, v))`, also
+        // through a local helper: the form gets payload's keys.
+        if let Some(m) = it.callee.without_parentheses().as_member_expression()
+            && m.static_property_name() == Some("forEach")
+            && let Expression::CallExpression(inner) = m.object().without_parentheses()
+            && let Some(src) = self.entries_source(inner)
+            && let Some(cb) = it.arguments.first().and_then(|a| a.as_expression())
+        {
+            self.copy_into(src, cb, it.span.start);
+        }
+        // A body handed to other code may get keys codemap does not see.
+        if !in_copy && self.api_call_parts(it).is_none() {
+            let callee = self.compact(it.callee.span(), 40);
+            let harmless = callee == "JSON.stringify"
+                || callee.starts_with("console.")
+                || callee.starts_with("Object.")
+                || callee.ends_with(".append")
+                || callee.ends_with(".set");
+            if !harmless {
+                for a in it.arguments.iter().filter_map(|a| a.as_expression()) {
+                    if let Expression::Identifier(id) = strip_ts(a)
+                        && let Some(body) = self.body_mut(id.name.as_str(), id.span.start)
+                    {
+                        body.merge(Sent::unknown(format!(
+                            "`{}` is passed to `{callee}(…)`, which may add keys",
+                            id.name
+                        )));
+                    }
+                }
+            }
+        }
+        // `form.append('name', …)` / `params.set('q', …)` on a body built here
+        // (a copy loop's own `append(k, v)` is already counted).
+        if !in_copy
+            && let Some(m) = it.callee.without_parentheses().as_member_expression()
+            && matches!(m.static_property_name(), Some("append" | "set"))
+            && let Expression::Identifier(obj) = m.object().without_parentheses()
+            && let Some(body) = self.body_mut(obj.name.as_str(), it.span.start)
+        {
+            match it
+                .arguments
+                .first()
+                .and_then(|a| a.as_expression())
+                .and_then(string_value)
+            {
+                Some(k) => body.push(top_key(&k)),
+                None => body.merge(Sent::unknown(format!(
+                    "`{}` gets a key that is not a string literal",
+                    obj.name
+                ))),
+            }
+        }
+        // `form.append('_method', 'PUT')` on FormData.
+        if let Some(m) = it.callee.without_parentheses().as_member_expression()
+            && m.static_property_name() == Some("append")
+            && let Expression::Identifier(obj) = m.object().without_parentheses()
+            && let (Some(k), Some(v)) = (
+                it.arguments
+                    .first()
+                    .and_then(|a| a.as_expression())
+                    .and_then(string_value),
+                it.arguments
+                    .get(1)
+                    .and_then(|a| a.as_expression())
+                    .and_then(string_value),
+            )
+            && k == "_method"
+        {
+            let m = self.maybe(v.to_ascii_uppercase(), it.span.start);
+            self.set_spoof(obj.name.as_str(), m, it.span.start);
+        }
         self.on_call(it);
         walk::walk_call_expression(self, it);
     }
@@ -3140,6 +3368,96 @@ where
         walk::walk_jsx_opening_element(self, it);
     }
 
+    fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+        // `for (const [k, v] of Object.entries(payload)) form.append(k, v)`.
+        if let Expression::CallExpression(inner) = it.right.without_parentheses()
+            && let Some(src) = self.entries_source(inner)
+        {
+            let (start, end) = (it.body.span().start, it.body.span().end);
+            let names = idents_in_statement(&it.body);
+            self.copy_names(src, &names, (start, end), it.span.start);
+        }
+        walk::walk_for_of_statement(self, it);
+    }
+
+    fn visit_formal_parameters(&mut self, it: &FormalParameters<'a>) {
+        let before = self.params_end;
+        self.params_end = it.span.end;
+        for (i, p) in it.items.iter().enumerate() {
+            if let BindingPattern::BindingIdentifier(id) = &p.pattern {
+                self.param_index
+                    .push((id.name.to_string(), i as u32, (p.span.start, it.span.end)));
+            }
+        }
+        walk::walk_formal_parameters(self, it);
+        self.params_end = before;
+    }
+
+    fn visit_object_property(&mut self, it: &ObjectProperty<'a>) {
+        // `seg() { return v ? 'a' : 'b' }` / `seg: () => …`: values of `this.seg`.
+        if let Some(k) = it.key.static_name() {
+            let returned: Option<&Expression<'a>> = match strip_ts(&it.value) {
+                Expression::FunctionExpression(f) => {
+                    f.body.as_ref().and_then(|b| match b.statements.as_slice() {
+                        [Statement::ReturnStatement(r)] => r.argument.as_ref(),
+                        _ => None,
+                    })
+                }
+                Expression::ArrowFunctionExpression(a) => a.get_expression(),
+                _ => None,
+            };
+            if let Some(v) = returned
+                .and_then(|r| self.string_options(r, 1))
+                .filter(|v| v.len() > 1 && v.len() <= MAX_PREFIXES)
+            {
+                self.member_options.insert(k.to_string(), v);
+            }
+        }
+        if matches!(
+            strip_ts(&it.value),
+            Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+        ) && let Some(k) = it.key.static_name()
+        {
+            self.names
+                .push((it.value.span().start, it.value.span().end, k.to_string()));
+        }
+        walk::walk_object_property(self, it);
+    }
+
+    fn visit_formal_parameter(&mut self, it: &FormalParameter<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &it.pattern {
+            let v = it
+                .type_annotation
+                .as_ref()
+                .and_then(|t| self.type_options(&t.type_annotation, 0));
+            self.param_types
+                .push((id.name.to_string(), (it.span.start, self.params_end), v));
+        }
+        walk::walk_formal_parameter(self, it);
+    }
+
+    fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
+        self.cond_spans
+            .push((it.consequent.span().start, it.consequent.span().end));
+        if let Some(alt) = &it.alternate {
+            self.cond_spans.push((alt.span().start, alt.span().end));
+        }
+        walk::walk_if_statement(self, it);
+    }
+
+    fn visit_conditional_expression(&mut self, it: &ConditionalExpression<'a>) {
+        for e in [&it.consequent, &it.alternate] {
+            self.cond_spans.push((e.span().start, e.span().end));
+        }
+        walk::walk_conditional_expression(self, it);
+    }
+
+    fn visit_logical_expression(&mut self, it: &LogicalExpression<'a>) {
+        self.cond_spans
+            .push((it.right.span().start, it.right.span().end));
+        walk::walk_logical_expression(self, it);
+    }
+
     fn visit_return_statement(&mut self, it: &ReturnStatement<'a>) {
         if let Some(e) = &it.argument {
             self.on_return(e, it.span.start);
@@ -3159,6 +3477,51 @@ where
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+        if let BindingPattern::BindingIdentifier(id) = &it.id
+            && let Some(init) = it.init.as_ref()
+            && matches!(
+                strip_ts(init),
+                Expression::ArrowFunctionExpression(_)
+                    | Expression::FunctionExpression(_)
+                    | Expression::ObjectExpression(_)
+            )
+        {
+            self.names
+                .push((init.span().start, init.span().end, id.name.to_string()));
+        }
+        // A constant holding a small choice of strings (a URL prefix).
+        if let BindingPattern::BindingIdentifier(id) = &it.id
+            && let Some(init) = it.init.as_ref()
+            && let Some(opts) = self.string_options(init, 0)
+        {
+            self.local_options.insert(id.name.to_string(), opts);
+        }
+        // A request body built in a variable, kept for the call that sends it;
+        // any other value hides an outer one of the same name.
+        if let BindingPattern::BindingIdentifier(id) = &it.id {
+            let scope = self.scope();
+            let body = it.init.as_ref().and_then(|init| self.body_init(init));
+            let name = id.name.as_str();
+            if body.is_some() || self.bodies.contains_key(name) {
+                let body = body.unwrap_or_else(|| {
+                    Sent::unknown(format!("the payload `{name}` is not an object built here"))
+                });
+                let list = self.bodies.entry(name.to_owned()).or_default();
+                list.retain(|(s, _)| *s != scope);
+                list.push((scope, body));
+            }
+        }
+        // A request body that spoofs its method, kept for the call that sends it.
+        if let BindingPattern::BindingIdentifier(id) = &it.id {
+            let m = it.init.as_ref().and_then(|init| self.spoof_of(init));
+            let name = id.name.as_str();
+            if m.is_some() || self.spoofs.contains_key(name) {
+                let scope = self.scope();
+                let list = self.spoofs.entry(name.to_owned()).or_default();
+                list.retain(|(s, _)| *s != scope);
+                list.push((scope, m));
+            }
+        }
         // Possible HTTP wrappers: `const api = { get(endpoint, id) {…} }` and
         // `const getRecord = (endpoint, id) => …`.
         if let BindingPattern::BindingIdentifier(id) = &it.id
@@ -3309,6 +3672,34 @@ where
 
     fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
         let target = self.compact(it.left.span(), 60);
+        // `payload.note = …` / `payload['note'] = …` on a body built here.
+        if let Some((root, rest)) = target.split_once(['.', '['])
+            && let Some(body) = self.body_mut(root, it.span.start)
+        {
+            let quoted = rest
+                .strip_prefix(['\'', '"'])
+                .and_then(|r| r.split_once(['\'', '"']))
+                .map(|(k, _)| k);
+            let key = if target.as_bytes()[root.len()] == b'.' {
+                Some(top_key(rest))
+            } else {
+                quoted
+            };
+            match key {
+                Some(k) if !k.is_empty() => body.push(k),
+                _ => body.merge(Sent::unknown(format!("`{root}` gets a computed key"))),
+            }
+        }
+        // `payload._method = 'PUT'` / `payload['_method'] = 'PUT'`.
+        if let Some(root) = target
+            .strip_suffix("._method")
+            .or_else(|| target.strip_suffix("['_method']"))
+            .or_else(|| target.strip_suffix("[\"_method\"]"))
+            && let Some(m) = string_value(&it.right)
+        {
+            let m = self.maybe(m.to_ascii_uppercase(), it.span.start);
+            self.set_spoof(root, m, it.span.start);
+        }
         let mut right = strip_ts(&it.right);
         while let Expression::AwaitExpression(a) = right {
             right = strip_ts(&a.argument);
@@ -3466,6 +3857,13 @@ const NOT_DATA_FNS: &[&str] = &[
     "console",
 ];
 
+/// A request body variable with the function (span) it is declared in.
+type ScopedBody = ((u32, u32), Sent);
+/// A spoofed method (or a hiding `None`) with the function it is declared in.
+type ScopedSpoof = ((u32, u32), Option<String>);
+/// A parameter, `(start, end of its list)`, and the strings its type allows.
+type TypedParam = (String, (u32, u32), Option<Vec<String>>);
+
 struct CallParts<'b, 'a> {
     method: Option<String>,
     url: &'b Expression<'a>,
@@ -3477,6 +3875,1231 @@ struct CallParts<'b, 'a> {
 /// Looks like a translation key (`orders.title`, `Save`), not arbitrary text.
 pub fn is_i18n_key(k: &str) -> bool {
     !k.is_empty() && k.len() <= 200 && !k.starts_with('/') && !k.contains("://")
+}
+
+/// The most values a URL prefix is expanded into.
+const MAX_PREFIXES: usize = 8;
+
+impl<'a> Analyzer<'_, 'a> {
+    /// The leading variable of a URL (`${prefix(kind)}/contacts`, `base + '/x'`),
+    /// when it is a small choice of strings: its possible values.
+    fn prefix_options(&self, url: &Expression<'a>) -> (Vec<String>, Option<String>) {
+        let lead = match strip_ts(url).without_parentheses() {
+            Expression::TemplateLiteral(t)
+                if t.quasis.first().is_some_and(|q| q.value.raw.is_empty()) =>
+            {
+                t.expressions.first()
+            }
+            Expression::BinaryExpression(b) => {
+                let mut left = &b.left;
+                while let Expression::BinaryExpression(inner) = left.without_parentheses() {
+                    left = &inner.left;
+                }
+                Some(left)
+            }
+            _ => None,
+        };
+        let Some(lead) = lead else {
+            return (Vec::new(), None);
+        };
+        match self.string_options(lead, 0) {
+            Some(v) if v.len() <= MAX_PREFIXES => (v, None),
+            Some(v) => (
+                Vec::new(),
+                Some(format!(
+                    "prefix not expanded: {} possible values, more than the limit of {MAX_PREFIXES}",
+                    v.len()
+                )),
+            ),
+            None => (Vec::new(), Some(self.why_not_expanded(lead))),
+        }
+    }
+
+    /// Why a URL prefix has no fixed choice of values, in words.
+    fn why_not_expanded(&self, e: &Expression<'a>) -> String {
+        let text = self.compact(e.span(), 50);
+        let why = match strip_ts(e).without_parentheses() {
+            Expression::StaticMemberExpression(_) | Expression::ComputedMemberExpression(_) => {
+                format!(
+                    "it comes from an object property (`{text}`), which codemap does not follow"
+                )
+            }
+            Expression::Identifier(_) => {
+                format!("`{text}` is a parameter or a value set at run time")
+            }
+            Expression::CallExpression(c) => match c.callee.without_parentheses() {
+                Expression::Identifier(f)
+                    if self.functions.contains_key(f.name.as_str())
+                        || self.consts.contains_key(f.name.as_str()) =>
+                {
+                    format!(
+                        "the helper `{}` does not return a fixed choice of strings",
+                        f.name
+                    )
+                }
+                _ => format!("it comes from a call codemap cannot read (`{text}`)"),
+            },
+            Expression::ConditionalExpression(_) => {
+                format!("a branch of `{text}` is not a fixed string")
+            }
+            _ => format!("`{text}` is not a fixed choice of strings"),
+        };
+        format!("prefix not expanded: {why}")
+    }
+
+    /// The strings an expression can be: literals, a condition between
+    /// literals, a constant holding one, or a small function returning one.
+    fn string_options(&self, e: &Expression<'a>, depth: u8) -> Option<Vec<String>> {
+        if depth > 4 {
+            return None;
+        }
+        let out = match strip_ts(e).without_parentheses() {
+            Expression::StringLiteral(s) => vec![s.value.to_string()],
+            Expression::TemplateLiteral(t) if t.expressions.is_empty() => {
+                vec![
+                    t.quasis
+                        .first()
+                        .map(|q| q.value.raw.to_string())
+                        .unwrap_or_default(),
+                ]
+            }
+            Expression::ConditionalExpression(c) => {
+                let mut v = self.string_options(&c.consequent, depth + 1)?;
+                for x in self.string_options(&c.alternate, depth + 1)? {
+                    if !v.contains(&x) {
+                        v.push(x);
+                    }
+                }
+                v
+            }
+            Expression::Identifier(id) => {
+                let name = id.name.as_str();
+                let (start, _) = self.scope();
+                // A parameter of this function: inside an arrow's span, or
+                // just before a function's body (after its return type).
+                let own_end = self
+                    .param_types
+                    .iter()
+                    .map(|(_, (_, end), _)| *end)
+                    .filter(|end| *end <= start && start - *end <= 300)
+                    .max();
+                let typed = self
+                    .param_types
+                    .iter()
+                    .filter(|(n, (at, end), _)| {
+                        n == name && *at <= id.span.start && (*at >= start || Some(*end) == own_end)
+                    })
+                    .max_by_key(|(_, (at, _), _)| *at);
+                if let Some((_, _, v)) = typed {
+                    v.clone()?
+                } else if let Some(v) = self.local_options.get(name) {
+                    v.clone()
+                } else {
+                    let init = *self.consts.get(name)?;
+                    self.string_options(init, depth + 1)?
+                }
+            }
+            Expression::CallExpression(c) => {
+                let Expression::Identifier(f) = c.callee.without_parentheses() else {
+                    return None;
+                };
+                self.returned_options(f.name.as_str(), depth)?
+            }
+            // `this.reportSegment`: a computed property of the component.
+            Expression::StaticMemberExpression(m)
+                if matches!(
+                    m.object.without_parentheses(),
+                    Expression::ThisExpression(_)
+                ) =>
+            {
+                self.member_options.get(m.property.name.as_str())?.clone()
+            }
+            _ => return None,
+        };
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The strings a type allows: `'a' | 'b'`, or an alias of such a union.
+    fn type_options(&self, t: &TSType<'_>, depth: u8) -> Option<Vec<String>> {
+        if depth > 3 {
+            return None;
+        }
+        match t {
+            TSType::TSLiteralType(l) => match &l.literal {
+                TSLiteral::StringLiteral(s) => Some(vec![s.value.to_string()]),
+                _ => None,
+            },
+            TSType::TSUnionType(u) => {
+                let mut out: Vec<String> = Vec::new();
+                for x in &u.types {
+                    for v in self.type_options(x, depth + 1)? {
+                        if !out.contains(&v) {
+                            out.push(v);
+                        }
+                    }
+                }
+                (out.len() <= MAX_PREFIXES).then_some(out)
+            }
+            TSType::TSParenthesizedType(p) => self.type_options(&p.type_annotation, depth + 1),
+            TSType::TSTypeReference(r) if r.type_arguments.is_none() => {
+                let TSTypeName::IdentifierReference(id) = &r.type_name else {
+                    return None;
+                };
+                match self.types.get(id.name.as_str())? {
+                    TypeDef::Other(t) => self.type_options(t, depth + 1),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Every full URL of a template whose embedded values are a small known
+    /// choice; values that are not known stay `{}`. The URLs are built per
+    /// value of each variable the template depends on, so one variable that
+    /// decides two parts (`${kind}${kind === 'rates' ? '/bulk' : ''}`) gives
+    /// only the URLs it can make. `true` with them: some parts were combined
+    /// without knowing they go together, so a URL may never be made.
+    fn url_variants(&self, e: &Expression<'a>) -> (Vec<String>, bool) {
+        let Expression::TemplateLiteral(t) = strip_ts(e).without_parentheses() else {
+            return (Vec::new(), false);
+        };
+        // The variables the parts depend on, with their values.
+        let mut drivers: Vec<(String, Vec<String>)> = Vec::new();
+        for x in &t.expressions {
+            let mut f = DriverFinder::default();
+            f.visit_expression(x);
+            for key in f.keys {
+                if drivers.iter().any(|(k, _)| *k == key) {
+                    continue;
+                }
+                if let Some(v) = self.driver_options(&key).filter(|v| v.len() > 1) {
+                    drivers.push((key, v));
+                }
+            }
+        }
+        let combos: usize = drivers.iter().map(|(_, v)| v.len()).product();
+        let mut out: Vec<String> = Vec::new();
+        let mut loose = false;
+        let mut per_part = drivers.is_empty() || combos > MAX_PREFIXES;
+        if !per_part {
+            let mut envs: Vec<HashMap<String, String>> = vec![HashMap::new()];
+            for (k, vals) in &drivers {
+                envs = envs
+                    .iter()
+                    .flat_map(|env| {
+                        vals.iter().map(move |v| {
+                            let mut e = env.clone();
+                            e.insert(k.clone(), v.clone());
+                            e
+                        })
+                    })
+                    .collect();
+            }
+            for env in &envs {
+                let mut urls = vec![String::new()];
+                for (i, q) in t.quasis.iter().enumerate() {
+                    let text = q.value.cooked.unwrap_or(q.value.raw).to_string();
+                    for u in &mut urls {
+                        u.push_str(&text);
+                    }
+                    let Some(x) = t.expressions.get(i) else {
+                        continue;
+                    };
+                    if let Some(v) = self.eval_with(x, env, 0) {
+                        for u in &mut urls {
+                            u.push_str(&v);
+                        }
+                        continue;
+                    }
+                    let mut f = DriverFinder::default();
+                    f.visit_expression(x);
+                    let tied = f.keys.iter().any(|k| env.contains_key(k));
+                    match self.string_options(x, 0).filter(|o| o.len() > 1) {
+                        // A helper with known values (`prefix(kind)`): expand
+                        // each part on its own instead.
+                        Some(_) if tied => per_part = true,
+                        // A choice not tied to the variables (`flag ? '/bulk' : ''`):
+                        // every value, but only as a guess.
+                        Some(opts) if urls.len() * opts.len() * envs.len() <= MAX_PREFIXES * 2 => {
+                            loose = true;
+                            urls = urls
+                                .iter()
+                                .flat_map(|u| opts.iter().map(move |o| format!("{u}{o}")))
+                                .collect();
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    if tied {
+                        loose = true;
+                    }
+                    for u in &mut urls {
+                        u.push_str("{}");
+                    }
+                }
+                out.extend(urls);
+            }
+        }
+        if per_part {
+            // Each part on its own (helpers whose values are known).
+            out.clear();
+            out.push(String::new());
+            let mut chosen = 0;
+            for (i, q) in t.quasis.iter().enumerate() {
+                let text = q.value.cooked.unwrap_or(q.value.raw).to_string();
+                for v in &mut out {
+                    v.push_str(&text);
+                }
+                let Some(x) = t.expressions.get(i) else {
+                    continue;
+                };
+                match self.string_options(x, 0).filter(|o| o.len() > 1) {
+                    Some(opts) if out.len() * opts.len() <= MAX_PREFIXES => {
+                        chosen += 1;
+                        out = out
+                            .iter()
+                            .flat_map(|v| opts.iter().map(move |o| format!("{v}{o}")))
+                            .collect();
+                    }
+                    _ => {
+                        for v in &mut out {
+                            v.push_str("{}");
+                        }
+                    }
+                }
+            }
+            if chosen == 0 {
+                return (Vec::new(), false);
+            }
+            // Two parts chosen independently may belong together.
+            loose = chosen > 1;
+        }
+        let mut out: Vec<String> = out
+            .iter()
+            .map(|u| normalize_url(u.split(['?', '#']).next().unwrap_or("")))
+            .collect();
+        out.sort();
+        out.dedup();
+        if out.len() < 2 {
+            return (Vec::new(), false);
+        }
+        (out, loose)
+    }
+
+    /// The values a template variable (`kind`, `this.segment`) can take.
+    fn driver_options(&self, key: &str) -> Option<Vec<String>> {
+        match key.strip_prefix("this.") {
+            Some(prop) => self.member_options.get(prop).cloned(),
+            None => {
+                let (start, _) = self.scope();
+                let own_end = self
+                    .param_types
+                    .iter()
+                    .map(|(_, (_, end), _)| *end)
+                    .filter(|end| *end <= start && start - *end <= 300)
+                    .max();
+                let typed = self
+                    .param_types
+                    .iter()
+                    .filter(|(n, (at, end), _)| n == key && (*at >= start || Some(*end) == own_end))
+                    .max_by_key(|(_, (at, _), _)| *at);
+                if let Some((_, _, v)) = typed {
+                    return v.clone();
+                }
+                if let Some(v) = self.local_options.get(key) {
+                    return Some(v.clone());
+                }
+                let init = *self.consts.get(key)?;
+                self.string_options(init, 1)
+            }
+        }
+    }
+
+    /// A string expression's value with some variables fixed.
+    fn eval_with(
+        &self,
+        e: &Expression<'a>,
+        env: &HashMap<String, String>,
+        depth: u8,
+    ) -> Option<String> {
+        if depth > 6 {
+            return None;
+        }
+        match strip_ts(e).without_parentheses() {
+            Expression::StringLiteral(s) => Some(s.value.to_string()),
+            Expression::TemplateLiteral(t) => {
+                let mut out = String::new();
+                for (i, q) in t.quasis.iter().enumerate() {
+                    out.push_str(&q.value.cooked.unwrap_or(q.value.raw));
+                    if let Some(x) = t.expressions.get(i) {
+                        out.push_str(&self.eval_with(x, env, depth + 1)?);
+                    }
+                }
+                Some(out)
+            }
+            Expression::Identifier(id) => env.get(id.name.as_str()).cloned().or_else(|| {
+                let v = self.string_options(e, 1)?;
+                (v.len() == 1).then(|| v[0].clone())
+            }),
+            Expression::StaticMemberExpression(m)
+                if matches!(
+                    m.object.without_parentheses(),
+                    Expression::ThisExpression(_)
+                ) =>
+            {
+                env.get(&format!("this.{}", m.property.name)).cloned()
+            }
+            Expression::ConditionalExpression(c) => {
+                if self.test_with(&c.test, env, depth + 1)? {
+                    self.eval_with(&c.consequent, env, depth + 1)
+                } else {
+                    self.eval_with(&c.alternate, env, depth + 1)
+                }
+            }
+            Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
+                Some(format!(
+                    "{}{}",
+                    self.eval_with(&b.left, env, depth + 1)?,
+                    self.eval_with(&b.right, env, depth + 1)?
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// A condition's truth with some variables fixed (`kind === 'rates'`).
+    fn test_with(
+        &self,
+        e: &Expression<'a>,
+        env: &HashMap<String, String>,
+        depth: u8,
+    ) -> Option<bool> {
+        if depth > 6 {
+            return None;
+        }
+        match strip_ts(e).without_parentheses() {
+            Expression::BinaryExpression(b) => {
+                let eq = match b.operator {
+                    BinaryOperator::StrictEquality | BinaryOperator::Equality => true,
+                    BinaryOperator::StrictInequality | BinaryOperator::Inequality => false,
+                    _ => return None,
+                };
+                let l = self.eval_with(&b.left, env, depth + 1)?;
+                let r = self.eval_with(&b.right, env, depth + 1)?;
+                Some((l == r) == eq)
+            }
+            Expression::LogicalExpression(l) => {
+                let a = self.test_with(&l.left, env, depth + 1)?;
+                match l.operator {
+                    LogicalOperator::And => Some(a && self.test_with(&l.right, env, depth + 1)?),
+                    LogicalOperator::Or => Some(a || self.test_with(&l.right, env, depth + 1)?),
+                    LogicalOperator::Coalesce => None,
+                }
+            }
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::LogicalNot => {
+                self.test_with(&u.argument, env, depth + 1).map(|v| !v)
+            }
+            Expression::BooleanLiteral(b) => Some(b.value),
+            _ => None,
+        }
+    }
+
+    /// What a small helper returns: `(k) => (k === 'x' ? 'a' : 'b')` or a
+    /// function whose only statement returns such a value.
+    fn returned_options(&self, name: &str, depth: u8) -> Option<Vec<String>> {
+        if let Some(init) = self.consts.get(name)
+            && let Expression::ArrowFunctionExpression(a) = strip_ts(init).without_parentheses()
+        {
+            if let Some(body) = a.get_expression() {
+                return self.string_options(body, depth + 1);
+            }
+            if let ArrowFunctionBody::FunctionBody(b) = &a.body
+                && let [Statement::ReturnStatement(r)] = b.statements.as_slice()
+            {
+                return self.string_options(r.argument.as_ref()?, depth + 1);
+            }
+        }
+        let f = self.functions.get(name)?;
+        if let [Statement::ReturnStatement(r)] = f.body.as_ref()?.statements.as_slice() {
+            return self.string_options(r.argument.as_ref()?, depth + 1);
+        }
+        None
+    }
+
+    /// The body variable `name` seen at `pos`: declared in the innermost
+    /// function around it.
+    fn body_at(&self, name: &str, pos: u32) -> Option<&Sent> {
+        self.bodies
+            .get(name)?
+            .iter()
+            .filter(|((a, b), _)| *a <= pos && pos <= *b)
+            .max_by_key(|((a, _), _)| *a)
+            .map(|(_, s)| s)
+    }
+
+    fn body_mut(&mut self, name: &str, pos: u32) -> Option<&mut Sent> {
+        self.bodies
+            .get_mut(name)?
+            .iter_mut()
+            .filter(|((a, b), _)| *a <= pos && pos <= *b)
+            .max_by_key(|((a, _), _)| *a)
+            .map(|(_, s)| s)
+    }
+
+    /// A variable's initial value, when it is a request body codemap can follow.
+    fn body_init(&self, init: &Expression<'a>) -> Option<Sent> {
+        match strip_ts(init) {
+            Expression::ObjectExpression(_) | Expression::ConditionalExpression(_) => {
+                Some(self.sent_keys(init, 0))
+            }
+            Expression::NewExpression(n)
+                if matches!(callee_name(&n.callee), Some("FormData" | "URLSearchParams")) =>
+            {
+                Some(match n.arguments.first().and_then(|a| a.as_expression()) {
+                    None => Sent {
+                        complete: true,
+                        ..Sent::default()
+                    },
+                    Some(a) => self.sent_keys(a, 0),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// `x` in `Object.entries(x)` / `Object.keys(x)`.
+    fn entries_source<'b>(&self, c: &'b CallExpression<'a>) -> Option<&'b Expression<'a>> {
+        let callee = self.compact(c.callee.span(), 30);
+        if matches!(callee.as_str(), "Object.entries" | "Object.keys") {
+            c.arguments.first().and_then(|a| a.as_expression())
+        } else {
+            None
+        }
+    }
+
+    /// Copies `src`'s keys into every body variable the callback names.
+    fn copy_into(&mut self, src: &Expression<'a>, cb: &Expression<'a>, pos: u32) {
+        let mut f = IdentFinder::default();
+        f.visit_expression(cb);
+        self.copy_names(src, &f.names, (cb.span().start, cb.span().end), pos);
+    }
+
+    fn copy_names(&mut self, src: &Expression<'a>, names: &[String], span: (u32, u32), pos: u32) {
+        let keys = self.sent_keys(src, 0);
+        let spoof = self.spoof_of(src);
+        let mut hit = false;
+        for n in names {
+            if let Some(body) = self.body_mut(n, pos) {
+                body.merge(keys.clone());
+                hit = true;
+                if let Some(m) = &spoof {
+                    let m = m.clone();
+                    self.set_spoof(n, m, pos);
+                }
+            }
+        }
+        if hit {
+            self.copied_spans.push(span);
+        }
+    }
+
+    /// The top-level keys of a payload expression.
+    fn sent_keys(&self, e: &Expression<'a>, depth: u8) -> Sent {
+        if depth > 4 {
+            return Sent::unknown("the payload is nested too deeply");
+        }
+        match strip_ts(e) {
+            Expression::ObjectExpression(o) => {
+                let mut out = Sent {
+                    complete: true,
+                    ..Sent::default()
+                };
+                for p in &o.properties {
+                    match p {
+                        ObjectPropertyKind::ObjectProperty(p) => match p.key.static_name() {
+                            Some(k) if !p.computed => out.push(&k),
+                            _ => out.merge(Sent::unknown("the payload has a computed key")),
+                        },
+                        ObjectPropertyKind::SpreadProperty(sp) => {
+                            out.merge(self.sent_keys(&sp.argument, depth + 1));
+                        }
+                    }
+                }
+                out
+            }
+            Expression::Identifier(id) if id.name == "undefined" => Sent {
+                complete: true,
+                ..Sent::default()
+            },
+            Expression::NullLiteral(_) => Sent {
+                complete: true,
+                ..Sent::default()
+            },
+            // `coords ? { lat, lng } : undefined`: either one.
+            Expression::ConditionalExpression(c) => {
+                let mut out = self.sent_keys(&c.consequent, depth + 1);
+                out.merge(self.sent_keys(&c.alternate, depth + 1));
+                out
+            }
+            Expression::Identifier(id) => match self.body_at(id.name.as_str(), id.span.start) {
+                Some(b) => b.clone(),
+                None => Sent::unknown(format!(
+                    "the payload `{}` is not an object built in this file",
+                    id.name
+                )),
+            },
+            // `JSON.stringify(body)`.
+            Expression::CallExpression(c)
+                if self.compact(c.callee.span(), 40) == "JSON.stringify"
+                    && c.arguments
+                        .first()
+                        .is_some_and(|a| a.as_expression().is_some()) =>
+            {
+                self.sent_keys(c.arguments[0].as_expression().unwrap(), depth + 1)
+            }
+            other => Sent::unknown(format!(
+                "the payload is `{}`, which codemap does not follow",
+                self.compact(other.span(), 40)
+            )),
+        }
+    }
+
+    /// Keys in a query string written in the URL: `/geocode?q=${q}&limit=5`.
+    fn url_query(&self, e: &Expression<'a>) -> Sent {
+        let mut out = Sent {
+            complete: true,
+            ..Sent::default()
+        };
+        let mut parts = Vec::new();
+        if self.url_parts(e, &mut parts, 0).is_none() {
+            return out;
+        }
+        // Dynamic parts as NUL, so a key built from a variable is visible.
+        let text: String = parts
+            .iter()
+            .map(|(is_static, t)| if *is_static { t.as_str() } else { "\0" })
+            .collect();
+        match text.split_once('?') {
+            Some((_, q)) => {
+                for piece in q.split('&') {
+                    let key = piece.split('=').next().unwrap_or("");
+                    if key.is_empty() || key.contains('\0') {
+                        if !piece.is_empty() {
+                            out.merge(Sent::unknown("the query string is built from a variable"));
+                        }
+                    } else {
+                        out.push(top_key(key));
+                    }
+                }
+            }
+            // `/merchants${qs}`: a query string in a variable.
+            None if parts.last().is_some_and(|(is_static, t)| {
+                let t = t.to_ascii_lowercase();
+                !is_static
+                    && (t.contains("query")
+                        || t == "qs"
+                        || t.contains("params")
+                        || t.contains("search"))
+            }) =>
+            {
+                out.merge(Sent::unknown("the query string is in a variable"));
+            }
+            None => {}
+        }
+        out
+    }
+
+    /// What a known client's call sends: the body (axios second argument,
+    /// `data`, `body`) and the query (`params`, `query`).
+    fn payload(&self, c: &CallExpression<'a>, method: Option<&str>) -> Sent {
+        let args: Vec<&Expression<'a>> = c
+            .arguments
+            .iter()
+            .filter_map(|a| a.as_expression())
+            .collect();
+        fn prop<'b, 'a>(
+            o: &'b Expression<'a>,
+            name: &str,
+        ) -> Option<Result<&'b Expression<'a>, ()>> {
+            match strip_ts(o) {
+                Expression::ObjectExpression(o) => o.properties.iter().find_map(|p| match p {
+                    ObjectPropertyKind::ObjectProperty(p)
+                        if p.key.static_name().as_deref() == Some(name) =>
+                    {
+                        Some(Ok(&p.value))
+                    }
+                    _ => None,
+                }),
+                // Options in a variable: their keys are not visible.
+                _ => Some(Err(())),
+            }
+        }
+        let verb_style = c
+            .callee
+            .without_parentheses()
+            .as_member_expression()
+            .and_then(|m| m.static_property_name())
+            .map(|v| v.trim_start_matches('$').to_ascii_lowercase())
+            .is_some_and(|v| {
+                matches!(
+                    v.as_str(),
+                    "get" | "post" | "put" | "patch" | "delete" | "head"
+                )
+            });
+        let config_style = args
+            .first()
+            .is_some_and(|a| matches!(strip_ts(a), Expression::ObjectExpression(_)));
+        let mut parts: Vec<Option<Result<&Expression<'a>, ()>>> = Vec::new();
+        if config_style {
+            parts.push(prop(args[0], "data"));
+            parts.push(prop(args[0], "params"));
+        } else if verb_style {
+            let with_body = matches!(method, Some("POST" | "PUT" | "PATCH"));
+            let options = if with_body { args.get(2) } else { args.get(1) };
+            if with_body {
+                parts.push(args.get(1).map(|b| Ok(*b)));
+            } else if let Some(o) = options {
+                parts.push(prop(o, "data"));
+            }
+            if let Some(o) = options {
+                parts.push(prop(o, "params"));
+            }
+        } else if let Some(o) = args.get(1) {
+            parts.push(prop(o, "body"));
+            parts.push(prop(o, "query"));
+            parts.push(prop(o, "params"));
+        }
+        let mut out = Sent {
+            complete: true,
+            ..Sent::default()
+        };
+        // A body that is not written out (a variable, a call) but gave no keys.
+        let mut opaque = false;
+        for part in parts.into_iter().flatten() {
+            match part {
+                Ok(e) => {
+                    let got = self.sent_keys(e, 0);
+                    opaque |= got.keys.is_empty()
+                        && !matches!(
+                            strip_ts(e),
+                            Expression::ObjectExpression(_) | Expression::NullLiteral(_)
+                        )
+                        && !matches!(strip_ts(e), Expression::Identifier(i) if i.name == "undefined");
+                    out.merge(got);
+                }
+                Err(()) => out.merge(Sent::unknown("the request options are in a variable")),
+            }
+        }
+        if opaque && out.complete && out.keys.is_empty() {
+            out.merge(Sent::unknown("the payload's keys could not be read"));
+        }
+        out
+    }
+
+    /// `name` as a parameter of the function around `pos`: that function's
+    /// name (`api.save`, `saveOrder`) and the parameter's index.
+    fn param_of(&self, name: &str, pos: u32) -> Option<(String, u32)> {
+        let (start, _) = self.scope();
+        let own_end = self
+            .param_index
+            .iter()
+            .map(|(_, _, (_, end))| *end)
+            .filter(|end| *end <= start && start - *end <= 300)
+            .max();
+        let (_, idx, (at, _)) = self
+            .param_index
+            .iter()
+            .filter(|(n, _, (at, end))| {
+                n == name && *at <= pos && (*at >= start || Some(*end) == own_end)
+            })
+            .max_by_key(|(_, _, (at, _))| *at)?;
+        // The names of the spans around the parameter, outermost first.
+        let mut around: Vec<&(u32, u32, String)> = self
+            .names
+            .iter()
+            .filter(|(a, b, _)| *a <= *at && *at <= *b)
+            .collect();
+        around.sort_by_key(|(a, _, _)| *a);
+        let key = if around.is_empty() {
+            self.functions
+                .iter()
+                .find(|(_, f)| f.span.start <= *at && *at <= f.span.end)
+                .map(|(n, _)| (*n).to_owned())?
+        } else {
+            around
+                .iter()
+                .map(|(_, _, n)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        Some((key, *idx))
+    }
+
+    /// Top-level functions whose body spoofs a method, for callers in other files.
+    fn finish_fn_spoofs(&mut self) {
+        let mut out = Vec::new();
+        for (name, f) in &self.functions {
+            let Some(body) = f.body.as_deref() else {
+                continue;
+            };
+            let mut finder = SpoofFinder::default();
+            finder.visit_function_body(body);
+            if let Some(m) = spoof_summary(&finder.found) {
+                out.push(((*name).to_owned(), m));
+            }
+        }
+        for (name, e) in &self.consts {
+            let mut finder = SpoofFinder::default();
+            match strip_ts(e) {
+                Expression::ArrowFunctionExpression(a) => match a.get_expression() {
+                    Some(x) => {
+                        finder.entered = true;
+                        finder.visit_expression(x);
+                    }
+                    None => {
+                        if let ArrowFunctionBody::FunctionBody(b) = &a.body {
+                            finder.visit_function_body(b);
+                        }
+                    }
+                },
+                Expression::FunctionExpression(f) => {
+                    if let Some(b) = f.body.as_deref() {
+                        finder.visit_function_body(b);
+                    }
+                }
+                _ => continue,
+            }
+            if let Some(m) = spoof_summary(&finder.found) {
+                out.push(((*name).to_owned(), m));
+            }
+        }
+        out.sort();
+        self.facts.fn_spoofs = out;
+    }
+
+    /// `m`, marked `?` when the code at `pos` runs only on some paths.
+    fn maybe(&self, m: String, pos: u32) -> String {
+        let (start, _) = self.scope();
+        if self
+            .cond_spans
+            .iter()
+            .any(|(a, b)| *a >= start && *a <= pos && pos <= *b)
+        {
+            format!("?{m}")
+        } else {
+            m
+        }
+    }
+
+    /// Records a `_method` set on `name` at `pos`, on the variable declared in
+    /// the innermost function around it (or this one).
+    fn set_spoof(&mut self, name: &str, m: String, pos: u32) {
+        let scope = self.scope();
+        let list = self.spoofs.entry(name.to_owned()).or_default();
+        let at = list
+            .iter_mut()
+            .filter(|((a, b), _)| *a <= pos && pos <= *b)
+            .max_by_key(|((a, _), _)| *a);
+        match at {
+            Some((_, v)) => *v = Some(m),
+            None => list.push((scope, Some(m))),
+        }
+    }
+
+    fn spoof_at(&self, name: &str, pos: u32) -> Option<String> {
+        self.spoofs
+            .get(name)?
+            .iter()
+            .filter(|((a, b), _)| *a <= pos && pos <= *b)
+            .max_by_key(|((a, _), _)| *a)
+            .and_then(|(_, m)| m.clone())
+    }
+
+    /// The method a request body spoofs: an object literal, a variable or
+    /// object bound earlier in the same function, a variable passed through a
+    /// converter (`toFormData(payload)`), or a helper function that sets it,
+    /// decided by the argument when the helper sets it under a parameter.
+    /// `?PUT`: only on some paths.
+    fn spoof_of(&self, e: &Expression<'a>) -> Option<String> {
+        if let Some(m) = spoofed_method(e, 0) {
+            return Some(m);
+        }
+        match strip_ts(e) {
+            Expression::Identifier(id) => self.spoof_at(id.name.as_str(), id.span.start),
+            // `this.record` after `this.record._method = 'PATCH'`.
+            Expression::StaticMemberExpression(m) => {
+                self.spoof_at(&self.compact(m.span, 60), m.span.start)
+            }
+            // `{ ...record, reason }`: the spread value's own `_method`.
+            Expression::ObjectExpression(o) => o.properties.iter().find_map(|p| match p {
+                ObjectPropertyKind::SpreadProperty(sp) => self.spoof_of(&sp.argument),
+                _ => None,
+            }),
+            Expression::CallExpression(c) => {
+                let args: Vec<&Expression<'a>> = c
+                    .arguments
+                    .iter()
+                    .filter_map(|a| a.as_expression())
+                    .collect();
+                // Spoofs carried by the arguments (`toFormData(payload)`):
+                // known methods, and `@helper` markers resolved later.
+                let carried: Vec<String> = args
+                    .iter()
+                    .filter_map(|a| match strip_ts(a) {
+                        Expression::Identifier(id) => {
+                            self.spoof_at(id.name.as_str(), id.span.start)
+                        }
+                        // `jsonFormData(this.record)`.
+                        Expression::StaticMemberExpression(m) => {
+                            self.spoof_at(&self.compact(m.span, 60), m.span.start)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(m) = carried.iter().find(|m| !m.starts_with('@')) {
+                    return Some(m.clone());
+                }
+                let markers = || (!carried.is_empty()).then(|| carried.join(","));
+                let Expression::Identifier(f) = c.callee.without_parentheses() else {
+                    return markers();
+                };
+                let name = f.name.as_str();
+                // A helper from the project's other files: it, then what its
+                // arguments carry, resolved when files are linked.
+                if !self.functions.contains_key(name) && !self.consts.contains_key(name) {
+                    let project = self
+                        .facts
+                        .imports
+                        .iter()
+                        .any(|i| !i.type_only && i.binds(name) && is_project_source(&i.source));
+                    return if project {
+                        let mut all = vec![format!("@{name}")];
+                        all.extend(carried.iter().cloned());
+                        Some(all.join(","))
+                    } else {
+                        markers()
+                    };
+                }
+                let mut finder = SpoofFinder::default();
+                let params: &FormalParameters<'a> = if let Some(func) = self.functions.get(name) {
+                    finder.visit_function_body(func.body.as_deref()?);
+                    &func.params
+                } else {
+                    match self.consts.get(name).map(|e| strip_ts(e)) {
+                        Some(Expression::ArrowFunctionExpression(a)) => {
+                            match a.get_expression() {
+                                Some(e) => {
+                                    finder.entered = true;
+                                    finder.visit_expression(e);
+                                }
+                                None => {
+                                    if let ArrowFunctionBody::FunctionBody(b) = &a.body {
+                                        finder.visit_function_body(b);
+                                    }
+                                }
+                            }
+                            &a.params
+                        }
+                        Some(Expression::FunctionExpression(func)) => {
+                            finder.visit_function_body(func.body.as_deref()?);
+                            &func.params
+                        }
+                        _ => return None,
+                    }
+                };
+                let names: Vec<Option<&str>> = params
+                    .items
+                    .iter()
+                    .map(|p| match &p.pattern {
+                        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let mut maybe = None;
+                for (m, cond) in finder.found {
+                    let on = match cond {
+                        Cond::Always => Some(true),
+                        Cond::Unknown => None,
+                        Cond::Param(p, negated) => names
+                            .iter()
+                            .position(|n| *n == Some(p.as_str()))
+                            .and_then(|i| match args.get(i).map(|a| strip_ts(a)) {
+                                None => Some(false),
+                                Some(a) => truthy(a),
+                            })
+                            .map(|v| v != negated),
+                    };
+                    match on {
+                        Some(true) => return Some(m),
+                        Some(false) => {}
+                        None => maybe = maybe.or(Some(format!("?{m}"))),
+                    }
+                }
+                maybe.or_else(markers)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Names a request body is built from: the body itself, the values it
+/// spreads, and the arguments of a converter around it.
+fn body_params<'b, 'a>(e: &'b Expression<'a>, depth: u8) -> Vec<&'b IdentifierReference<'a>> {
+    if depth > 3 {
+        return Vec::new();
+    }
+    match strip_ts(e) {
+        Expression::Identifier(id) => vec![&**id],
+        Expression::ObjectExpression(o) => o
+            .properties
+            .iter()
+            .filter_map(|p| match p {
+                ObjectPropertyKind::SpreadProperty(sp) => {
+                    Some(body_params(&sp.argument, depth + 1))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect(),
+        Expression::CallExpression(c) => c
+            .arguments
+            .iter()
+            .filter_map(|a| a.as_expression())
+            .flat_map(|a| body_params(a, depth + 1))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// An import of the project's own code (`./x`, `../x`, `@/x`, `~/x`, `#x`),
+/// not a package.
+fn is_project_source(src: &str) -> bool {
+    src.starts_with('.')
+        || src.starts_with('/')
+        || src.starts_with("@/")
+        || src.starts_with("~/")
+        || src.starts_with("~~/")
+        || src.starts_with('#')
+}
+
+/// The method of a call whose body spoofs `m`: `?PUT` on `POST` is "POST or PUT".
+fn either(base: Option<&str>, m: String) -> String {
+    match m.strip_prefix('?') {
+        Some(s) if base == Some(s) => s.to_owned(),
+        Some(s) => format!("{}|{s}", base.unwrap_or("POST")),
+        None => m,
+    }
+}
+
+/// The method a helper's `_method` writes give: set always, or only sometimes.
+fn spoof_summary(found: &[(String, Cond)]) -> Option<String> {
+    if let Some((m, _)) = found.iter().find(|(_, c)| matches!(c, Cond::Always)) {
+        return Some(m.clone());
+    }
+    found.first().map(|(m, _)| format!("?{m}"))
+}
+
+/// A literal argument's truth (`true`, `0`, `''`, `null`); `None` when unknown.
+fn truthy(e: &Expression<'_>) -> Option<bool> {
+    match e {
+        Expression::BooleanLiteral(b) => Some(b.value),
+        Expression::NullLiteral(_) => Some(false),
+        Expression::NumericLiteral(n) => Some(n.value != 0.0),
+        Expression::StringLiteral(s) => Some(!s.value.is_empty()),
+        Expression::Identifier(i) if i.name == "undefined" => Some(false),
+        _ => None,
+    }
+}
+
+/// The variables a template part depends on: names, and `this.x`.
+#[derive(Default)]
+struct DriverFinder {
+    keys: Vec<String>,
+}
+
+impl<'a> Visit<'a> for DriverFinder {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+        let n = it.name.to_string();
+        if !self.keys.contains(&n) {
+            self.keys.push(n);
+        }
+    }
+
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+        if matches!(
+            it.object.without_parentheses(),
+            Expression::ThisExpression(_)
+        ) {
+            let n = format!("this.{}", it.property.name);
+            if !self.keys.contains(&n) {
+                self.keys.push(n);
+            }
+        } else {
+            walk::walk_static_member_expression(self, it);
+        }
+    }
+}
+
+/// Names referred to in some code.
+#[derive(Default)]
+struct IdentFinder {
+    names: Vec<String>,
+}
+
+impl<'a> Visit<'a> for IdentFinder {
+    fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
+        let n = it.name.to_string();
+        if !self.names.contains(&n) {
+            self.names.push(n);
+        }
+    }
+}
+
+fn idents_in_statement(s: &Statement<'_>) -> Vec<String> {
+    let mut f = IdentFinder::default();
+    f.visit_statement(s);
+    f.names
+}
+
+/// When a `_method` set inside a helper applies.
+#[derive(Debug, Clone)]
+enum Cond {
+    Always,
+    /// Under `if (param)` (`true`: `if (!param)`, or its `else`).
+    Param(String, bool),
+    Unknown,
+}
+
+/// Every `_method` a helper's body sets, with the condition around it.
+#[derive(Default)]
+struct SpoofFinder {
+    entered: bool,
+    conds: Vec<Cond>,
+    found: Vec<(String, Cond)>,
+}
+
+impl SpoofFinder {
+    fn cond(&self) -> Cond {
+        match self.conds.as_slice() {
+            [] => Cond::Always,
+            [one] => one.clone(),
+            _ => Cond::Unknown,
+        }
+    }
+
+    fn test_of(e: &Expression<'_>) -> Cond {
+        match strip_ts(e) {
+            Expression::Identifier(i) => Cond::Param(i.name.to_string(), false),
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::LogicalNot => {
+                match strip_ts(&u.argument) {
+                    Expression::Identifier(i) => Cond::Param(i.name.to_string(), true),
+                    _ => Cond::Unknown,
+                }
+            }
+            _ => Cond::Unknown,
+        }
+    }
+
+    fn negate(c: Cond) -> Cond {
+        match c {
+            Cond::Param(p, n) => Cond::Param(p, !n),
+            other => other,
+        }
+    }
+}
+
+impl<'a> Visit<'a> for SpoofFinder {
+    fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
+        let t = Self::test_of(&it.test);
+        self.conds.push(t.clone());
+        self.visit_statement(&it.consequent);
+        self.conds.pop();
+        if let Some(alt) = &it.alternate {
+            self.conds.push(Self::negate(t));
+            self.visit_statement(alt);
+            self.conds.pop();
+        }
+    }
+
+    fn visit_conditional_expression(&mut self, it: &ConditionalExpression<'a>) {
+        let t = Self::test_of(&it.test);
+        self.conds.push(t.clone());
+        self.visit_expression(&it.consequent);
+        self.conds.pop();
+        self.conds.push(Self::negate(t));
+        self.visit_expression(&it.alternate);
+        self.conds.pop();
+    }
+
+    fn visit_logical_expression(&mut self, it: &LogicalExpression<'a>) {
+        self.visit_expression(&it.left);
+        let t = if it.operator == LogicalOperator::And {
+            Self::test_of(&it.left)
+        } else {
+            Cond::Unknown
+        };
+        self.conds.push(t);
+        self.visit_expression(&it.right);
+        self.conds.pop();
+    }
+
+    fn visit_object_property(&mut self, it: &ObjectProperty<'a>) {
+        if it.key.static_name().as_deref() == Some("_method")
+            && let Some(m) = string_value(&it.value)
+        {
+            self.found.push((m.to_ascii_uppercase(), self.cond()));
+        }
+        walk::walk_object_property(self, it);
+    }
+
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        let is_method = match &it.left {
+            AssignmentTarget::StaticMemberExpression(m) => m.property.name == "_method",
+            AssignmentTarget::ComputedMemberExpression(m) => {
+                string_value(&m.expression).as_deref() == Some("_method")
+            }
+            _ => false,
+        };
+        if is_method && let Some(m) = string_value(&it.right) {
+            self.found.push((m.to_ascii_uppercase(), self.cond()));
+        }
+        walk::walk_assignment_expression(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if let Some(m) = it.callee.without_parentheses().as_member_expression()
+            && matches!(m.static_property_name(), Some("append" | "set"))
+            && it
+                .arguments
+                .first()
+                .and_then(|a| a.as_expression())
+                .and_then(string_value)
+                .as_deref()
+                == Some("_method")
+            && let Some(v) = it
+                .arguments
+                .get(1)
+                .and_then(|a| a.as_expression())
+                .and_then(string_value)
+        {
+            self.found.push((v.to_ascii_uppercase(), self.cond()));
+        }
+        walk::walk_call_expression(self, it);
+    }
+
+    // Nested functions are other code: only the helper's own body is read.
+    fn visit_function_body(&mut self, it: &FunctionBody<'a>) {
+        if !self.entered {
+            self.entered = true;
+            walk::walk_function_body(self, it);
+        }
+    }
+}
+
+/// `items[0][id]` / `address.city` → `items` / `address`: the key Laravel sees first.
+fn top_key(k: &str) -> &str {
+    k.split(['[', '.']).next().unwrap_or(k)
 }
 
 /// `_method: 'PUT'` in an object (or a call wrapping one, e.g. `formData({…})`).

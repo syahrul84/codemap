@@ -72,6 +72,32 @@ fn frontend_calls_are_linked_to_backend_routes() {
     let list = by_at("pages/malls/index.vue:3");
     assert_eq!(list["route"], "GET|HEAD api/v1/malls");
     assert_eq!(list["read_but_not_returned"], json!(["name"]));
+    // The finding says where the shape came from and what it holds.
+    let ev = &list["evidence"];
+    assert!(
+        ev["shape_from"].as_str().unwrap().contains("Resource"),
+        "{ev}"
+    );
+    assert!(
+        ev["returned_at"].as_str().unwrap().contains(".php:"),
+        "{ev}"
+    );
+    assert!(
+        ev["returns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k == "title"),
+        "{ev}"
+    );
+    assert!(
+        ev["resource_at"]
+            .as_str()
+            .unwrap()
+            .contains("MallResource.php:"),
+        "{ev}"
+    );
+    assert_eq!(ev["read_paths"], json!(["data[].id", "data[].name"]));
     // Quantity: the cart line reads `max_quantity`; the resource sends `max_per_order`.
     let cart = by_at("components/CartLine.vue:5");
     assert_eq!(cart["route"], "POST api/v1/carts/{merchant}/items");
@@ -278,4 +304,81 @@ fn code_map_of_a_frontend_includes_its_linked_backend() {
             .iter()
             .any(|a| a["name"] == "backend" && a["linked"] == true)
     );
+}
+
+#[test]
+fn changed_files_and_baseline_narrow_the_findings() {
+    let data = tempfile::tempdir().unwrap();
+    let (store, project) = open(data.path());
+    let all = call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "detail": "full", "limit": 100 }),
+    );
+    let rows = all["calls"].as_array().unwrap().clone();
+    assert!(rows.len() > 2);
+
+    // Only the changed file's calls.
+    let one = call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "detail": "full", "changed_files": ["components/CartLine.vue"] }),
+    );
+    let ats: Vec<&str> = one["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["at"].as_str().unwrap())
+        .collect();
+    assert!(!ats.is_empty());
+    assert!(
+        ats.iter()
+            .all(|a| a.starts_with("components/CartLine.vue:")),
+        "{ats:?}"
+    );
+
+    // new_only without a baseline says how to make one.
+    let err = codemap_mcp::call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "new_only": true }),
+        codemap_mcp::Freshness::default(),
+    );
+    assert!(err.is_err());
+
+    // A baseline with every finding but the cart line's hides all but it.
+    let cart = rows
+        .iter()
+        .find(|r| r["at"] == "components/CartLine.vue:5")
+        .unwrap();
+    let skip = codemap_mcp::api::row_keys(cart);
+    let keys: Vec<String> = rows
+        .iter()
+        .flat_map(codemap_mcp::api::row_keys)
+        .filter(|k| !skip.contains(k))
+        .collect();
+    std::fs::write(
+        project
+            .index_path
+            .with_file_name(codemap_mcp::api::BASELINE_FILE),
+        json!({ "version": 1, "findings": { "": keys } }).to_string(),
+    )
+    .unwrap();
+    let new = call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "detail": "full", "new_only": true }),
+    );
+    let ats: Vec<&str> = new["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["at"].as_str().unwrap())
+        .collect();
+    assert_eq!(ats, ["components/CartLine.vue:5"]);
+    assert!(new["baseline"]["calls_hidden"].as_u64().unwrap() > 0);
 }

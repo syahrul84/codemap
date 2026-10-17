@@ -111,6 +111,7 @@ pub fn build(store: &Store, root: &Path, config: &Config, project: &str) -> Resu
             RouteSource::Static => "static",
             RouteSource::Artisan => "artisan",
             RouteSource::Next => "next",
+            RouteSource::Package => "package",
         };
         *by_source.entry(source.to_owned()).or_insert(0) += 1;
         let label = format!("{} {}", r.methods_str(), r.uri);

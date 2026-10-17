@@ -117,7 +117,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.2 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.3 codemap-cli
 ```
 
 ### Docker
@@ -214,7 +214,7 @@ codemap is an MCP server, and MCP is an open standard: Cursor, Windsurf, VS Code
 | `get_component` | Before using, changing or creating a Vue component or Nuxt page: props, emits, `v-model`, slots, what it renders (resolved to files or libraries), who renders it, stores and composables it uses. Takes a name (`OrderCard`), tag (`order-card`) or path. |
 | `list_pages` | To find a screen and its code (frontend pages, and Filament admin pages with their form fields): URL, route name, the component file it renders, layout, middleware, and where the route is defined. Filters: `path_contains`, `name_prefix`, `file`. |
 | `list_routes` | To find Laravel endpoints or which controller handles a URI (filters: `uri_contains`, `name_prefix`, `method`, `controller`, `middleware`). |
-| `api_usage` | To link the frontend to the backend: which route each HTTP call hits, calls to missing endpoints (marked as dead code when the function around them is unused), wrong methods, and fields read but not returned. Calls that can't be tied to one route are listed with `file:line`, the reason and the candidate routes. Pass `endpoint` for its callers and response fields, `file` for one screen, or `status: missing / fields / unresolved`. |
+| `api_usage` | To link the frontend to the backend: which route each HTTP call hits, calls to missing endpoints (marked as dead code when the function around them is unused), wrong methods, fields read but not returned, and payloads that miss required fields or send fields the action does not take. `git_changes: true` limits it to what the branch touches, `new_only: true` hides findings saved by `codemap baseline`. Calls that can't be tied to one route are listed with `file:line`, the reason and the candidate routes. Pass `endpoint` for its callers and response fields, `file` for one screen, or `status: missing / fields / payload / unresolved`. |
 | `find_usages` | Before changing, renaming or removing anything: every use with `file:line`, the routes involved, and the tests that touch it. Method calls on objects whose class is unknown are listed separately as `possible`. With `changed_files` (or `git_changes: true`) it summarises a whole change instead: what each file affects, the related tests, and the exact commands to run only those (`php artisan test …`, `npx vitest run …`, `npx playwright test …`). It also names the browser tests (Playwright, Cypress) that open the screens the change is close to, or look for test ids the changed code sets; tests that reach the change only through shared building blocks are listed separately for a run before release. The five browser tests that use the change most directly come first (`browser_tests_top`, `run_top`). A backend change is followed through its callers to the controllers, routes and the PHP tests that hit them (`routes_via_callers`, `tests_via_route`). Commands use the project's package manager (`pnpm exec`, `yarn`, `bunx`, `npx`), or the commands set in `[tests]`. In a workspace it also lists the frontend calls (in every app) to the backend routes the change touches, and the browser tests for those screens. Code that exists but that nothing uses comes back as `found: true, unused: true`. |
 | `get_schema` | Before writing queries, migrations or model code (or, with `settings: true`, to see app settings and config defaults; with `migrations: true`, migrations not yet applied to your local / staging databases): tables, columns, keys, foreign keys, mapped models, where each column was created and changed. |
 | `verify` | Before finishing: checks classes, `Class::method`, functions, routes (name or `METHOD uri`), tables, `table.column`, `Model::relation`, Vue components, endpoints the frontend calls, translation keys (with the locales they are missing in), or a PHP snippet. Each item is `exists`, `not_found` (with suggestions), `external` (vendor / PHP built-in) or `unresolved`. With `release_check: true`: one list of problems before a release (see below). |
@@ -249,7 +249,11 @@ codemap map    [--project <path>] --out <file.html>   # the code map: one page t
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
 codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear]
 codemap update [--check] [--force]                    # install the latest release
+codemap baseline [--project <path>] [--out <file>]    # save today's API findings; later runs show only new ones
+codemap check api [--project <path>] [--changed] [--base <branch>] [--baseline <file>] [--json]
 ```
+
+`codemap check api` is a gate for CI and pre-commit hooks. It prints the API findings that are not in the baseline and exits with 1 when a new call has no route or uses the wrong method. Fields read but not returned and payload problems are printed as warnings. `--changed` limits it to what the branch touches: calls in changed files, and calls to backend routes whose route file or controller changed. Commit the baseline as `.codemap-baseline.json` (`codemap baseline --out .codemap-baseline.json`) so CI finds it; without `--out` it is kept next to the index.
 
 Global options: `--name` / `CODEMAP_PROJECT_NAME` (display name; inside Docker the folder is always `workspace`), `--link name=path` / `CODEMAP_LINKS`, `--project-id` / `CODEMAP_PROJECT_ID`, `--data-dir` / `CODEMAP_DATA_DIR` (default `/data` in Docker, the platform cache dir elsewhere), `--log-level` / `CODEMAP_LOG`.
 
@@ -370,6 +374,13 @@ How the response check works:
 - Functions that return a bundle of helpers (`return { list, remove }`) are not mistaken for response data.
 - "Read but not returned" is only reported when the endpoint's response is fully known: an API Resource, a literal array, or a list whose every building step is readable. Item keys are checked one level deep. Responses built from queries are reported by kind only.
 - Laravel's `_method` spoofing (`POST` with `_method: 'PUT'`) is understood.
+- Each fields finding carries `evidence`: where the response shape came from (the Resource and its `toArray` file:line, or the `return` in the action), every key it returns (conditional ones marked), and the paths the frontend read.
+
+How the payload check works:
+- The keys a call sends are read from the body object, the `params` / `query` / `body` options, `FormData.append` / `URLSearchParams.set`, `x.key = …` assignments and the query string in the URL.
+- They are compared with what the action accepts: its Form Request's `rules()`, an inline `validate([...])` / `Validator::make`, and the fields it reads (`$request->input('x')`, `$request->x`, `$request['x']`, `request('x')`, `->only([...])`), also in the controller's own helper methods.
+- `missing_required`: a required field the call never sends (only when the payload is fully known). `unknown_field`: a sent key the action does not take, often a renamed field (only when the accepted list is complete: no `$request->all()`, and the request is not handed to other code).
+- Payloads built through spreads, component state or helpers are reported as `payload_unchecked`, never guessed. Keys added by middleware (`$request->merge([...])`) are not known yet.
 
 ## Configuration — `.codemap.toml` (optional, project root)
 
@@ -419,6 +430,8 @@ name = "staging"
 env = "CODEMAP_DB_STAGING"
 # app = "api"                # in a workspace: only for this app (default: every Laravel app)
 # table = "migrations"       # default: config/database.php, else `migrations`
+# schema = "live"            # also read tables and columns from this database (see below)
+# dump = "db/structure.sql"  # or from a structure dump file, without connecting
 ```
 
 ### Background work and permissions
@@ -489,6 +502,14 @@ The first output becomes the starting point (kept next to the app's index). Afte
 - Each check is a single `SELECT` on the migrations table in a read-only session, with a 5-second timeout. Passwords never appear in answers or errors.
 - PostgreSQL (`postgres://user:pass@host:5432/db`), MySQL / MariaDB (`mysql://…`) and SQLite (`sqlite:///path`). TLS is not used: reach staging through a tunnel or VPN.
 - A database whose rows mostly don't match the app's migration files is reported as `other_app` rather than listing false "pending" migrations.
+
+### Schema from the database
+
+When the migrations don't describe the database (an app with almost no migrations, or one that drifted), add `schema = "live"` to its `[[databases]]` entry. `get_schema`, `verify` and the column checks then use the database's own tables, columns, types, nullability, defaults, keys and foreign keys, read from `information_schema` (MySQL / MariaDB, PostgreSQL) or `pragma` (SQLite) in the same read-only session.
+- Every column says where it comes from: `source: "live:local"` (or `dump:<name>`); no `source` means the migrations or the schema dump in `database/schema/`.
+- When both sides know a table, differences are kept as `drift`: "no migration creates this column", "in migrations, not in live:local", "migrations make it nullable".
+- The database is read again at most every 10 minutes. If it can't be reached, the migrations answer and `doctor` says why.
+- Without a connection, point `dump` at a structure dump (`mysqldump --no-data`, `pg_dump --schema-only`) instead.
 
 Pass the URLs and, when the database runs in Docker, its network:
 

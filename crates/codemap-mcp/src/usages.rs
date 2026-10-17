@@ -18,6 +18,7 @@ use crate::tools::{DetailParam, Project, ToolError};
 type R<T> = Result<T, ToolError>;
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FindUsagesParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]

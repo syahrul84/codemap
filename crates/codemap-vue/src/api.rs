@@ -31,6 +31,25 @@ pub struct CallRow {
     pub fields: Vec<String>,
     /// Fields the response's TypeScript type requires (`useApi()<Mall>()`).
     pub typed: Vec<String>,
+    /// Values the variable prefix can take (see `ApiCall::prefixes`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefixes: Vec<String>,
+    /// Why the prefix was not expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_note: Option<String>,
+    /// The object method the call sits in (see `ApiCall::in_member`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_member: Option<String>,
+    /// Every full URL the call can have (see `ApiCall::variants`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// See `ApiCall::variants_loose`.
+    #[serde(default)]
+    pub variants_loose: bool,
+    /// The keys the call sends, when its payload is visible (not through a
+    /// project wrapper).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sends: Option<codemap_js::facts::Sent>,
 }
 
 /// Segments that wrap a payload rather than name a field.
@@ -565,6 +584,115 @@ impl<'m> Flow<'m> {
     }
 }
 
+/// `base` with a spoofed `m`: `?PUT` (only sometimes) on `POST` is `POST|PUT`.
+fn either(base: Option<&str>, m: &str) -> String {
+    match m.strip_prefix('?') {
+        Some(s) => {
+            let mut v = vec![base.unwrap_or("POST")];
+            for x in s.split('|') {
+                if !v.contains(&x) {
+                    v.push(x);
+                }
+            }
+            v.join("|")
+        }
+        None => m.to_owned(),
+    }
+}
+
+impl<'m> Flow<'m> {
+    /// Resolves a call's `spoof_via` (see `ApiCall::spoof_via`).
+    fn spoof(&self, m: &'m Module, via: &str, modules: &'m [Module]) -> Option<String> {
+        if via.contains(';') {
+            return via.split(';').find_map(|v| self.spoof(m, v, modules));
+        }
+        if via.starts_with('@') {
+            return self.helper_spoof(m, via);
+        }
+        let (key, idx) = via.strip_prefix("param:")?.rsplit_once('#')?;
+        let idx: u32 = idx.parse().ok()?;
+        let mut methods: Vec<String> = Vec::new();
+        for mm in modules {
+            for sc in &mm.facts.script.spoof_calls {
+                if sc.index == idx && self.calls_into(mm, &sc.callee, m, key) {
+                    // Built by a helper the caller imports: that helper's method.
+                    let method = if sc.method.starts_with('@') {
+                        match self.helper_spoof(mm, &sc.method) {
+                            Some(sp) => sp,
+                            None => continue,
+                        }
+                    } else {
+                        sc.method.clone()
+                    };
+                    let x = method.trim_start_matches('?').to_owned();
+                    if !methods.contains(&x) {
+                        methods.push(x);
+                    }
+                }
+            }
+        }
+        // Other callers may pass a body without `_method`: one of the methods.
+        match methods.as_slice() {
+            [] => None,
+            [one] => Some(format!("?{one}")),
+            many => Some(format!("?{}", many.join("|"))),
+        }
+    }
+
+    /// `@a,@b`: the method the first of these helpers (as seen from `m`) sets.
+    fn helper_spoof(&self, m: &'m Module, markers: &str) -> Option<String> {
+        markers.split(',').find_map(|h| {
+            let (t, f) = self.resolve_fn(m, h.strip_prefix('@')?)?;
+            t.facts
+                .script
+                .fn_spoofs
+                .iter()
+                .find(|(n, _)| *n == f)
+                .map(|(_, s)| s.clone())
+        })
+    }
+
+    /// Whether `callee` written in `from` is `key` of module `target`
+    /// (`api.save` with `import { api } from './api'`, or a local call).
+    fn calls_into(&self, from: &'m Module, callee: &str, target: &'m Module, key: &str) -> bool {
+        if from.path == target.path && callee == key {
+            return true;
+        }
+        let (obj, rest) = match callee.split_once('.') {
+            Some((o, r)) => (o, Some(r)),
+            None => (callee, None),
+        };
+        let Some(imp) = from
+            .facts
+            .script
+            .imports
+            .iter()
+            .find(|i| !i.type_only && !i.dynamic && i.binds(obj))
+        else {
+            return false;
+        };
+        let exported = if imp.default.as_deref() == Some(obj) {
+            "default".to_owned()
+        } else {
+            match imp.named.iter().find(|(_, l)| l == obj) {
+                Some((e, _)) => e.clone(),
+                None => return false,
+            }
+        };
+        let Resolved::File(p) = self.resolver.resolve(&from.path, &imp.source) else {
+            return false;
+        };
+        if p.as_str() != target.path {
+            return false;
+        }
+        let want = match rest {
+            Some(r) => format!("{exported}.{r}"),
+            None => exported,
+        };
+        want == key
+    }
+}
+
 impl crate::ts_types::TypeLookup for Flow<'_> {
     fn find(&self, module: &str, name: &str) -> Option<(codemap_js::TsTypeDef, String)> {
         let m = self.by_path.get(module)?;
@@ -685,9 +813,19 @@ pub fn rows(
             fields.sort();
             fields.dedup();
             let wrapped = flow.wrapper_url(m, c);
+            let via_wrapper = wrapped.is_some();
             let (url, method, base_var, optional_tail) = match wrapped {
                 Some((url, method)) => (url, method, false, false),
                 None => (c.url.clone(), c.method.clone(), c.base_var, c.optional_tail),
+            };
+            // A method spoofed by a helper in another file, or by the callers
+            // that pass the body this call posts.
+            let method = match c.spoof_via.as_deref() {
+                Some(via) if !via_wrapper => match flow.spoof(m, via, modules) {
+                    Some(sp) => Some(either(method.as_deref(), &sp)),
+                    None => method,
+                },
+                _ => method,
             };
             let typed = c
                 .type_arg
@@ -695,7 +833,25 @@ pub fn rows(
                 .map(|t| crate::ts_types::required_paths(t, &m.path, &flow))
                 .unwrap_or_default();
             out.push(CallRow {
+                sends: if via_wrapper { None } else { c.sends.clone() },
+                in_member: c.in_member.clone(),
+                variants_loose: c.variants_loose,
+                variants: if via_wrapper {
+                    Vec::new()
+                } else {
+                    c.variants.clone()
+                },
                 typed,
+                prefixes: if base_var {
+                    c.prefixes.clone()
+                } else {
+                    Vec::new()
+                },
+                prefix_note: if base_var {
+                    c.prefix_note.clone()
+                } else {
+                    None
+                },
                 file: m.path.clone(),
                 line: c.line,
                 method,
@@ -715,8 +871,8 @@ pub fn rows(
 pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
     tx.execute("DELETE FROM api_calls", [])?;
     let mut ins = tx.prepare(
-        "INSERT INTO api_calls (file, line, method, url, raw, via, base_var, external, fields_json, typed_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO api_calls (file, line, method, url, raw, via, base_var, external, fields_json, typed_json, prefixes_json, sends_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?;
     for r in rows {
         ins.execute(params![
@@ -729,7 +885,18 @@ pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
             i64::from(r.base_var) | (i64::from(r.optional_tail) << 1),
             r.external,
             (!r.fields.is_empty()).then(|| serde_json::to_string(&r.fields).unwrap_or_default()),
-            (!r.typed.is_empty()).then(|| serde_json::to_string(&r.typed).unwrap_or_default())
+            (!r.typed.is_empty()).then(|| serde_json::to_string(&r.typed).unwrap_or_default()),
+            (!r.prefixes.is_empty()
+                || r.prefix_note.is_some()
+                || !r.variants.is_empty()
+                || r.in_member.is_some())
+            .then(|| {
+                serde_json::json!({ "values": r.prefixes, "note": r.prefix_note, "variants": r.variants, "loose": r.variants_loose, "member": r.in_member })
+                    .to_string()
+            }),
+            r.sends
+                .as_ref()
+                .map(|s| serde_json::to_string(s).unwrap_or_default())
         ])?;
     }
     Ok(())
@@ -737,7 +904,7 @@ pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
 
 pub fn load(conn: &rusqlite::Connection) -> Result<Vec<CallRow>> {
     let mut stmt = conn.prepare(
-        "SELECT file, line, method, url, raw, via, base_var, external, fields_json, typed_json FROM api_calls ORDER BY file, line",
+        "SELECT file, line, method, url, raw, via, base_var, external, fields_json, typed_json, prefixes_json, sends_json FROM api_calls ORDER BY file, line",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(CallRow {
@@ -758,6 +925,36 @@ pub fn load(conn: &rusqlite::Connection) -> Result<Vec<CallRow>> {
                 .get::<_, Option<String>>(9)?
                 .and_then(|j| serde_json::from_str(&j).ok())
                 .unwrap_or_default(),
+            prefixes: Vec::new(),
+            prefix_note: None,
+            variants: Vec::new(),
+            in_member: None,
+            variants_loose: false,
+            sends: r
+                .get::<_, Option<String>>(11)?
+                .and_then(|j| serde_json::from_str(&j).ok()),
+        })
+        .map(|mut row| {
+            if let Ok(Some(j)) = r.get::<_, Option<String>>(10)
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&j)
+            {
+                row.prefixes = v["values"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect();
+                row.prefix_note = v["note"].as_str().map(str::to_owned);
+                row.in_member = v["member"].as_str().map(str::to_owned);
+                row.variants_loose = v["loose"].as_bool().unwrap_or(false);
+                row.variants = v["variants"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect();
+            }
+            row
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

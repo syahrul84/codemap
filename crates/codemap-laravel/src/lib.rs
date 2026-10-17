@@ -2,6 +2,7 @@
 //! extraction (with optional `artisan route:list`), and `doctor` reports.
 //! Phase 4 adds models, the migration-replayed schema and Form Requests.
 
+pub mod accepts;
 pub mod background;
 pub mod cache_map;
 pub mod config_php;

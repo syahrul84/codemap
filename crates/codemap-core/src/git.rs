@@ -231,6 +231,11 @@ pub fn remote_url(root: &Path) -> Option<String> {
     git(root, &["config", "--get", "remote.origin.url"]).filter(|s| !s.is_empty())
 }
 
+/// The folder's path inside its repository (`frontend/`), empty at the top.
+pub fn prefix(root: &Path) -> Option<String> {
+    git(root, &["rev-parse", "--show-prefix"])
+}
+
 /// The repository's first commit (lexicographically smallest if there are several roots).
 pub fn root_commit(root: &Path) -> Option<String> {
     git(root, &["rev-list", "--max-parents=0", "HEAD"])?

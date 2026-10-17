@@ -30,6 +30,10 @@ pub struct ScriptFacts {
     /// globals): candidates for project functions used without an import.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbound_calls: Vec<NamedLine>,
+    /// Methods called on a named object (`ordersApi.cancel`), so an object's
+    /// method counts as used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub member_calls: Vec<String>,
     /// `$emit('x')` / `emit('x')` calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub emitted: Vec<NamedLine>,
@@ -68,6 +72,14 @@ pub struct ScriptFacts {
     /// through helper functions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fn_calls: Vec<FnCall>,
+    /// Calls whose argument spoofs a method (`save(id, { _method: 'PUT' })`),
+    /// for a function elsewhere that posts that argument.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spoof_calls: Vec<SpoofCall>,
+    /// Top-level functions whose returned object spoofs a method:
+    /// `(name, method)`, the method starting with `?` when set only sometimes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fn_spoofs: Vec<(String, String)>,
     /// Property paths read from this component's props in script
     /// (`props.mall.name`, `this.mall.name` → `mall.name`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -382,8 +394,73 @@ pub struct RouteNode {
     pub line: u32,
 }
 
+/// A call passing a body that spoofs `method` as argument `index`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpoofCall {
+    /// As written: `save`, `ordersApi.update`.
+    pub callee: String,
+    pub index: u32,
+    pub method: String,
+}
+
+/// The top-level keys of a request's body and query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sent {
+    pub keys: Vec<String>,
+    /// Every key is known (no spread, variable or helper codemap cannot see into).
+    pub complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl Sent {
+    fn add(&mut self, k: &str) {
+        if k != "_method" && !self.keys.iter().any(|x| x == k) {
+            self.keys.push(k.to_owned());
+        }
+    }
+
+    pub fn push(&mut self, k: &str) {
+        self.add(k);
+    }
+
+    pub fn unknown(note: impl Into<String>) -> Self {
+        Self {
+            keys: Vec::new(),
+            complete: false,
+            note: Some(note.into()),
+        }
+    }
+
+    /// Adds another part's keys; one unknown part makes the whole unknown.
+    pub fn merge(&mut self, o: Sent) {
+        for k in &o.keys {
+            self.add(k);
+        }
+        if !o.complete {
+            self.complete = false;
+            if self.note.is_none() {
+                self.note = o.note;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiCall {
+    /// The object method this call sits in (`ordersApi.cancel` for
+    /// `ordersApi = { cancel() {…} }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_member: Option<String>,
+    /// Where a spoofed method may come from in another file: `@helper` (an
+    /// imported function building the body) or `param:<function>#<index>`
+    /// (the body is a parameter; its callers pass it). Several, `;`-separated,
+    /// are tried in order; `@a,@b` tries helpers in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoof_via: Option<String>,
+    /// The keys the call sends (body and query), when its payload is visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sends: Option<Sent>,
     /// `GET`, `POST`, …; `None` when the wrapper's method is not visible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
@@ -399,6 +476,22 @@ pub struct ApiCall {
     /// The URL ends with an optional segment (`${id ? `/${id}` : ''}`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub optional_tail: bool,
+    /// The values the leading variable can take, when it is a small choice of
+    /// strings (`kind === 'x' ? 'area/x' : 'area'`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefixes: Vec<String>,
+    /// Every URL the call can have when its embedded values are a small
+    /// known choice (`/${kind}-permit/${id}` with `kind: 'loading' | 'unloading'`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// Some parts of `variants` were combined without knowing they go
+    /// together: they are tried, but none is reported as missing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub variants_loose: bool,
+    /// Why the leading variable could not be expanded (a limit, or a value
+    /// codemap does not follow).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_note: Option<String>,
     /// Absolute URL to another host.
     #[serde(default, skip_serializing_if = "is_false")]
     pub external: bool,

@@ -15,10 +15,10 @@ use crate::detect::{Detection, Layout, detect};
 use crate::routes::{self, artisan, sources};
 
 /// Bump when route extraction output changes; routes are then rebuilt.
-pub const ROUTES_EXTRACTOR_VERSION: i64 = 2;
+pub const ROUTES_EXTRACTOR_VERSION: i64 = 4;
 
 /// Bump when model / schema / Form Request extraction output changes.
-pub const DATA_EXTRACTOR_VERSION: i64 = 8;
+pub const DATA_EXTRACTOR_VERSION: i64 = 9;
 
 /// Bump when detection output changes; detection then re-runs once.
 pub const DETECTION_VERSION: i64 = 2;
@@ -28,6 +28,12 @@ pub const DATA_ADAPTER: &str = "laravel-data";
 
 /// `warnings.adapter` for Laravel warnings.
 pub const ADAPTER: &str = "laravel";
+
+/// When the live schema was last read (unix seconds).
+const LIVE_SCHEMA_AT: &str = "live_schema_at";
+/// A live database is re-read at most this often (it changes without any
+/// file changing).
+const LIVE_SCHEMA_TTL_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaravelReport {
@@ -108,6 +114,8 @@ impl FrameworkAdapter for LaravelAdapter {
                 || p == "bootstrap/app.php"
                 || p == "composer.json"
                 || p == "composer.lock"
+                || p.starts_with("app/Providers/")
+                || p.starts_with("config/")
                 || state.as_ref().is_some_and(|s| s.files.contains(p))
         };
         let needed = ctx.full
@@ -174,6 +182,18 @@ impl FrameworkAdapter for LaravelAdapter {
             },
         };
 
+        // Routes packages register themselves (artisan already lists them).
+        let mut route_list = route_list;
+        if route_source.starts_with("static") {
+            for r in routes::packages::routes(ctx.root) {
+                if !route_list
+                    .iter()
+                    .any(|x| x.uri == r.uri && x.methods_str() == r.methods_str())
+                {
+                    route_list.push(r);
+                }
+            }
+        }
         let unresolved = route_list
             .iter()
             .filter(|r| r.unresolved_reason.is_some())
@@ -301,8 +321,10 @@ pub fn refresh(
         };
         laravel.routes = LaravelAdapter.extract(&ctx, &detection, store)?;
         laravel.route_source = stored_routes_state(store)?.map(|s| s.route_source);
-        let data_changed = opts.full || data_relevant(store, &base.scan)?;
-        laravel.data = extract_data(store, root, &detection, data_changed)?;
+        let data_changed = opts.full
+            || data_relevant(store, &base.scan)?
+            || other_schema_due(store, config, &base.scan)?;
+        laravel.data = extract_data(store, root, config, &detection, data_changed)?;
     } else if store.conn().query_row(
         "SELECT COUNT(*) FROM routes WHERE source != 'next'",
         [],
@@ -394,11 +416,106 @@ fn data_relevant(store: &Store, scan: &ScanReport) -> Result<bool> {
     Ok(hit.is_some())
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The `[[databases]]` entry whose schema is used besides the migrations.
+fn schema_database<'c>(
+    config: &'c Config,
+    root: &Path,
+) -> Option<&'c codemap_core::config::DatabaseConfig> {
+    let folder = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    config.databases.iter().find(|d| {
+        (d.dump.is_some() || d.schema.as_deref() == Some("live"))
+            && d.app.as_deref().is_none_or(|a| a == folder)
+    })
+}
+
+/// A live schema not read for a while, or a changed dump file.
+fn other_schema_due(store: &Store, config: &Config, scan: &ScanReport) -> Result<bool> {
+    for d in &config.databases {
+        if let Some(dump) = d.dump.as_deref().and_then(Path::to_str)
+            && scan.changed_paths.iter().any(|p| p == dump)
+        {
+            return Ok(true);
+        }
+        if d.schema.as_deref() == Some("live") && d.dump.is_none() {
+            let last: u64 = get_meta(store.conn(), LIVE_SCHEMA_AT)?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            return Ok(now_secs().saturating_sub(last) >= LIVE_SCHEMA_TTL_SECS);
+        }
+    }
+    Ok(false)
+}
+
+/// Puts the configured database's tables (live or from a dump) over the
+/// replayed schema. Problems become warnings: the migrations still answer.
+fn apply_other_schema(root: &Path, config: &Config, schema: &mut crate::schema::Schema) -> bool {
+    let Some(db) = schema_database(config, root) else {
+        return false;
+    };
+    let warn = |schema: &mut crate::schema::Schema, file: Option<String>, msg: String| {
+        schema.warnings.push(crate::routes::eval::Warning {
+            file,
+            line: None,
+            message: msg,
+        });
+    };
+    if let Some(dump) = &db.dump {
+        let rel = dump.to_string_lossy().into_owned();
+        match std::fs::read_to_string(root.join(dump)) {
+            Ok(sql) => {
+                let parsed = crate::schema::dump::parse(&sql, &rel);
+                schema.warnings.extend(parsed.warnings);
+                crate::schema::live::merge(schema, parsed.tables, &format!("dump:{}", db.name));
+            }
+            Err(e) => warn(
+                schema,
+                Some(rel),
+                format!("schema dump of `{}` not read: {e}", db.name),
+            ),
+        }
+        return false;
+    }
+    let url = std::env::var(&db.env).ok().filter(|v| !v.is_empty());
+    let Some(url) = url else {
+        warn(
+            schema,
+            None,
+            format!(
+                "`{}` has schema = \"live\" but the environment variable {} is not set; get_schema shows the migrations only",
+                db.name, db.env
+            ),
+        );
+        return true;
+    };
+    match crate::schema::live::read(&url) {
+        Ok(tables) => {
+            tracing::info!(database = %db.name, tables = tables.len(), "live schema read");
+            crate::schema::live::merge(schema, tables, &format!("live:{}", db.name));
+        }
+        Err(e) => warn(
+            schema,
+            None,
+            format!(
+                "live schema of `{}` not read: {e}; get_schema shows the migrations only",
+                db.name
+            ),
+        ),
+    }
+    true
+}
+
 /// Models, schema replay and Form Requests. They read many files but are
 /// cheap, so they are rebuilt whenever any file changed.
 fn extract_data(
     store: &mut Store,
     root: &Path,
+    config: &Config,
     detection: &Detection,
     changed: bool,
 ) -> Result<DataReport> {
@@ -417,13 +534,14 @@ fn extract_data(
     }
     let started = Instant::now();
     let models = crate::models::extract(store.conn(), root)?;
-    let schema = crate::schema::replay(
+    let mut schema = crate::schema::replay(
         root,
         &crate::schema::ReplayContext {
             models: &models,
             laravel_major: detection.major,
         },
     );
+    let live = apply_other_schema(root, config, &mut schema);
     let requests = crate::requests::extract(store.conn(), root)?;
 
     let tx = store.conn_mut().transaction()?;
@@ -439,6 +557,9 @@ fn extract_data(
         )?;
     }
     set_meta(&tx, meta_keys::DATA_STATE, &version)?;
+    if live {
+        set_meta(&tx, LIVE_SCHEMA_AT, &now_secs().to_string())?;
+    }
     tx.commit()?;
 
     Ok(DataReport {

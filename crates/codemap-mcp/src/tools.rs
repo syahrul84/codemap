@@ -319,6 +319,7 @@ impl From<DetailParam> for Detail {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OverviewParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,6 +330,7 @@ pub struct OverviewParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -366,6 +368,7 @@ impl From<SearchParams> for SearchInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetSymbolParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,6 +386,7 @@ pub struct GetSymbolParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetComponentParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,6 +398,7 @@ pub struct GetComponentParams {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListPagesParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,6 +438,7 @@ impl From<ListPagesParams> for codemap_vue::pages::PageFilter {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListRoutesParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -481,6 +487,7 @@ impl From<ListRoutesParams> for ListInput {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]

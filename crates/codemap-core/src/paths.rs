@@ -24,11 +24,16 @@ pub fn resolve_project_id(explicit: Option<&str>, root: &Path) -> Result<String>
     let remote = git::remote_url(root);
     let root_commit = git::root_commit(root);
     if remote.is_some() || root_commit.is_some() {
-        let key = format!(
+        let mut key = format!(
             "git:{}\n{}",
             remote.unwrap_or_default(),
             root_commit.unwrap_or_default()
         );
+        // Two folders of one repository (a monorepo's `frontend/` and
+        // `backend/`) are two projects: each gets its own index.
+        if let Some(sub) = git::prefix(root).filter(|p| !p.is_empty()) {
+            key.push_str(&format!("\n{}", sub.trim_end_matches('/')));
+        }
         return Ok(short_hash(&key));
     }
     // A folder holding several apps, each its own repository (a workspace):
@@ -115,6 +120,39 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.len(), 12);
         validate_project_id(&a).unwrap();
+    }
+
+    #[test]
+    fn folders_of_one_repository_get_their_own_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-q"]);
+        for sub in ["frontend", "backend"] {
+            std::fs::create_dir(dir.path().join(sub)).unwrap();
+            std::fs::write(dir.path().join(sub).join("a"), sub).unwrap();
+        }
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "x",
+        ]);
+        let top = resolve_project_id(None, dir.path()).unwrap();
+        let front = resolve_project_id(None, &dir.path().join("frontend")).unwrap();
+        let back = resolve_project_id(None, &dir.path().join("backend")).unwrap();
+        assert_ne!(front, back);
+        assert_ne!(top, front);
     }
 
     #[test]

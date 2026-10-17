@@ -22,3 +22,12 @@ pub use store::Store;
 /// Version of the `codemap` workspace.
 /// `0.1.2` for a release build, `0.1.2-dev+abc1234` otherwise (see build.rs).
 pub const VERSION: &str = env!("CODEMAP_VERSION");
+
+/// Parse workers get a large stack: deeply nested files (long chained
+/// arrays, generated code) recurse deep in the tree walkers. Call once at
+/// start-up, before any parallel work.
+pub fn init_threads() {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(64 << 20)
+        .build_global();
+}

@@ -4,6 +4,7 @@
 
 pub mod artisan;
 pub mod eval;
+pub mod packages;
 pub mod resource;
 pub mod sources;
 
@@ -69,6 +70,8 @@ pub enum RouteSource {
     Artisan,
     /// Next.js route handlers, written by the frontend adapter.
     Next,
+    /// Registered by a package (Passport, Sanctum), not by a route file.
+    Package,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +159,7 @@ impl RouteDef {
                 RouteSource::Static => "static",
                 RouteSource::Artisan => "artisan",
                 RouteSource::Next => "next",
+                RouteSource::Package => "package",
             },
         );
         if let Some(reason) = &self.unresolved_reason {
@@ -241,6 +245,7 @@ pub fn replace_all(conn: &Connection, routes: &[RouteDef]) -> Result<()> {
                 RouteSource::Static => "static",
                 RouteSource::Artisan => "artisan",
                 RouteSource::Next => "next",
+                RouteSource::Package => "package",
             },
             r.unresolved_reason,
             extra,
@@ -270,6 +275,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<RouteDef> {
         source: match source.as_str() {
             "artisan" => RouteSource::Artisan,
             "next" => RouteSource::Next,
+            "package" => RouteSource::Package,
             _ => RouteSource::Static,
         },
         unresolved_reason: row.get(13)?,

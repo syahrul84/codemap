@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR: &str = "js";
 
 /// Bump when per-file output changes; every JS/TS/Vue file is then re-parsed.
-pub const JS_EXTRACTOR_VERSION: i64 = 27;
+pub const JS_EXTRACTOR_VERSION: i64 = 37;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TagUse {
@@ -647,6 +647,13 @@ fn merge(mut a: ScriptFacts, b: ScriptFacts) -> ScriptFacts {
     a.api_calls.extend(b.api_calls);
     a.i18n_uses.extend(b.i18n_uses);
     a.fn_calls.extend(b.fn_calls);
+    a.spoof_calls.extend(b.spoof_calls);
+    a.fn_spoofs.extend(b.fn_spoofs);
+    for n in b.member_calls {
+        if !a.member_calls.contains(&n) {
+            a.member_calls.push(n);
+        }
+    }
     a.db_tables.extend(b.db_tables);
     a.url_templates.extend(b.url_templates);
     for t in b.types {
@@ -810,9 +817,18 @@ pub fn index_pending(store: &mut Store, root: &Path) -> Result<JsReport> {
         rows.collect::<rusqlite::Result<_>>()?
     };
     // JSON files matter only when they hold translations; mark the rest done.
-    let (pending, other_json): (Vec<FileRef>, Vec<FileRef>) = pending
-        .into_iter()
-        .partition(|(_, p)| !p.ends_with(".json") || crate::i18n::locale_of(p).is_some());
+    // So do JSON files without a .json name (`composer.lock`): never script.
+    let script_ext = |p: &str| {
+        let ext = p.rsplit('.').next().unwrap_or("");
+        matches!(
+            ext,
+            "vue" | "js" | "ts" | "mjs" | "cjs" | "mts" | "cts" | "jsx" | "tsx"
+        )
+    };
+    let (pending, other_json): (Vec<FileRef>, Vec<FileRef>) =
+        pending.into_iter().partition(|(_, p)| {
+            script_ext(p) || (p.ends_with(".json") && crate::i18n::locale_of(p).is_some())
+        });
     for (id, _) in &other_json {
         tx.execute(
             "INSERT OR REPLACE INTO extractor_state (file_id, extractor, version) VALUES (?1, ?2, ?3)",

@@ -751,3 +751,379 @@ fn api_method_spoofing_and_optional_tail() {
     assert_eq!(f.api_calls[1].url, "/{}/procurement");
     assert!(f.api_calls[1].optional_tail && f.api_calls[1].base_var);
 }
+
+#[test]
+fn method_spoofing_through_variables_helpers_and_assignments() {
+    let src = r#"import axios from 'axios'
+function widgetForm(record) {
+  return { ...record, _method: 'PATCH' }
+}
+export function saveWidget(id, record) {
+  const payload = { ...record, _method: 'PATCH' }
+  return axios.post(`/api/widgets/${id}`, payload)
+}
+export function saveWidgetForm(id, record) {
+  return axios.post(`/api/widgets/${id}`, widgetForm(record))
+}
+export function renameWidget(id, name) {
+  const payload2 = { name }
+  payload2._method = 'PUT'
+  return axios.post(`/api/widgets/${id}`, payload2)
+}
+export function upload(id, file) {
+  const form = new FormData()
+  form.append('_method', 'PUT')
+  return axios.post(`/api/widgets/${id}`, form)
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    let methods: Vec<Option<&str>> = f.api_calls.iter().map(|c| c.method.as_deref()).collect();
+    assert_eq!(
+        methods,
+        [Some("PATCH"), Some("PATCH"), Some("PUT"), Some("PUT")],
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn variable_prefixes_with_known_values() {
+    let src = r#"import api from './api'
+const prefix = (kind: Kind) => (kind === 'x' ? 'area/x/billing' : 'area/y/billing')
+export function tax(kind: Kind) {
+  return api.get(`${prefix(kind)}/calculate-tax`)
+}
+export function contacts(appType: string) {
+  const base = appType === 'X' ? '/area/x' : '/area'
+  return api.get(`${base}/contacts`)
+}"#;
+    let f = analyze(src, "ts", 1, ScriptKind::Module);
+    assert_eq!(
+        f.api_calls[0].prefixes,
+        ["area/x/billing", "area/y/billing"],
+        "{:?}",
+        f.api_calls
+    );
+    assert_eq!(f.api_calls[1].prefixes, ["/area/x", "/area"]);
+}
+
+#[test]
+fn keys_a_call_sends() {
+    let src = r#"import axios from 'axios'
+export function create(title) {
+  return axios.post('/api/widgets', { title, color: 'red', _method: 'PUT' })
+}
+export function search(q) {
+  return axios.get('/api/widgets', { params: { q, page: 1 } })
+}
+export function upload(file) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('tags[0]', 'a')
+  return axios.post('/api/files', form)
+}
+export function rename(id, name) {
+  const body = { name }
+  body.note = ''
+  body['slug'] = 'x'
+  return $fetch(`/api/widgets/${id}`, { method: 'PATCH', body })
+}
+export function save(record) {
+  return axios.post('/api/widgets', { ...record, extra: 1 })
+}
+export function ping() {
+  return axios.post('/api/ping')
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    let sends: Vec<(Vec<&str>, bool)> = f
+        .api_calls
+        .iter()
+        .map(|c| {
+            let s = c.sends.as_ref().unwrap();
+            (s.keys.iter().map(String::as_str).collect(), s.complete)
+        })
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            (vec!["title", "color"], true),
+            (vec!["q", "page"], true),
+            (vec!["file", "tags"], true),
+            (vec!["name", "note", "slug"], true),
+            (vec!["extra"], false),
+            (vec![], true),
+        ]
+    );
+    assert!(
+        f.api_calls[4]
+            .sends
+            .as_ref()
+            .unwrap()
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("record"),
+        "{:?}",
+        f.api_calls[4].sends
+    );
+}
+
+#[test]
+fn sent_keys_follow_scope_conditionals_and_url_query() {
+    let src = r#"export function tags(opts) {
+  const query = {}
+  query.radius_km = opts.r
+  return useApi()('/tags', { query })
+}
+export function one(id, coords) {
+  const query = coords ? { lat: coords.lat, lng: coords.lng } : undefined
+  return useApi()(`/listings/${id}`, { query })
+}
+export function search(q) {
+  return useApi()(`/geocode?q=${encodeURIComponent(q)}&limit=5`)
+}
+export function list(qs) {
+  return useApi()(`/merchants?${qs}`)
+}"#;
+    let f = analyze(src, "ts", 1, ScriptKind::Module);
+    let sends: Vec<(Vec<&str>, bool)> = f
+        .api_calls
+        .iter()
+        .map(|c| {
+            let s = c.sends.as_ref().unwrap();
+            (s.keys.iter().map(String::as_str).collect(), s.complete)
+        })
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            (vec!["radius_km"], true),
+            (vec!["lat", "lng"], true),
+            (vec!["q", "limit"], true),
+            (vec![], false),
+        ]
+    );
+}
+
+#[test]
+fn method_spoofing_follows_conditions_and_scope() {
+    let src = r#"import axios from 'axios'
+
+function widgetForm(payload, update) {
+  const body = { ...payload }
+  if (update) body._method = 'PUT'
+  return body
+}
+
+export function approveWidget(id, record) {
+  return axios.post(`/api/widgets/${id}`, widgetForm(record, true))
+}
+
+export function exportWidgets(record) {
+  return axios.post('/api/widgets/export', widgetForm(record, false))
+}
+
+export function saveNote(record, editing) {
+  const payload = { ...record }
+  if (editing) payload._method = 'PATCH'
+  return axios.post('/api/notes', payload)
+}
+
+export function createNote(record) {
+  const payload = { ...record, kind: 1 }
+  return axios.post('/api/notes', payload)
+}
+
+export function isolate(id, payload) {
+  payload._method = 'PUT'
+  return axios.post(`/api/orders/${id}`, toLegacyFormData(payload))
+}
+
+export function either(record, flag) {
+  return axios.post('/api/widgets/export', widgetForm(record, flag))
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    let methods: Vec<Option<&str>> = f.api_calls.iter().map(|c| c.method.as_deref()).collect();
+    assert_eq!(
+        methods,
+        [
+            Some("PUT"),
+            Some("POST"),
+            Some("POST|PATCH"),
+            Some("POST"),
+            Some("PUT"),
+            Some("POST|PUT"),
+        ],
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn form_data_copied_from_an_object_or_handed_off() {
+    let src = r#"import axios from 'axios'
+function append(form, key, value) {
+  form.append(key, value)
+}
+export async function reply(noteId, teamId, text) {
+  const payload = { team_id: teamId, body: text }
+  const form = new FormData()
+  Object.entries(payload).forEach(([key, value]) => append(form, key, value))
+  await axios.post(`/api/notes/${noteId}/reply`, form)
+}
+export async function loop(teamId) {
+  const payload = { team_id: teamId }
+  const form = new FormData()
+  for (const [k, v] of Object.entries(payload)) form.append(k, v)
+  await axios.post('/api/notes', form)
+}
+export async function handed(file) {
+  const form = new FormData()
+  addFiles(form, file)
+  await axios.post('/api/files', form)
+}
+export async function opaque(form) {
+  await axios.post('/api/files', form)
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    let sends: Vec<(Vec<&str>, bool)> = f
+        .api_calls
+        .iter()
+        .map(|c| {
+            let s = c.sends.as_ref().unwrap();
+            (s.keys.iter().map(String::as_str).collect(), s.complete)
+        })
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            (vec!["team_id", "body"], true),
+            (vec!["team_id"], true),
+            (vec![], false),
+            (vec![], false),
+        ]
+    );
+}
+
+#[test]
+fn url_variants_from_typed_choices() {
+    let src = r#"import api from './api'
+export type PermitKind = 'loading' | 'unloading'
+export const permitApi = {
+  detail(kind: PermitKind, id: string | number) {
+    return api.get(`/${kind}-permit/${id}`)
+  },
+  scan(kind: 'in' | 'out', id: number) {
+    return api.get(`/permits/${kind}/${id}`)
+  },
+  free(kind: string, id: number) {
+    return api.get(`/${kind}-permit/${id}`)
+  },
+}"#;
+    let f = analyze(src, "ts", 1, ScriptKind::Module);
+    let v: Vec<Vec<&str>> = f
+        .api_calls
+        .iter()
+        .map(|c| c.variants.iter().map(String::as_str).collect())
+        .collect();
+    assert_eq!(
+        v,
+        [
+            vec!["/loading-permit/{}", "/unloading-permit/{}"],
+            vec!["/permits/in/{}", "/permits/out/{}"],
+            vec![],
+        ],
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn method_spoofing_on_component_state_and_query_string() {
+    let src = r#"export default {
+  methods: {
+    save() {
+      this.record._method = 'PATCH'
+      return api.post('/widgets/' + this.id, this.record)
+    },
+    archive() {
+      return api.post(`/widgets/${this.id}/archive?_method=PUT`, { reason: 'old' })
+    },
+    plain() {
+      return api.post('/widgets/' + this.id, this.record)
+    },
+  },
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    let methods: Vec<Option<&str>> = f.api_calls.iter().map(|c| c.method.as_deref()).collect();
+    assert_eq!(
+        methods,
+        [Some("PATCH"), Some("PUT"), Some("POST")],
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn method_spoofing_through_a_converter_of_component_state() {
+    let src = r#"export default {
+  methods: {
+    save() {
+      this.record._method = "PATCH";
+      let formData = jsonFormData(this.record);
+      return api.post("/vendor-registration/" + this.tokenId, formData);
+    },
+  },
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    assert_eq!(
+        f.api_calls[0].method.as_deref(),
+        Some("PATCH"),
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn url_variants_from_a_computed_property() {
+    let src = r#"export default {
+  computed: {
+    segment() {
+      return this.version === "v3-1" ? "sheet-v3-1" : "sheet-v4";
+    },
+  },
+  methods: {
+    download() {
+      return api.get(`admin/report/${this.segment}-g/export-xls`);
+    },
+  },
+}"#;
+    let f = analyze(src, "js", 1, ScriptKind::Module);
+    assert_eq!(
+        f.api_calls[0].variants,
+        [
+            "/admin/report/sheet-v3-1-g/export-xls",
+            "/admin/report/sheet-v4-g/export-xls"
+        ],
+        "{:?}",
+        f.api_calls
+    );
+}
+
+#[test]
+fn url_variants_follow_one_variable_through_several_parts() {
+    let src = r#"export type Kind = 'rates' | 'labels'
+export function saveAll(shopId: number, kind: Kind, payload: object) {
+  return axios.post(`/api/shops/${shopId}/${kind}${kind === 'rates' ? '/bulk' : ''}`, payload)
+}
+export function guess(shopId: number, kind: Kind, flag: boolean) {
+  return axios.post(`/api/shops/${shopId}/${kind}${flag ? '/bulk' : ''}`, {})
+}"#;
+    let f = analyze(src, "ts", 1, ScriptKind::Module);
+    assert_eq!(
+        f.api_calls[0].variants,
+        ["/api/shops/{}/labels", "/api/shops/{}/rates/bulk"]
+    );
+    assert!(!f.api_calls[0].variants_loose);
+    // `flag` is not tied to `kind`: the URLs are tried, not claimed.
+    assert!(f.api_calls[1].variants_loose, "{:?}", f.api_calls[1]);
+}

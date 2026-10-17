@@ -81,6 +81,14 @@ pub struct DatabaseConfig {
     /// Migrations table (default: `config/database.php`, else `migrations`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
+    /// `"live"`: also read the tables and columns from this database
+    /// (information_schema / pragma, read-only) for `get_schema` and `verify`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// A structure dump (`mysqldump --no-data`, `pg_dump --schema-only`),
+    /// relative to the project, read instead of connecting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dump: Option<PathBuf>,
 }
 
 /// Commands that run tests; the test files are appended. Unset: detected
@@ -293,7 +301,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("tests", &["php", "js", "browser"]),
     ("copy", &["banned"]),
     ("release", &["ignore"]),
-    ("databases", &["name", "env", "app", "table"]),
+    (
+        "databases",
+        &["name", "env", "app", "table", "schema", "dump"],
+    ),
     ("rules", &["files", "note", "when", "level", "app"]),
     ("report", &["send"]),
 ];

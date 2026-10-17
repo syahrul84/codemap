@@ -20,6 +20,7 @@ use crate::tools::{DetailParam, Project, ToolError};
 
 /// Things a change relies on.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Claims {
     /// FQNs or short names, e.g. `App\Models\Order`.
     #[serde(default)]
@@ -86,6 +87,7 @@ impl Claims {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VerifyParams {
     /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.3] - 2026-10-17
+
+Fixes for the issues reported through `report_wrong_answer` (#3–#9):
+
+- `api_usage`: a variable URL prefix with known values (`kind === 'x' ? 'area/x' : 'area'`, also through a small helper function or a local constant) is expanded and each full URL matched; on irems-sg this resolved 45 of 64 unresolved calls. Suggestions for calls that stay unresolved are ranked by how many words of the URL tail match (#8).
+- `api_usage`: method spoofing is read from a request body in a variable, a helper's returned object, `payload._method = 'PUT'` and `form.append('_method', 'PUT')` (#3).
+- `api_usage`: a call no longer matches a route by crossing wildcards (`/widgets/{}/archive` against `widgets/history/{widgetId}`): it is reported as having no route (#5).
+- Routes registered by Laravel Passport (`oauth/token`, `oauth/authorize`, …) and Sanctum (`sanctum/csrf-cookie`) are known without artisan mode (#4).
+- `composer.lock` and other JSON files without a `.json` name are no longer read as JavaScript (#6).
+- Every tool refuses unknown arguments and names the accepted ones (`uri` → `uri_contains`); so does `verify`'s `claims` (#7).
+- Wrong-answer report examples may use Laravel's standard app names (`AuthServiceProvider`, `App\Providers`, …) and any class name declared by an installed package (#9).
+
+New, from the feature requests (#10–#15):
+
+- Routes registered by packages are known without artisan mode: Sanctum, Broadcasting (`broadcasting/auth`), Fortify (following the features enabled in `config/fortify.php`), Horizon, Telescope, Pulse, Cashier (`stripe/webhook`) and Livewire (v2 and v3), with prefixes from their config files; Passport follows its version (automatic from v11 unless `ignoreRoutes()`) (#10).
+- `get_schema` can read tables and columns from a live database (`[[databases]] schema = "live"`: information_schema for MySQL / MariaDB and PostgreSQL, pragma for SQLite, read-only, re-read at most every 10 minutes) or from a structure dump (`dump = "file.sql"`). Each column says where it comes from (`source`), and differences from the migrations are kept as `drift` (#11).
+- `api_usage` checks what a call sends against what the action accepts: the Form Request's `rules()`, an inline `validate()`, or the fields it reads (also in the controller's helper methods). New findings `missing_required` and `unknown_field` (`status: payload`), with the evidence; payloads built through spreads or helpers are `payload_unchecked`, not guessed (#12).
+- `api_usage` takes `git_changes` / `changed_files` (only the calls the change touches, including calls to backend routes whose route file or controller changed) and `new_only` (hide findings saved by the new `codemap baseline`). `codemap check api [--changed]` prints new findings and exits 1 on a new missing or wrong-method call, for CI and pre-commit hooks (#13).
+- Fields findings carry `evidence`: where the response shape came from (Resource and its `toArray` file:line, or the action's `return`), every key it returns with conditional ones marked, and the paths the frontend read; brief answers name the shape too (#14).
+- A generated stress project (4,000 routes, 300 modules) is part of the tests; when a prefix is not expanded, the reason says whether a limit was hit or the value comes from code codemap does not follow (#15).
+
+Fixes from the dev-build retest (17 Oct):
+
+- `_method` spoofing follows conditions and scope: `if (editing) payload._method = 'PATCH'` makes the call "POST or PATCH" (either method fits), a helper that sets it under a parameter is decided by the argument at each call (`widgetForm(record, false)` stays POST), and a same-named variable in another function no longer inherits it. This was a regression in the #3 fix.
+- A payload copied into `FormData` with `Object.entries(…).forEach(…)` or `for … of Object.entries(…)`, also through a local `append` helper, carries the object's keys. A body handed to other code, or one whose keys can't be read, is unchecked instead of "sends nothing".
+- `accepts_at` for rules in a controller helper names the `validate()` line and the call: `NoteController.php:28 (in project(), called at line 14)`; it never says `:0`.
+- Less noise from the payload check: unread query parameters of a GET (or of a call with an unknown method) are a note (`unknown_query_note`, listed with `status: "payload_all"`); no `unknown_field` when the payload was not fully followed; a missing required field and an unknown sent field on one call are reported as `possible_rename` (`unit_id → tenant_id`); `page` and `cursor` are accepted only when the action or a helper paginates. The evidence says `sends_complete` and `accepts_complete` separately.
+
+Fixes for two more reports (17 Oct):
+
+- A URL value with a small known choice anywhere in the template is expanded and each full URL matched, including a parameter typed as a string union or an alias of one (`` `/${kind}-permit/${id}` `` with `kind: PermitKind`, `type PermitKind = 'loading' | 'unloading'`). When none of the full URLs has a route, the call is reported as missing rather than matched loosely.
+- A variable inside a URL segment stands for one word: `{}-permit` no longer fits `spfm-work-permit`.
+- `_method` spoofing across files: a function that posts a body parameter takes the method its callers pass in that argument (`invitationAction(id, 'void', { …, _method: 'PUT' })` in another file makes it "POST or PUT"), and a body built by an imported helper (also copied into `FormData`) takes the method that helper sets.
+
+Fixes from the accuracy check on 9d73973 (17 Oct):
+
+- More `_method` spoofing is followed: a caller that builds the body with a helper (inline or through a variable), a function that spreads its body parameter into a new body (`{ ...record, reason }`) or converts it (`toFormData(payload)`), Vue 2 component state (`this.record._method = 'PATCH'` then posting `this.record` or `jsonFormData(this.record)`), and `?_method=PUT` in the URL. On the test apps, wrong-method findings went from 6 to 3 and from 25 to 20, the ones checked by hand as real.
+- Calls to imported functions from packages (`reactive`, `ref`) no longer count as body helpers; facts from both script blocks of a `.vue` file are kept.
+- URLs naming a scaffold placeholder (`/_api_url_/{}`, `/unitURL`) get their own `placeholder` status instead of `missing`, and do not fail `codemap check api`.
+- A call whose URL has several known values says which ones have no route (`variants_without_route`), also when another one matched; values from a component's computed property (`this.reportSegment`) are expanded.
+- A broken call inside an object's method that nothing calls (`billingDraftApi.post`) is marked as dead code.
+- URL variants are built per value of the variables the URL depends on, so one variable that decides two parts (`${kind}${kind === 'rates' ? '/bulk' : ''}`) only gives the URLs it can make. When a part cannot be tied to a known value, its URLs are tried but never reported as missing.
+
+Also:
+
+- Two folders of one repository (a monorepo's `frontend/` and `backend/` linked with `[[links]]`) get their own index; they shared one and re-indexed each other on every call. Such folders are indexed once more after updating.
+- Parsing threads get a larger stack, so very deeply nested files cannot crash a scan.
+
 ## [0.1.2] - 2026-10-17
 
 - Fixes from the 17 Oct retest (round 8):

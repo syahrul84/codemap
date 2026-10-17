@@ -291,6 +291,8 @@ pub(super) fn column(def: &str, at: &str) -> Option<Column> {
         created_in: Some(at.to_owned()),
         last_changed_in: Some(at.to_owned()),
         confidence: super::Confidence::High,
+        source: None,
+        drift: None,
     })
 }
 

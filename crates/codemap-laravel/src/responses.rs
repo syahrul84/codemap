@@ -52,10 +52,10 @@ pub struct ResponseShape {
     pub notes: Vec<String>,
 }
 
-struct Parsed {
-    src: Vec<u8>,
-    tree: tree_sitter::Tree,
-    file: String,
+pub(crate) struct Parsed {
+    pub(crate) src: Vec<u8>,
+    pub(crate) tree: tree_sitter::Tree,
+    pub(crate) file: String,
 }
 
 /// Parsed controller / resource files, reused while unchanged: one controller
@@ -63,7 +63,7 @@ struct Parsed {
 type ParseCache = HashMap<PathBuf, (Option<SystemTime>, Arc<Parsed>)>;
 static PARSED: Mutex<Option<ParseCache>> = Mutex::new(None);
 
-fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<Arc<Parsed>> {
+pub(crate) fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<Arc<Parsed>> {
     let sym = symbols::by_fqn(conn, fqn)
         .ok()?
         .into_iter()
@@ -94,7 +94,7 @@ fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<Arc<Parsed>>
     Some(parsed)
 }
 
-fn method<'t>(class: Node<'t>, src: &[u8], name: &str) -> Option<Node<'t>> {
+pub(crate) fn method<'t>(class: Node<'t>, src: &[u8], name: &str) -> Option<Node<'t>> {
     class
         .child_by_field_name("body")
         .map(named_children)

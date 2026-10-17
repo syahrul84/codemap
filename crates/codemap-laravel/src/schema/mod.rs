@@ -3,6 +3,7 @@
 
 pub mod blueprint;
 pub mod dump;
+pub mod live;
 pub mod raw;
 pub mod supabase;
 
@@ -62,6 +63,10 @@ pub struct Column {
     pub created_in: Option<String>,
     pub last_changed_in: Option<String>,
     pub confidence: Confidence,
+    /// `live:local`, `dump:structure`; `None`: migrations / the schema dump.
+    pub source: Option<String>,
+    /// How the other source differs (`not in database live:local`).
+    pub drift: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -73,6 +78,8 @@ pub struct Table {
     pub dropped: bool,
     pub renamed_from: Option<String>,
     pub confidence: Confidence,
+    pub source: Option<String>,
+    pub drift: Option<String>,
 }
 
 impl Table {
@@ -955,9 +962,9 @@ pub fn store(conn: &Connection, schema: &Schema) -> Result<()> {
             continue;
         }
         conn.execute(
-            "INSERT OR REPLACE INTO db_tables (name, created_in, last_changed_in, dropped, renamed_from, confidence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![t.name, t.created_in, t.last_changed_in, t.dropped, t.renamed_from, t.confidence.as_str()],
+            "INSERT OR REPLACE INTO db_tables (name, created_in, last_changed_in, dropped, renamed_from, confidence, source, drift)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![t.name, t.created_in, t.last_changed_in, t.dropped, t.renamed_from, t.confidence.as_str(), t.source, t.drift],
         )?;
         if t.dropped {
             continue;
@@ -966,12 +973,12 @@ pub fn store(conn: &Connection, schema: &Schema) -> Result<()> {
             conn.execute(
                 "INSERT OR REPLACE INTO db_columns (table_name, name, position, type, nullable, default_raw,
                      unsigned, is_unique, indexed, is_primary, auto_increment, fk_table, fk_column,
-                     created_in, last_changed_in, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     created_in, last_changed_in, confidence, source, drift)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     t.name, c.name, pos as i64, c.r#type, c.nullable, c.default, c.unsigned, c.unique,
                     c.indexed, c.primary, c.auto_increment, c.fk_table, c.fk_column, c.created_in,
-                    c.last_changed_in, c.confidence.as_str()
+                    c.last_changed_in, c.confidence.as_str(), c.source, c.drift
                 ],
             )?;
         }
@@ -982,7 +989,7 @@ pub fn store(conn: &Connection, schema: &Schema) -> Result<()> {
 pub fn load_columns(conn: &Connection, table: &str) -> Result<Vec<Column>> {
     let mut stmt = conn.prepare_cached(
         "SELECT name, type, nullable, default_raw, unsigned, is_unique, indexed, is_primary,
-                auto_increment, fk_table, fk_column, created_in, last_changed_in, confidence
+                auto_increment, fk_table, fk_column, created_in, last_changed_in, confidence, source, drift
          FROM db_columns WHERE table_name = ?1 ORDER BY position",
     )?;
     let rows = stmt.query_map([table], |r| {
@@ -1005,12 +1012,14 @@ pub fn load_columns(conn: &Connection, table: &str) -> Result<Vec<Column>> {
             } else {
                 Confidence::High
             },
+            source: r.get(14)?,
+            drift: r.get(15)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// (name, dropped, renamed_from, created_in, last_changed_in, confidence)
+/// (name, dropped, renamed_from, created_in, last_changed_in, confidence, (source, drift))
 type TableRow = (
     String,
     bool,
@@ -1018,11 +1027,12 @@ type TableRow = (
     Option<String>,
     Option<String>,
     String,
+    (Option<String>, Option<String>),
 );
 
 fn tables(conn: &Connection) -> Result<Vec<TableRow>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT name, dropped, renamed_from, created_in, last_changed_in, confidence FROM db_tables ORDER BY name",
+        "SELECT name, dropped, renamed_from, created_in, last_changed_in, confidence, source, drift FROM db_tables ORDER BY name",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -1032,6 +1042,7 @@ fn tables(conn: &Connection) -> Result<Vec<TableRow>> {
             r.get(3)?,
             r.get(4)?,
             r.get(5)?,
+            (r.get(6)?, r.get(7)?),
         ))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1078,6 +1089,12 @@ pub fn column_json(c: &Column, detail: Detail) -> Value {
     if c.confidence == Confidence::Low {
         o.insert("confidence".into(), json!("low"));
     }
+    if let Some(s) = &c.source {
+        o.insert("source".into(), json!(s));
+    }
+    if let Some(d) = &c.drift {
+        o.insert("drift".into(), json!(d));
+    }
     if detail == Detail::Full {
         o.insert("created_in".into(), json!(c.created_in));
         o.insert("last_changed_in".into(), json!(c.last_changed_in));
@@ -1090,7 +1107,7 @@ pub fn describe(conn: &Connection, table: Option<&str>, detail: Detail) -> Resul
     let all = tables(conn)?;
     let Some(name) = table.map(str::trim).filter(|t| !t.is_empty()) else {
         let mut list = Vec::new();
-        for (name, dropped, _, _, _, _) in all.iter().filter(|t| !t.1) {
+        for (name, dropped, _, _, _, _, (source, drift)) in all.iter().filter(|t| !t.1) {
             let _ = dropped;
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM db_columns WHERE table_name = ?1",
@@ -1101,7 +1118,14 @@ pub fn describe(conn: &Connection, table: Option<&str>, detail: Detail) -> Resul
                 .iter()
                 .filter_map(|m| m["fqn"].as_str().map(str::to_owned))
                 .collect();
-            list.push(json!({ "table": name, "columns": count, "models": models }));
+            let mut row = json!({ "table": name, "columns": count, "models": models });
+            if let Some(s) = source {
+                row["source"] = json!(s);
+            }
+            if let Some(d) = drift {
+                row["drift"] = json!(d);
+            }
+            list.push(row);
         }
         if list.is_empty() {
             return Ok(
@@ -1112,7 +1136,8 @@ pub fn describe(conn: &Connection, table: Option<&str>, detail: Detail) -> Resul
     };
 
     let live = all.iter().find(|t| t.0 == name && !t.1);
-    let Some((tname, _, renamed_from, created_in, changed_in, confidence)) = live else {
+    let Some((tname, _, renamed_from, created_in, changed_in, confidence, (source, drift))) = live
+    else {
         let mut hint = String::new();
         if let Some(t) = all.iter().find(|t| t.0 == name && t.1) {
             hint = format!(
@@ -1173,6 +1198,12 @@ pub fn describe(conn: &Connection, table: Option<&str>, detail: Detail) -> Resul
     }
     if confidence == "low" {
         o.insert("confidence".into(), json!("low"));
+    }
+    if let Some(s) = source {
+        o.insert("source".into(), json!(s));
+    }
+    if let Some(d) = drift {
+        o.insert("drift".into(), json!(d));
     }
     Ok(v)
 }

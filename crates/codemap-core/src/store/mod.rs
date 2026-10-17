@@ -23,6 +23,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0009_refs.sql"),
     include_str!("migrations/0010_api_typed.sql"),
     include_str!("migrations/0011_i18n_guarded.sql"),
+    include_str!("migrations/0012_api_prefixes.sql"),
+    include_str!("migrations/0013_api_sends.sql"),
+    include_str!("migrations/0014_schema_source.sql"),
 ];
 
 /// Schema version this build creates and understands.

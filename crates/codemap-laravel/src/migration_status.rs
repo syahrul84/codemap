@@ -92,7 +92,7 @@ pub fn describe_url(url: &str) -> String {
 }
 
 /// Removes the password (and user) from a driver's error text.
-fn scrub(msg: &str, url: &str) -> String {
+pub(crate) fn scrub(msg: &str, url: &str) -> String {
     let mut m = msg.to_owned();
     if let Some((_, rest)) = url.split_once("://")
         && let Some((cred, _)) = rest.rsplit_once('@')

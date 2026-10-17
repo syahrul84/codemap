@@ -145,6 +145,39 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Save the current API findings so later runs (`check api`,
+    /// `api_usage new_only`) report only new ones.
+    Baseline {
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Write here instead of the index folder; commit it as
+        /// `.codemap-baseline.json` in the repository root for CI.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// A gate for CI and pre-commit: print new findings and exit 1 when a new
+    /// call has no route or uses the wrong method.
+    Check {
+        /// What to check (`api`).
+        #[arg(value_parser = ["api"])]
+        what: String,
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Only what this branch changes (plus uncommitted changes).
+        #[arg(long)]
+        changed: bool,
+        /// The branch to compare with (default: origin/HEAD, main, master, develop).
+        #[arg(long)]
+        base: Option<String>,
+        /// The baseline file (default: the index folder, then `.codemap-baseline.json`).
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain detection, warnings and unresolved items.
     Doctor {
         /// The project folder (default: the current folder).
@@ -182,6 +215,7 @@ fn main() -> ExitCode {
         eprintln!("codemap: {err}");
         return ExitCode::FAILURE;
     }
+    codemap_core::init_threads();
     match run(cli) {
         Ok(code) => code,
         Err(err) => {
@@ -236,7 +270,222 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
             clear,
         } => cmd_misses(&cli, project, *json, *clear),
+        Command::Baseline { project, out } => cmd_baseline(&cli, project, out.as_deref()),
+        Command::Check {
+            project,
+            changed,
+            base,
+            baseline,
+            json,
+            ..
+        } => cmd_check(
+            &cli,
+            project,
+            *changed,
+            base.as_deref(),
+            baseline.as_deref(),
+            *json,
+        ),
     }
+}
+
+/// Every full `api_usage` row of one app (all pages).
+fn api_rows(
+    store: &Store,
+    project: &codemap_mcp::Project,
+    changed: bool,
+    base: Option<&str>,
+) -> anyhow::Result<(Vec<serde_json::Value>, serde_json::Value)> {
+    let mut rows = Vec::new();
+    let mut cursor = None;
+    loop {
+        let out = codemap_mcp::api::api_usage(
+            store,
+            project,
+            codemap_mcp::api::ApiUsageParams {
+                git_changes: changed,
+                base: base.map(str::to_owned),
+                limit: Some(100),
+                cursor: cursor.take(),
+                detail: codemap_mcp::tools::DetailParam::Full,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        rows.extend(out.data["calls"].as_array().cloned().unwrap_or_default());
+        match out.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return Ok((rows, out.data)),
+        }
+    }
+}
+
+fn cmd_baseline(cli: &Cli, project: &Path, out: Option<&Path>) -> anyhow::Result<ExitCode> {
+    let projects = Project::resolve(cli, project)?;
+    let mut findings = serde_json::Map::new();
+    let mut written = Vec::new();
+    for p in &projects {
+        let (store, _) = p.refresh(false)?;
+        let mcp = p.mcp();
+        let (rows, _) = api_rows(&store, &mcp, false, None)?;
+        let mut keys: Vec<String> = rows.iter().flat_map(codemap_mcp::api::row_keys).collect();
+        keys.sort();
+        keys.dedup();
+        let app = p.app.clone().unwrap_or_default();
+        println!(
+            "{}: {} findings saved",
+            if app.is_empty() { "project" } else { &app },
+            keys.len()
+        );
+        if out.is_none() {
+            let path = mcp
+                .index_path
+                .with_file_name(codemap_mcp::api::BASELINE_FILE);
+            let one = serde_json::json!({ "version": 1, "codemap": codemap_core::VERSION, "findings": { app: keys } });
+            std::fs::write(&path, serde_json::to_string_pretty(&one)? + "\n")
+                .with_context(|| format!("writing {}", path.display()))?;
+            written.push(path);
+        } else {
+            findings.insert(app, serde_json::json!(keys));
+        }
+    }
+    if let Some(path) = out {
+        let all = serde_json::json!({ "version": 1, "codemap": codemap_core::VERSION, "findings": findings });
+        std::fs::write(path, serde_json::to_string_pretty(&all)? + "\n")
+            .with_context(|| format!("writing {}", path.display()))?;
+        written.push(path.to_path_buf());
+    }
+    for w in written {
+        println!("wrote {}", w.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_check(
+    cli: &Cli,
+    project: &Path,
+    changed: bool,
+    base: Option<&str>,
+    baseline: Option<&Path>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let projects = Project::resolve(cli, project)?;
+    let mut report = Vec::new();
+    let mut failing = 0usize;
+    let mut warnings = 0usize;
+    for p in &projects {
+        let (store, _) = p.refresh(false)?;
+        let mcp = p.mcp();
+        let known = match baseline {
+            Some(path) => Some(
+                codemap_mcp::api::load_baseline(path, p.app.as_deref())
+                    .with_context(|| format!("no baseline for this app in {}", path.display()))?,
+            ),
+            None => codemap_mcp::api::baseline_paths(&mcp)
+                .iter()
+                .find_map(|path| codemap_mcp::api::load_baseline(path, p.app.as_deref())),
+        };
+        let (rows, data) = api_rows(&store, &mcp, changed, base)?;
+        for row in rows {
+            let keys = codemap_mcp::api::row_keys(&row);
+            if keys.is_empty()
+                || known
+                    .as_ref()
+                    .is_some_and(|k| keys.iter().all(|x| k.contains(x)))
+            {
+                continue;
+            }
+            let status = row["status"].as_str().unwrap_or_default();
+            let fails = matches!(status, "missing" | "method_mismatch");
+            if fails {
+                failing += 1;
+            } else {
+                warnings += 1;
+            }
+            let mut row = row;
+            row["app"] = serde_json::json!(p.app);
+            row["fails"] = serde_json::json!(fails);
+            report.push(row);
+        }
+        if !json && let Some(sc) = data.get("scope") {
+            eprintln!(
+                "{}compared with {} ({} changed files)",
+                p.app
+                    .as_deref()
+                    .map(|a| format!("{a}: "))
+                    .unwrap_or_default(),
+                sc["compared_with"].as_str().unwrap_or("?"),
+                sc["changed_files"]
+            );
+        }
+        if !json && known.is_none() {
+            eprintln!(
+                "note: no baseline saved; every finding counts as new (run `codemap baseline`)"
+            );
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "failing": failing, "warnings": warnings, "findings": report
+            }))?
+        );
+    } else {
+        for r in &report {
+            let s = r["status"].as_str().unwrap_or_default();
+            let what = match s {
+                "missing" => "no route".to_owned(),
+                "method_mismatch" => format!("wrong method; route is {}", r["path_exists_as"]),
+                "unresolved" => format!("unclear: {}", r["why"].as_str().unwrap_or_default()),
+                _ => {
+                    let list = |k: &str| -> String {
+                        let mut v: Vec<&str> = r[k]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                            .unwrap_or_default();
+                        v.dedup();
+                        v.join(", ")
+                    };
+                    let mut parts = Vec::new();
+                    for (k, text) in [
+                        (
+                            "read_but_not_returned",
+                            "reads {} but the endpoint does not return it",
+                        ),
+                        (
+                            "typed_but_not_returned",
+                            "its type requires {} but the endpoint does not send it",
+                        ),
+                        ("missing_required", "does not send required {}"),
+                        (
+                            "unknown_field",
+                            "sends {}, which the action does not accept",
+                        ),
+                        ("possible_rename", "possibly renamed (sent → required): {}"),
+                    ] {
+                        let l = list(k);
+                        if !l.is_empty() {
+                            parts.push(text.replace("{}", &l));
+                        }
+                    }
+                    parts.join("; ")
+                }
+            };
+            println!(
+                "{} {}  {}  → {what}",
+                if r["fails"] == true { "FAIL" } else { "warn" },
+                r["at"].as_str().unwrap_or_default(),
+                r["call"].as_str().unwrap_or_default(),
+            );
+        }
+        println!("{failing} failing, {warnings} warnings (new findings only)");
+    }
+    Ok(if failing > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// Resolved locations for one project.

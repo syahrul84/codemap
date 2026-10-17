@@ -365,6 +365,9 @@ pub fn build(
             reg.refs
                 .push((m.file_id, "js_call", c.name.clone(), c.line));
         }
+        for n in &m.facts.script.member_calls {
+            reg.refs.push((m.file_id, "js_member", n.clone(), 0));
+        }
         // Template calls to names the component's script does not define or
         // import: auto-imported helpers (`{{ formatMyr(x) }}`).
         let script = &m.facts.script;

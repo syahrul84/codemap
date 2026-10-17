@@ -620,10 +620,92 @@ fn real_names(apps: &[(&Store, &Project)]) -> HashSet<String> {
         add("SELECT uri FROM routes");
         add("SELECT key FROM i18n_keys");
     }
-    for n in NEUTRAL {
-        out.remove(*n);
+    for n in NEUTRAL.iter().chain(LARAVEL_SKELETON) {
+        out.remove(&n.to_lowercase());
+    }
+    // Names packages declare (Laravel, Filament, …): every project has them.
+    for (_, p) in apps {
+        for n in vendor_names(&p.root) {
+            out.remove(&n);
+        }
     }
     out
+}
+
+/// Classes and folders every Laravel app has from its skeleton.
+const LARAVEL_SKELETON: &[&str] = &[
+    "App",
+    "Providers",
+    "Http",
+    "Controllers",
+    "Middleware",
+    "Models",
+    "Console",
+    "Commands",
+    "Exceptions",
+    "Requests",
+    "Resources",
+    "Policies",
+    "Jobs",
+    "Listeners",
+    "Events",
+    "Mail",
+    "Notifications",
+    "Rules",
+    "Casts",
+    "Observers",
+    "Database",
+    "Seeders",
+    "Factories",
+    "Migrations",
+    "Tests",
+    "Feature",
+    "Unit",
+    "TestCase",
+    "CreatesApplication",
+    "ServiceProvider",
+    "AppServiceProvider",
+    "AuthServiceProvider",
+    "EventServiceProvider",
+    "RouteServiceProvider",
+    "BroadcastServiceProvider",
+    "HorizonServiceProvider",
+    "TelescopeServiceProvider",
+    "Kernel",
+    "Handler",
+    "Controller",
+    "User",
+    "UserFactory",
+    "DatabaseSeeder",
+    "Authenticate",
+    "RedirectIfAuthenticated",
+    "TrimStrings",
+    "TrustProxies",
+    "TrustHosts",
+    "VerifyCsrfToken",
+    "EncryptCookies",
+    "PreventRequestsDuringMaintenance",
+    "ValidateSignature",
+    "HandleInertiaRequests",
+    "Builder",
+    "Collection",
+    "Request",
+];
+
+/// Short class names declared by the project's installed packages
+/// (`vendor/composer/autoload_classmap.php`), lowercased.
+fn vendor_names(root: &Path) -> HashSet<String> {
+    let Ok(map) = std::fs::read_to_string(root.join("vendor/composer/autoload_classmap.php"))
+    else {
+        return HashSet::new();
+    };
+    map.lines()
+        .filter(|l| l.contains("$vendorDir"))
+        .filter_map(|l| {
+            let key = l.trim_start().strip_prefix('\'')?.split('\'').next()?;
+            key.rsplit('\\').next().map(str::to_lowercase)
+        })
+        .collect()
 }
 
 /// The project's own name (folder, composer.json, package.json, config):
@@ -1498,6 +1580,25 @@ mod tests {
         );
         let err = prepare_send(&apps, &project, "r_fixed").unwrap_err();
         assert!(err.contains("is closed"), "{err}");
+    }
+
+    #[test]
+    fn laravel_skeleton_names_are_neutral() {
+        let mut names: HashSet<String> = [
+            "authserviceprovider",
+            "serviceprovider",
+            "orderinvoicemailer",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for n in NEUTRAL.iter().chain(LARAVEL_SKELETON) {
+            names.remove(&n.to_lowercase());
+        }
+        let none = HashSet::new();
+        assert!(!is_project_name("AuthServiceProvider", &names, &none));
+        assert!(!is_project_name("ServiceProvider", &names, &none));
+        assert!(is_project_name("OrderInvoiceMailer", &names, &none));
     }
 
     #[test]

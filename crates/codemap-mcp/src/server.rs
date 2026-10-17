@@ -44,6 +44,7 @@ struct App {
 
 /// `report_wrong_answer` input.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReportParams {
     /// `meta.call_id` of the answer that was wrong.
     pub call_id: String,
@@ -519,7 +520,7 @@ impl CodemapServer {
 
     #[tool(
         name = "api_usage",
-        description = "Use to link the Vue / Nuxt frontend to the Laravel backend: which route each HTTP call hits, calls to endpoints that do not exist (or use the wrong method), and fields the frontend reads that the endpoint does not return. Pass `endpoint` (e.g. `GET api/v1/malls`) for its callers and response fields, `file` for one screen's calls, or `status: missing|fields|unresolved`. Calls whose URL could not be tied to one route are listed with file:line and why. Separate backend repos are linked with --link / .codemap.toml [[links]]."
+        description = "Use to link the Vue / Nuxt frontend to the Laravel backend: which route each HTTP call hits, calls to endpoints that do not exist (or use the wrong method), and fields the frontend reads that the endpoint does not return. Pass `endpoint` (e.g. `GET api/v1/malls`) for its callers and response fields, `file` for one screen's calls, or `status: missing|fields|unresolved`. Calls whose URL could not be tied to one route are listed with file:line and why. After a change, pass `git_changes: true` (or `changed_files`) for only the calls the change touches, and `new_only: true` to hide findings saved by `codemap baseline`. Separate backend repos are linked with --link / .codemap.toml [[links]]."
     )]
     pub async fn api_usage(
         &self,
@@ -541,7 +542,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_schema",
-        description = "Use before writing any query, migration or model change; never assume column names. Without `table`: all tables with column counts and models. With `table`: columns (type, nullable, default, keys, foreign keys), mapped models, and the migration that created/changed them. With `settings: true`: app settings and their defaults (key/value settings read in code with the admin page that edits them, and config keys backed by env()). With `migrations: true`: migrations not yet applied to the configured databases (local, staging), read-only. With `cache: true`: every cache key with where it is written (TTL), read and cleared. With `background: true`: the schedule, queued jobs, events → listeners, and who sends each notification and mail."
+        description = "Use before writing any query, migration or model change; never assume column names. Without `table`: all tables with column counts and models. With `table`: columns (type, nullable, default, keys, foreign keys), mapped models, and the migration that created/changed them; with a live database or dump configured, each column's `source` and any `drift` from the migrations. With `settings: true`: app settings and their defaults (key/value settings read in code with the admin page that edits them, and config keys backed by env()). With `migrations: true`: migrations not yet applied to the configured databases (local, staging), read-only. With `cache: true`: every cache key with where it is written (TTL), read and cleared. With `background: true`: the schedule, queued jobs, events → listeners, and who sends each notification and mail."
     )]
     pub async fn get_schema(
         &self,
