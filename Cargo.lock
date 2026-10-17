@@ -326,7 +326,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "codemap-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "dirs",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-js"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "insta",
  "oxc_allocator",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-laravel"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "codemap-core",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-php"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "codemap-core",
  "filetime",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-vue"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "codemap-core",
  "codemap-js",

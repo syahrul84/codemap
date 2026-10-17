@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.2] - 2026-10-17
 
 - Fixes from the 17 Oct retest (round 8):
   - `find_usages` counts functions called by bare name in Vue templates (`{{ formatMyr(x) }}`), which in Nuxt are auto-imported helpers; such a helper is no longer reported unused.
