@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest (round 6):
+  - `codemap reports --send` refuses a closed report, and checks the report on the current build first: if its check passes or its example no longer reproduces, the report is closed as fixed and nothing is sent.
+  - The issue names the build the example was checked on just now, with that build's answer, plus "first seen on" the build it was reported on.
 - Fixes from the 17 Oct retest (round 4):
   - Test commands never include a base test class (abstract, or without test methods), which made PHPUnit run nothing; the tests that extend it are run instead.
   - A brief change summary that leaves out a long test list says so (`tests_note`).

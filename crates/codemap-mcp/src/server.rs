@@ -635,6 +635,10 @@ impl CodemapServer {
                 example_status: proof.as_ref().map(|x| x.status.clone()),
                 example_hits: proof.as_ref().map(|x| x.hits.clone()).unwrap_or_default(),
                 example_answer: proof.as_ref().and_then(|x| x.answer.clone()),
+                reproduced_on: proof
+                    .as_ref()
+                    .filter(|x| x.status == "reproduces")
+                    .map(|_| codemap_core::VERSION.to_owned()),
                 git_commit: answer.git_commit.clone(),
                 git_dirty: answer.git_dirty,
                 indexed_at: answer.indexed_at.clone(),

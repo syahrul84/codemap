@@ -584,18 +584,27 @@ fn cmd_reports(
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(id) = send {
-        let (p, r) = mcp
+        let p = mcp
             .iter()
-            .find_map(|p| {
-                reports::load(p)
-                    .into_iter()
-                    .find(|r| r.id == id)
-                    .map(|r| (p, r))
-            })
+            .find(|p| reports::load(p).iter().any(|r| r.id == id))
             .with_context(|| format!("no report {id}"))?;
         if let Some(why) = reports::sending_off(p) {
             anyhow::bail!("sending is off: {why}");
         }
+        // Checked on this build first: a fixed report is closed, not sent.
+        let mut stores = Vec::new();
+        for pr in &projects {
+            let (store, _) = pr.refresh(false)?;
+            stores.push(store);
+        }
+        let apps: Vec<(&Store, &codemap_mcp::Project)> = stores.iter().zip(&mcp).collect();
+        let r = match reports::prepare_send(&apps, p, id) {
+            Ok(r) => r,
+            Err(why) => {
+                println!("{why}");
+                return Ok(ExitCode::SUCCESS);
+            }
+        };
         let (title, body) = reports::issue(p, &r)
             .context("only a report with a made-up example that reproduces can be sent")?;
         println!(

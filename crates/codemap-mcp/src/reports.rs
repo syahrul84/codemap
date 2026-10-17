@@ -63,6 +63,9 @@ pub struct Report {
     /// codemap's answer on the made-up example.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub example_answer: Option<Value>,
+    /// The build the example last reproduced on (checked, not assumed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reproduced_on: Option<String>,
     pub codemap: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_commit: Option<String>,
@@ -181,6 +184,7 @@ pub fn add(project: &Project, mut r: Report) -> std::io::Result<(Report, bool)> 
             old.example_status = r.example_status.take();
             old.example_hits = std::mem::take(&mut r.example_hits);
             old.example_answer = r.example_answer.take();
+            old.reproduced_on = r.reproduced_on.take();
         }
         let out = old.clone();
         save_all(project, &all)?;
@@ -1157,18 +1161,21 @@ fn project_type(project: &Project) -> String {
 /// `(title, body)` of the issue: only the made-up example and its answer.
 pub fn issue(project: &Project, r: &Report) -> Option<(String, String)> {
     let ex = r.example.as_ref()?;
+    // Only an example checked on a build: that build is the one named.
     if r.example_status.as_deref() != Some("reproduces") {
         return None;
     }
+    let checked_on = r.reproduced_on.as_deref()?;
     let wrong = ex["wrong"].as_str().unwrap_or("codemap's answer was wrong");
     let right = ex["right"].as_str().unwrap_or("");
     let mut body = format!(
-        "**codemap {VERSION}** · {} {} · {}\n**Tool:** {} · **Kind:** {}\n**Wrong:** {wrong}\n**Right:** {right}\n\n### Example (made up, reproduces on {VERSION})\n",
+        "**codemap {checked_on}** · {} {} · {}\n**Tool:** {} · **Kind:** {} · first seen on {}\n**Wrong:** {wrong}\n**Right:** {right}\n\n### Example (made up, reproduces on {checked_on})\n",
         std::env::consts::OS,
         std::env::consts::ARCH,
         project_type(project),
         r.tool,
         r.kind,
+        r.codemap,
     );
     for (path, content) in ex["files"].as_object()? {
         let lang = path.rsplit('.').next().unwrap_or("");
@@ -1302,6 +1309,68 @@ pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<Strin
     ))
 }
 
+/// Gets a report ready to send: never a closed one, and only when its check
+/// still fails and its example still reproduces on this build, with this
+/// build's fresh answer. Otherwise the report is closed as fixed and the
+/// reason is returned.
+pub fn prepare_send(
+    apps: &[(&Store, &Project)],
+    project: &Project,
+    id: &str,
+) -> Result<Report, String> {
+    let mut all = load(project);
+    let Some(r) = all.iter_mut().find(|r| r.id == id) else {
+        return Err(format!("no report {id}"));
+    };
+    if r.status == "closed" {
+        return Err(format!(
+            "{id} is closed (fixed in {}): nothing to send",
+            r.closed_in.as_deref().unwrap_or("an earlier build")
+        ));
+    }
+    let close = |r: &mut Report, why: &str| {
+        r.status = "closed".into();
+        r.closed_in = Some(format!("{VERSION} ({why})"));
+    };
+    if r.expect
+        .as_ref()
+        .and_then(|e| check(apps, e, r.app.as_deref()))
+        == Some(true)
+    {
+        close(r, "its check passes now");
+        let msg =
+            format!("{id} is fixed in {VERSION} (its check passes now): closed, nothing to send");
+        let _ = save_all(project, &all);
+        return Err(msg);
+    }
+    let Some(example) = r.example.clone() else {
+        return Err("only a report with a made-up example can be sent".into());
+    };
+    let proof = prove(apps, &example);
+    match proof.status.as_str() {
+        "reproduces" => {
+            r.example_status = Some(proof.status);
+            r.example_answer = proof.answer;
+            r.reproduced_on = Some(VERSION.into());
+            let out = r.clone();
+            save_all(project, &all).map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+        "does not reproduce" => {
+            close(r, "the example no longer reproduces");
+            let msg = format!(
+                "{id}'s example no longer gives the wrong answer on {VERSION}: closed as fixed, nothing to send"
+            );
+            let _ = save_all(project, &all);
+            Err(msg)
+        }
+        other => Err(format!(
+            "the example cannot be sent ({other}): {}",
+            proof.hits.join("; ")
+        )),
+    }
+}
+
 pub fn set_issue(project: &Project, id: &str, url: &str) {
     let mut all = load(project);
     if let Some(r) = all.iter_mut().find(|r| r.id == id) {
@@ -1323,6 +1392,58 @@ mod tests {
         assert!(looks_secret("server 10.2.3.4").is_some());
         assert!(looks_secret("http://localhost:8000/api").is_none());
         assert!(looks_secret("fetch('https://api.internal.corp/x')").is_some());
+    }
+
+    #[test]
+    fn only_reports_that_still_reproduce_are_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/Note.php"), "<?php class Note {}").unwrap();
+        let project = Project {
+            root: root.clone(),
+            config: Config::default(),
+            id: "t".into(),
+            index_path: dir.path().join("idx/index.db"),
+            app: None,
+        };
+        let mut store = Store::open(&project.index_path).unwrap();
+        crate::refresh(&mut store, &root, &project.config, ScanOptions::default()).unwrap();
+        let apps = [(&store, &project)];
+        let example = |expect_text: &str| {
+            json!({
+                "files": { "app/Widget.php": "<?php class Widget { public function spin() {} }" },
+                "call": { "tool": "search_symbol", "args": { "query": "Widget" } },
+                "expect": { "tool": "search_symbol", "args": { "query": "Widget" }, "contains": expect_text },
+                "wrong": "w", "right": "r"
+            })
+        };
+        let report = |id: &str, ex: Value| Report {
+            id: id.into(),
+            tool: "search_symbol".into(),
+            kind: "wrong_detail".into(),
+            item: "x".into(),
+            codemap: "0.0.9".into(),
+            example: Some(ex),
+            example_status: Some("reproduces".into()),
+            reproduced_on: Some("0.0.9".into()),
+            ..Default::default()
+        };
+        // Still wrong on this build: sent with this build and its answer.
+        add(&project, report("r_still", example("NotThere"))).unwrap();
+        let r = prepare_send(&apps, &project, "r_still").expect("still reproduces");
+        assert_eq!(r.reproduced_on.as_deref(), Some(VERSION));
+        let (_, body) = issue(&project, &r).unwrap();
+        assert!(
+            body.contains(&format!("reproduces on {VERSION}")) && body.contains("first seen on"),
+            "{body}"
+        );
+        // Fixed on this build: closed, not sent; and a closed report never is.
+        add(&project, report("r_fixed", example("Widget"))).unwrap();
+        let err = prepare_send(&apps, &project, "r_fixed").unwrap_err();
+        assert!(err.contains("no longer"), "{err}");
+        let err = prepare_send(&apps, &project, "r_fixed").unwrap_err();
+        assert!(err.contains("is closed"), "{err}");
     }
 
     #[test]
