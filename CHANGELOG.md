@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest (round 3):
+  - Change impact links tests that call a route with `$this->call('POST', '/uri', …)` or `$this->json('PATCH', '/uri')`, and requests after set-up calls (`$this->actingAs($u)->postJson(…)`, `withHeaders(…)->post(…)`).
+  - Change impact links tests that run a console command (`$this->artisan('name')`, `Artisan::call('name')`) to the command's class, so a change to anything the command uses lists them.
+  - The development version stamp follows every commit (it watched only `HEAD`).
 - Fixes from the 17 Oct retest (round 2):
   - `find_usages` follows services resolved from the container: `app(X::class)`, `resolve(X::class)`, `App::make(X::class)`, `app()->make(…)`, `$this->app->make(…)`, chained or assigned to a variable first.
   - Live-data tests: browser tests of a page opened from a file (`file://`) or written with `setContent` are skipped.

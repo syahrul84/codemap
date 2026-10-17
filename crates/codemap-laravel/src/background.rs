@@ -138,7 +138,7 @@ fn parse_schedule(stmt: &str) -> Option<(String, String)> {
 }
 
 /// `$signature = 'orders:expire {--dry}'` → `orders:expire`.
-fn signature(cls: &SymbolRecord, root: &Path) -> Option<String> {
+pub fn signature(cls: &SymbolRecord, root: &Path) -> Option<String> {
     let src = std::fs::read_to_string(root.join(&cls.file)).ok()?;
     let at = src.find("$signature")?;
     let rest = &src[at..];

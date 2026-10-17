@@ -25,13 +25,24 @@ fn main() {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
             .filter(|c| !c.is_empty());
-        if let Ok(head) = Command::new("git")
-            .args(["rev-parse", "--git-path", "HEAD"])
-            .output()
-            && head.status.success()
+        // A new commit moves the branch ref (or packed-refs), not HEAD: watch
+        // all three so the stamp follows every commit.
+        let out = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        };
+        let branch = out(&["symbolic-ref", "-q", "HEAD"]);
+        for p in ["HEAD".to_owned(), "packed-refs".to_owned()]
+            .into_iter()
+            .chain(branch)
         {
-            let p = String::from_utf8_lossy(&head.stdout).trim().to_owned();
-            println!("cargo:rerun-if-changed={p}");
+            if let Some(path) = out(&["rev-parse", "--git-path", &p]) {
+                println!("cargo:rerun-if-changed={path}");
+            }
         }
         match commit {
             Some(c) => format!("{version}-dev+{c}"),

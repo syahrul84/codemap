@@ -756,6 +756,45 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
                     }
                 }
             }
+            // Console commands the change reaches (itself or through callers),
+            // and the tests that run them (`$this->artisan('credit:fold')`).
+            if !classes.is_empty() {
+                let mut reach: Vec<(String, Vec<String>)> = classes
+                    .iter()
+                    .map(|c| (c.fqn.clone(), vec![c.name.clone()]))
+                    .collect();
+                reach.extend(php_caller_chain(store, &file, 4)?);
+                let mut seen = BTreeSet::new();
+                for (class, path) in reach {
+                    let Some(sym) = symbols::by_fqn(store.conn(), &class)?.into_iter().next()
+                    else {
+                        continue;
+                    };
+                    let command = sym.file.starts_with("app/Console/")
+                        || sym.meta.extends.iter().any(|e| e.ends_with("Command"));
+                    let Some(sig) = command
+                        .then(|| codemap_laravel::background::signature(&sym, &project.root))
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(sig.clone()) {
+                        continue;
+                    }
+                    let mut hit = false;
+                    for (t, line, _, _) in
+                        refs(store, "r.kind = 'command' AND r.target = ?1", &[&sig])?
+                    {
+                        if is_test_path(&t) {
+                            via.add(t, line, format!("artisan {sig}"));
+                            hit = true;
+                        }
+                    }
+                    if hit && via_routes.len() < 30 {
+                        via_routes.push(format!("artisan {sig} (via {})", path.join(" → ")));
+                    }
+                }
+            }
             let via_tests: BTreeSet<String> = via
                 .hits
                 .iter()

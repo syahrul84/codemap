@@ -132,6 +132,58 @@ fn url_lit(n: Node<'_>, src: &[u8]) -> Option<String> {
     Some(out)
 }
 
+/// The `i`-th argument node of a call.
+fn nth_arg(n: Node<'_>, i: usize) -> Option<Node<'_>> {
+    n.child_by_field_name("arguments")
+        .map(named_children)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.kind() == "argument")
+        .nth(i)
+}
+
+/// Test helpers that set up a request and return the test case, so the
+/// request after them still comes from the test: `$this->actingAs($u)->postJson(…)`.
+const TEST_REQUEST_SETUP: &[&str] = &[
+    "actingAs",
+    "be",
+    "withHeaders",
+    "withHeader",
+    "withToken",
+    "withBasicAuth",
+    "withoutToken",
+    "withoutMiddleware",
+    "withMiddleware",
+    "withSession",
+    "withCookie",
+    "withCookies",
+    "withUnencryptedCookie",
+    "withUnencryptedCookies",
+    "withServerVariables",
+    "withoutExceptionHandling",
+    "withExceptionHandling",
+    "followingRedirects",
+    "from",
+    "fromRoute",
+    "withCredentials",
+    "withoutCredentials",
+    "flushHeaders",
+    "travel",
+];
+
+/// `$this` or `$this->actingAs($u)->withHeaders([...])`.
+fn is_test_case(obj_text: &str) -> bool {
+    let t = obj_text.trim();
+    if t == "$this" {
+        return true;
+    }
+    let Some(rest) = t.strip_prefix("$this->") else {
+        return false;
+    };
+    let first = rest.split(['(', '-']).next().unwrap_or("");
+    TEST_REQUEST_SETUP.contains(&first)
+}
+
 fn first_arg(n: Node<'_>) -> Option<Node<'_>> {
     n.child_by_field_name("arguments")
         .map(named_children)
@@ -676,6 +728,16 @@ impl Collector<'_> {
                         && let Some(m) = n.child_by_field_name("name")
                     {
                         let method = text(m, self.src).to_owned();
+                        // `Artisan::call('orders:expire')`, `Schedule::command('x')`.
+                        let short_scope = fqn.rsplit('\\').next().unwrap_or(&fqn);
+                        if ((short_scope == "Artisan"
+                            && matches!(method.as_str(), "call" | "queue"))
+                            || (short_scope == "Schedule" && method == "command"))
+                            && let Some(cmd) = first_arg(n).and_then(|a| string_lit(a, self.src))
+                            && let Some(cmd) = cmd.split_whitespace().next()
+                        {
+                            self.push("command", cmd.to_owned(), n);
+                        }
                         self.push("call", format!("{fqn}::{method}"), n);
                         let short = fqn.rsplit('\\').next().unwrap_or(&fqn);
                         if short == "Cache" {
@@ -702,13 +764,32 @@ impl Collector<'_> {
                 let obj_text = obj
                     .map(|o| text(o, self.src).to_owned())
                     .unwrap_or_default();
-                // Tests: `$this->getJson('/api/orders')`.
-                if obj_text == "$this"
+                // Tests: `$this->getJson('/api/orders')`, also after set-up
+                // calls (`$this->actingAs($u)->postJson(…)`).
+                let test_case = is_test_case(&obj_text);
+                if test_case
                     && let Some((_, verb)) = HTTP_TEST_METHODS.iter().find(|(m, _)| *m == name)
                     && let Some(url) = first_arg(n).and_then(|a| url_lit(a, self.src))
                     && (url.starts_with('/') || url.contains('/'))
                 {
                     self.push("http", format!("{verb} {url}"), n);
+                }
+                // `$this->call('POST', '/api/webhooks', …)` / `$this->json('PATCH', '/x')`.
+                if test_case
+                    && matches!(name.as_str(), "call" | "json")
+                    && let Some(verb) = first_arg(n).and_then(|a| string_lit(a, self.src))
+                    && let Some(url) = nth_arg(n, 1).and_then(|a| url_lit(a, self.src))
+                    && (url.starts_with('/') || url.contains('/'))
+                {
+                    self.push("http", format!("{} {url}", verb.to_uppercase()), n);
+                }
+                // `$this->artisan('orders:expire', …)`, `$schedule->command('x')`.
+                if (name == "artisan" && test_case
+                    || name == "command" && obj_text.contains("schedule"))
+                    && let Some(cmd) = first_arg(n).and_then(|a| string_lit(a, self.src))
+                    && let Some(cmd) = cmd.split_whitespace().next()
+                {
+                    self.push("command", cmd.to_owned(), n);
                 }
                 if name == "route"
                     && let Some(r) = first_arg(n).and_then(|a| string_lit(a, self.src))
@@ -1136,6 +1217,49 @@ pub fn blade_refs(src: &str) -> Vec<Ref> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tests_reaching_routes_and_commands() {
+        let src = br#"<?php
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\Artisan;
+
+class WebhookTest extends TestCase
+{
+    private function send(string $raw)
+    {
+        return $this->call('POST', '/api/v1/webhooks/curlec', [], [], [], ['CONTENT_TYPE' => 'application/json'], $raw);
+    }
+
+    public function test_it(): void
+    {
+        $this->actingAs($this->user)->postJson('/api/v1/orders', []);
+        $this->withHeaders(['X-A' => '1'])->get('/api/v1/malls');
+        $this->json('PATCH', '/api/v1/carts/1');
+        $this->artisan('credit:fold-card-refund', ['reference' => 'x'])->assertSuccessful();
+        Artisan::call('orders:expire --dry');
+    }
+}
+"#;
+        let tree = crate::parse::parse(src).unwrap();
+        let refs: Vec<String> = collect(tree.root_node(), src)
+            .into_iter()
+            .filter(|r| matches!(r.kind, "http" | "command"))
+            .map(|r| format!("{} {}", r.kind, r.target))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                "http POST /api/v1/webhooks/curlec",
+                "http POST /api/v1/orders",
+                "http GET /api/v1/malls",
+                "http PATCH /api/v1/carts/1",
+                "command credit:fold-card-refund",
+                "command orders:expire",
+            ]
+        );
+    }
 
     #[test]
     fn container_lookups_are_typed() {
