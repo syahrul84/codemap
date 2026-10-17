@@ -111,6 +111,8 @@ struct Shared {
     generation: AtomicU64,
     /// Names answered "not found": `kind/item` → (call id, generation).
     said_missing: Mutex<HashMap<String, (String, u64)>>,
+    /// What the AI app said about itself when it connected.
+    client: Mutex<Option<rmcp::model::InitializeRequestParams>>,
     last_check: Mutex<Option<Instant>>,
     interval: Duration,
     /// Held while a refresh runs, so a call never answers "fresh" from an
@@ -156,6 +158,7 @@ impl CodemapServer {
                 next_call: AtomicU64::new(1),
                 generation: AtomicU64::new(0),
                 said_missing: Mutex::new(HashMap::new()),
+                client: Mutex::new(None),
                 last_check: Mutex::new(None),
                 interval,
                 gate: tokio::sync::Mutex::new(()),
@@ -695,12 +698,20 @@ impl CodemapServer {
         let Some((title, body)) = crate::reports::issue(project, report) else {
             return "not offered".into();
         };
+        // The app's handshake, as recorded when it connected (the peer
+        // handed to a tool may not carry it).
+        let hello = lock(&self.shared.client).clone();
+        if peer.peer_info().is_none()
+            && let Some(h) = &hello
+        {
+            peer.set_peer_info(h.clone());
+        }
         if !peer
             .supported_elicitation_modes()
             .contains(&rmcp::service::ElicitationMode::Form)
         {
-            let client = peer
-                .peer_info()
+            let client = hello
+                .as_ref()
                 .map(|i| format!("{} {}", i.client_info.name, i.client_info.version))
                 .unwrap_or_else(|| "this app".into());
             return format!(
@@ -721,14 +732,18 @@ impl CodemapServer {
                 let edited = c.edited_text.filter(|t| !t.trim().is_empty());
                 let sent = tokio::task::spawn_blocking(move || {
                     let r = crate::reports::send(&project, &report, edited.as_deref());
-                    if let Ok(url) = &r {
-                        crate::reports::set_issue(&project, &report.id, url);
+                    if let Ok(s) = &r {
+                        crate::reports::set_issue(&project, &report.id, &s.url);
                     }
                     r
                 })
                 .await;
                 match sent {
-                    Ok(Ok(url)) => format!("sent: {url}"),
+                    Ok(Ok(s)) if s.comment => format!(
+                        "added to the open issue {} as a comment (no new issue)",
+                        s.url
+                    ),
+                    Ok(Ok(s)) => format!("sent: {}", s.url),
                     Ok(Err(e)) => format!("not sent: {e}"),
                     Err(e) => format!("not sent: {e}"),
                 }
@@ -746,6 +761,22 @@ impl CodemapServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for CodemapServer {
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, ErrorData> {
+        tracing::info!(
+            client = %request.client_info.name,
+            version = %request.client_info.version,
+            forms = request.capabilities.elicitation.is_some(),
+            "AI app connected"
+        );
+        *lock(&self.shared.client) = Some(request.clone());
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("codemap", codemap_core::VERSION))

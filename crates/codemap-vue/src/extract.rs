@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR: &str = "js";
 
 /// Bump when per-file output changes; every JS/TS/Vue file is then re-parsed.
-pub const JS_EXTRACTOR_VERSION: i64 = 26;
+pub const JS_EXTRACTOR_VERSION: i64 = 27;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TagUse {
@@ -78,7 +78,99 @@ pub struct ModuleFacts {
     /// Custom SFC blocks (`i18n`, `docs`, …).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_blocks: Vec<String>,
+    /// Functions called by bare name in the template (`{{ formatMyr(x) }}`),
+    /// often Nuxt auto-imports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub template_calls: Vec<NamedLine>,
     pub lines: u32,
+}
+
+/// Names called bare in a template expression: `formatMyr(x)` but not
+/// `item.format(x)`, `$t('a')` or `String(x)`.
+pub fn bare_calls(expr: &str) -> Vec<String> {
+    const SKIP: &[&str] = &[
+        "if",
+        "for",
+        "while",
+        "switch",
+        "return",
+        "typeof",
+        "new",
+        "String",
+        "Number",
+        "Boolean",
+        "Array",
+        "Object",
+        "Date",
+        "Math",
+        "JSON",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "t",
+        "tc",
+        "te",
+        "tm",
+        "d",
+        "n",
+        "emit",
+        "useRoute",
+        "useRouter",
+        "navigateTo",
+        "alert",
+        "confirm",
+        "console",
+    ];
+    let b = expr.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if matches!(c, b'\'' | b'"' | b'`') {
+            quote = Some(c);
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+                i += 1;
+            }
+            let name = &expr[start..i];
+            let before = start.checked_sub(1).map(|j| b[j]);
+            let member = matches!(before, Some(b'.') | Some(b'$'))
+                || (start >= 2 && &b[start - 2..start] == b"?.");
+            let mut k = i;
+            while k < b.len() && b[k] == b' ' {
+                k += 1;
+            }
+            if !member
+                && k < b.len()
+                && b[k] == b'('
+                && !SKIP.contains(&name)
+                && !out.iter().any(|n| n == name)
+            {
+                out.push(name.to_owned());
+            }
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 impl ModuleFacts {
@@ -396,6 +488,29 @@ fn template_facts(t: &template::Template, facts: &mut ModuleFacts) {
         }
         aliases.push(scope);
     }
+    // Bare calls in bound attributes and interpolations.
+    let mut calls: Vec<NamedLine> = Vec::new();
+    let mut add_calls = |expr: &str, line: u32| {
+        for name in bare_calls(expr) {
+            if !calls.iter().any(|c| c.name == name) {
+                calls.push(NamedLine { name, line });
+            }
+        }
+    };
+    for el in &t.elements {
+        for a in &el.attrs {
+            let bound = a.name.starts_with(':')
+                || a.name.starts_with('@')
+                || (a.name.starts_with("v-") && a.name != "v-for" && a.name != "v-slot");
+            if bound && let Some(v) = &a.value {
+                add_calls(v, a.line);
+            }
+        }
+    }
+    for it in &t.interpolations {
+        add_calls(&it.expr, it.line);
+    }
+    facts.template_calls = calls;
     for it in &t.interpolations {
         for (key, dynamic) in crate::i18n::template_uses(&it.expr) {
             facts.template_i18n.push(codemap_js::I18nUse {
@@ -827,6 +942,16 @@ mod tests {
         assert_eq!(f.script.setup.props[0].name, "orders");
         assert_eq!(f.script.composables[0].name, "useFetch");
         assert_eq!(f.custom_blocks, ["i18n"]);
+    }
+
+    #[test]
+    fn bare_calls_in_templates() {
+        assert_eq!(
+            bare_calls(
+                "formatMyr(option.price_delta) + item.format(x) + $t('a', { d: formatDistance(p.m) }) + 'notMe(1)' + a?.b(1) + String(x)"
+            ),
+            ["formatMyr", "formatDistance"]
+        );
     }
 
     #[test]

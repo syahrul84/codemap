@@ -1244,7 +1244,40 @@ fn url_encode(s: &str) -> String {
 /// Files the issue with the person's own `gh` login (a comment on a matching
 /// open issue when there is one); without `gh`, a filled-in new-issue link
 /// for the person to submit. Call only after the person said yes.
-pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<String, String> {
+/// Where a report went.
+#[derive(Debug, Clone)]
+pub struct Sent {
+    pub url: String,
+    /// Added to an open issue of the same pattern as a comment.
+    pub comment: bool,
+}
+
+/// The comment for an issue that already shows the same pattern: a short
+/// "seen again" with this build's answer, not the whole issue again.
+fn sighting(r: &Report) -> String {
+    let checked = r.reproduced_on.as_deref().unwrap_or(VERSION);
+    let answer = r
+        .example_answer
+        .as_ref()
+        .map(|a| {
+            let s = a.to_string();
+            if s.len() > 800 {
+                format!("{}…", &s[..s.floor_char_boundary(800)])
+            } else {
+                s
+            }
+        })
+        .unwrap_or_default();
+    format!(
+        "Seen again on **codemap {checked}** · {} {} (first seen on {}). Same made-up example; it still reproduces.\n\n**Answer:** `{answer}`\n\n<!-- codemap-report: {} -->\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        r.codemap,
+        fingerprint(r)
+    )
+}
+
+pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<Sent, String> {
     let (title, mut body) =
         issue(project, r).ok_or("only a report with a reproducing made-up example can be sent")?;
     if let Some(t) = edited {
@@ -1273,9 +1306,14 @@ pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<Strin
         )
         .filter(|u| u.starts_with("https://"));
         if let Some(url) = found {
-            gh(&["issue", "comment", &url, "--body-file", "-"], Some(&body))
+            let note = if edited.is_some() {
+                body.clone()
+            } else {
+                sighting(r)
+            };
+            gh(&["issue", "comment", &url, "--body-file", "-"], Some(&note))
                 .ok_or("posting the comment with gh failed")?;
-            return Ok(url);
+            return Ok(Sent { url, comment: true });
         }
         return gh(
             &[
@@ -1291,6 +1329,10 @@ pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<Strin
             Some(&body),
         )
         .filter(|u| u.starts_with("https://"))
+        .map(|url| Sent {
+            url,
+            comment: false,
+        })
         .ok_or_else(|| "creating the issue with gh failed (is `gh auth login` done?)".to_owned());
     }
     let mut link = format!(

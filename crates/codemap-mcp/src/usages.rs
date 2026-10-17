@@ -62,6 +62,8 @@ pub fn is_test_path(p: &str) -> bool {
 #[derive(Default)]
 struct Found {
     resolved_as: String,
+    /// A JS symbol: its file, name and line, to count uses in its own file.
+    own_file: Option<(String, String, u32)>,
     /// `(file, line, label)`.
     hits: BTreeSet<(String, u32, String)>,
     possible: BTreeSet<(String, u32, String)>,
@@ -302,6 +304,7 @@ fn js_symbol(store: &Store, sym: &SymbolRecord, f: &mut Found) -> R<()> {
         f.routes = codemap_vue::pages::routes_for_file(store, &sym.file)?;
         return Ok(());
     }
+    f.own_file = Some((sym.file.clone(), sym.name.clone(), sym.line));
     let exact = format!("{}#{}", sym.file, sym.name);
     let default = format!("{}#default", sym.file);
     let star = format!("{}#*", sym.file);
@@ -577,6 +580,54 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
                         names.join(", ")
                     ));
                 }
+            }
+        }
+    }
+
+    // Uses in the symbol's own file (`PIN_TOLERANCE_M[match]` inside another
+    // exported function): they count, so it is not called unused.
+    if let Some((file, name, decl_line)) = f.own_file.clone()
+        && let Ok(text) = std::fs::read_to_string(project.root.join(&file))
+    {
+        let mut seen_decl = false;
+        for (i, line) in text.lines().enumerate() {
+            let n = i as u32 + 1;
+            if n == decl_line || !line.contains(name.as_str()) {
+                continue;
+            }
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with('*') {
+                continue;
+            }
+            let b = line.as_bytes();
+            let word = line.match_indices(name.as_str()).any(|(at, _)| {
+                let before = at == 0
+                    || !(b[at - 1].is_ascii_alphanumeric()
+                        || b[at - 1] == b'_'
+                        || b[at - 1] == b'$');
+                let j = at + name.len();
+                let after =
+                    j >= b.len() || !(b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$');
+                before && after
+            });
+            // The declaration itself when the symbol's line is off by a decorator/comment.
+            let declares = !seen_decl
+                && [
+                    "const ",
+                    "function ",
+                    "let ",
+                    "class ",
+                    "type ",
+                    "interface ",
+                ]
+                .iter()
+                .any(|k| t.contains(&format!("{k}{name}")));
+            if declares {
+                seen_decl = true;
+                continue;
+            }
+            if word {
+                f.add(file.clone(), n, "same file");
             }
         }
     }

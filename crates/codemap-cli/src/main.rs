@@ -621,9 +621,16 @@ fn cmd_reports(
             return Ok(ExitCode::SUCCESS);
         }
         match reports::send(p, &r, None) {
-            Ok(url) => {
-                reports::set_issue(p, &r.id, &url);
-                println!("Sent: {url}");
+            Ok(sent) => {
+                reports::set_issue(p, &r.id, &sent.url);
+                if sent.comment {
+                    println!(
+                        "Added to the open issue {} as a comment (the same bug was already reported; no new issue).",
+                        sent.url
+                    );
+                } else {
+                    println!("Sent: {}", sent.url);
+                }
             }
             Err(e) => println!("{e}"),
         }

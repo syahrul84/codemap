@@ -18,7 +18,7 @@ use crate::naming;
 use crate::paths::{Resolved, Resolver};
 
 /// Bump when registry output changes.
-pub const REGISTRY_VERSION: i64 = 21;
+pub const REGISTRY_VERSION: i64 = 22;
 
 pub struct Module {
     pub file_id: i64,
@@ -364,6 +364,20 @@ pub fn build(
         for c in calls {
             reg.refs
                 .push((m.file_id, "js_call", c.name.clone(), c.line));
+        }
+        // Template calls to names the component's script does not define or
+        // import: auto-imported helpers (`{{ formatMyr(x) }}`).
+        let script = &m.facts.script;
+        for c in &m.facts.template_calls {
+            let local = script.imports.iter().any(|i| i.binds(&c.name))
+                || script.decls.iter().any(|d| d.name == c.name)
+                || script.setup_bindings.contains(&c.name)
+                || script.unbound_calls.iter().any(|u| u.name == c.name)
+                || script.composables.iter().any(|u| u.name == c.name);
+            if !local {
+                reg.refs
+                    .push((m.file_id, "js_call", c.name.clone(), c.line));
+            }
         }
         // `supabase.from('rooms').select()`: the table, with what is done to it.
         for t in &m.facts.script.db_tables {

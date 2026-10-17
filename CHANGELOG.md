@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest (round 8):
+  - `find_usages` counts functions called by bare name in Vue templates (`{{ formatMyr(x) }}`), which in Nuxt are auto-imported helpers; such a helper is no longer reported unused.
+  - A JS constant or function used only inside its own file counts those uses (`same file`) and is no longer reported unused.
+  - The send result names the AI app (recorded when it connects), and an added comment on an existing issue says so: a short "seen again" note with this build's answer, not the whole issue again.
 - Fixes from the 17 Oct retest (round 6):
   - `codemap reports --send` refuses a closed report, and checks the report on the current build first: if its check passes or its example no longer reproduces, the report is closed as fixed and nothing is sent.
   - The issue names the build the example was checked on just now, with that build's answer, plus "first seen on" the build it was reported on.
