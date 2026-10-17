@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest (round 2):
+  - `find_usages` follows services resolved from the container: `app(X::class)`, `resolve(X::class)`, `App::make(X::class)`, `app()->make(…)`, `$this->app->make(…)`, chained or assigned to a variable first.
+  - Live-data tests: browser tests of a page opened from a file (`file://`) or written with `setContent` are skipped.
 - Fixes from the 17 Oct retest:
   - Release steps: static Nuxt apps (`nuxt generate`, `ssr: false`, a static preset) get `generate` and "deploy .output/public" instead of a Node server restart; Next.js `output: 'export'` too. Laravel + Vite cites only files the bundler reads.
   - Live-data tests: text the test typed or sent itself, negated checks, sentences, text patterns and text from the app's own code or translations no longer count.

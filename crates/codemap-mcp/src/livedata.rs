@@ -364,7 +364,9 @@ pub fn find(root: &Path, files: &[String]) -> Vec<(String, String)> {
                 ));
             }
         } else if is_browser_test(f, &src) {
-            if browser_seeded {
+            // A page opened from a file or written by the test itself: its
+            // content is in the repository, not in a database.
+            if browser_seeded || src.contains("file://") || src.contains("setContent(") {
                 continue;
             }
             // `toHaveCount(0)` checks that something is absent: no data needed.

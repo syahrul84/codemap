@@ -17,7 +17,7 @@ use crate::extract::{ParsedFile, extract};
 pub const EXTRACTOR: &str = "php";
 
 /// Bump when extraction output changes; every PHP file is then re-parsed.
-pub const PHP_EXTRACTOR_VERSION: i64 = 17;
+pub const PHP_EXTRACTOR_VERSION: i64 = 18;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpReport {

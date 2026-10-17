@@ -455,6 +455,33 @@ impl Collector<'_> {
         }
     }
 
+    /// The class a service-container lookup returns: `app(X::class)`,
+    /// `resolve(X::class)`, `App::make(X::class)`, `app()->make(X::class)`,
+    /// `$this->app->make(X::class)` (and `makeWith` / `get`).
+    fn container_class(&self, n: Node<'_>) -> Option<String> {
+        let t = crate::ast::compact(text(n, self.src));
+        let t = t.trim_start_matches('(').trim_end_matches(')');
+        let t = t.trim_start_matches('\\');
+        let rest = [
+            "app(",
+            "resolve(",
+            "App::make(",
+            "App::makeWith(",
+            "app()->make(",
+            "app()->makeWith(",
+            "app()->get(",
+            "$this->app->make(",
+            "$this->app->makeWith(",
+            "$this->app->get(",
+            "Container::getInstance()->make(",
+        ]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))?;
+        let arg = rest.split([',', ')']).next()?;
+        let class = arg.strip_suffix("::class")?;
+        self.class_name(class)
+    }
+
     fn type_refs(&mut self, n: Node<'_>) {
         if matches!(n.kind(), "named_type" | "name" | "qualified_name") {
             let raw = text(n, self.src).to_owned();
@@ -621,6 +648,14 @@ impl Collector<'_> {
                     && let Some(fqn) = self.class_name(text(cls, self.src))
                 {
                     self.vars.insert(text(left, self.src).to_owned(), fqn);
+                } else if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) && left.kind() == "variable_name"
+                    && let Some(fqn) = self.container_class(right)
+                {
+                    // `$resolver = app(CoordinateResolver::class)` types it too.
+                    self.vars.insert(text(left, self.src).to_owned(), fqn);
                 }
                 self.walk(n);
             }
@@ -700,7 +735,12 @@ impl Collector<'_> {
                 }
                 let receiver = match obj_text.as_str() {
                     "$this" => self.class.clone(),
-                    v => self.vars.get(v).cloned(),
+                    v => self
+                        .vars
+                        .get(v)
+                        .cloned()
+                        // `app(X::class)->m()`, `resolve(X::class)->m()`, …
+                        .or_else(|| obj.and_then(|o| self.container_class(o))),
                 };
                 match receiver {
                     Some(cls) if !name.is_empty() => self.push("call", format!("{cls}::{name}"), n),
@@ -1096,6 +1136,45 @@ pub fn blade_refs(src: &str) -> Vec<Ref> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_lookups_are_typed() {
+        let src = br#"<?php
+namespace App\Http\Controllers;
+
+use App\Support\CoordinateResolver;
+use App\Credit\CreditRefundToCard;
+
+class GeoController
+{
+    public function show($query)
+    {
+        $resolver = app(CoordinateResolver::class);
+        $found = $resolver->lookup($query);
+        app(CreditRefundToCard::class)->move(1);
+        resolve(CoordinateResolver::class)->near(2);
+        $other = \App::make(CoordinateResolver::class);
+        $other->far(3);
+        $this->app->make(CreditRefundToCard::class)->undo();
+    }
+}
+"#;
+        let tree = crate::parse::parse(src).unwrap();
+        let calls: Vec<String> = collect(tree.root_node(), src)
+            .into_iter()
+            .filter(|r| r.kind == "call")
+            .map(|r| r.target)
+            .collect();
+        for want in [
+            "App\\Support\\CoordinateResolver::lookup",
+            "App\\Credit\\CreditRefundToCard::move",
+            "App\\Support\\CoordinateResolver::near",
+            "App\\Support\\CoordinateResolver::far",
+            "App\\Credit\\CreditRefundToCard::undo",
+        ] {
+            assert!(calls.iter().any(|c| c == want), "{want} not in {calls:?}");
+        }
+    }
 
     #[test]
     fn php_references() {
