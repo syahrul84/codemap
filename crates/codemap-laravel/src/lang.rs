@@ -234,27 +234,45 @@ pub fn refresh(store: &mut Store, root: &Path, scan: &ScanReport, full: bool) ->
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for (id, path) in &pending {
-        tx.execute(
-            "DELETE FROM i18n_uses WHERE file_id = ?1 AND source = 'laravel'",
-            [id],
+    // Read and scan in parallel; write in one go.
+    use rayon::prelude::*;
+    type Uses = Vec<(String, u32, bool, bool)>;
+    let found: Vec<(i64, Uses)> = pending
+        .par_iter()
+        .map(|(id, path)| {
+            let uses = if lang_file(path).is_none()
+                && let Ok(src) = std::fs::read_to_string(root.join(path))
+            {
+                let guards = guarded_keys(&src);
+                uses_in(&src)
+                    .into_iter()
+                    .map(|(key, line, dynamic)| {
+                        let guarded = guards.contains(&key);
+                        (key, line, dynamic, guarded)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (*id, uses)
+        })
+        .collect();
+    {
+        let mut del =
+            tx.prepare_cached("DELETE FROM i18n_uses WHERE file_id = ?1 AND source = 'laravel'")?;
+        let mut ins = tx.prepare_cached(
+            "INSERT INTO i18n_uses (file_id, source, key, line, dynamic, guarded) VALUES (?1, 'laravel', ?2, ?3, ?4, ?5)",
         )?;
-        if lang_file(path).is_none()
-            && let Ok(src) = std::fs::read_to_string(root.join(path))
-        {
-            let guards = guarded_keys(&src);
-            for (key, line, dynamic) in uses_in(&src) {
-                let guarded = guards.contains(&key);
-                tx.execute(
-                    "INSERT INTO i18n_uses (file_id, source, key, line, dynamic, guarded) VALUES (?1, 'laravel', ?2, ?3, ?4, ?5)",
-                    params![id, key, line, dynamic, guarded],
-                )?;
-            }
-        }
-        tx.execute(
+        let mut done = tx.prepare_cached(
             "INSERT OR REPLACE INTO extractor_state (file_id, extractor, version) VALUES (?1, ?2, ?3)",
-            params![id, USES_EXTRACTOR, USES_VERSION],
         )?;
+        for (id, uses) in &found {
+            del.execute([id])?;
+            for (key, line, dynamic, guarded) in uses {
+                ins.execute(params![id, key, line, dynamic, guarded])?;
+            }
+            done.execute(params![id, USES_EXTRACTOR, USES_VERSION])?;
+        }
     }
     tx.commit()?;
     Ok(())

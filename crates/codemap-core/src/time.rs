@@ -5,3 +5,12 @@ pub fn now_rfc3339() -> String {
         .unwrap_or(now)
         .to_string()
 }
+
+/// The UTC time `days` days ago, in the same form as [`now_rfc3339`], so the
+/// two compare as strings.
+pub fn days_ago_rfc3339(days: i64) -> String {
+    let now = jiff::Timestamp::now().as_second();
+    jiff::Timestamp::from_second(now - days * 86_400)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_string()
+}

@@ -146,6 +146,7 @@ impl CodemapServer {
             let writer = Store::open(&project.index_path)?;
             writer.set_meta(meta_keys::PROJECT_ID, &project.id)?;
             let reader = Store::open(&project.index_path)?;
+            crate::usage::prune(&project);
             apps.push(App {
                 project,
                 reader: Mutex::new(reader),
@@ -178,13 +179,14 @@ impl CodemapServer {
                 .flatten()
                 .is_none()
         });
-        let due = {
+        let (due, first_check) = {
             let mut last = lock(&self.shared.last_check);
+            let first = last.is_none();
             let due = never_indexed || last.is_none_or(|t| t.elapsed() >= self.shared.interval);
             if due {
                 *last = Some(Instant::now());
             }
-            due
+            (due, first)
         };
         if !due {
             // Checked recently, but a refresh started earlier may still be running.
@@ -206,16 +208,44 @@ impl CodemapServer {
             let worker = shared.clone();
             tokio::task::spawn_blocking(move || {
                 // Backends first: frontends read their routes when linking.
+                let trigger = if first_check { "startup" } else { "call" };
+                // All apps side by side: indexing an app reads only its own
+                // files (frontends read backend routes when answering).
                 let mut total = 0;
-                for app in &worker.apps {
-                    let mut store = lock(&app.writer);
-                    let r = crate::refresh::refresh(
-                        &mut store,
-                        &app.project.root,
-                        &app.project.config,
-                        ScanOptions::default(),
-                    )?;
-                    total += r.reindexed_files();
+                for group in [worker.apps.iter().collect::<Vec<&App>>()] {
+                    let results: Vec<codemap_core::Result<usize>> = std::thread::scope(|sc| {
+                        let handles: Vec<_> = group
+                            .iter()
+                            .map(|app| {
+                                sc.spawn(move || {
+                                    let mut store = lock(&app.writer);
+                                    let started = Instant::now();
+                                    let r = crate::refresh::refresh(
+                                        &mut store,
+                                        &app.project.root,
+                                        &app.project.config,
+                                        ScanOptions::default(),
+                                    );
+                                    crate::usage::record_index(
+                                        &app.project,
+                                        trigger,
+                                        false,
+                                        started,
+                                        r.as_ref().ok(),
+                                    );
+                                    r.map(|r| r.reindexed_files())
+                                })
+                            })
+                            .collect();
+                        handles
+                            .into_iter()
+                            // A crash is reported by the task around this, as before.
+                            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                            .collect()
+                    });
+                    for r in results {
+                        total += r?;
+                    }
                 }
                 Ok::<usize, codemap_core::Error>(total)
             })
@@ -253,6 +283,7 @@ impl CodemapServer {
     ) -> Result<CallToolResult, ErrorData> {
         let args = serde_json::to_value(params)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let waited = Instant::now();
         let fresh = self.freshness().await;
         if fresh.reindexed_files > 0 {
             self.shared.generation.fetch_add(1, Ordering::SeqCst);
@@ -281,6 +312,9 @@ impl CodemapServer {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
+                self.record_call(
+                    name, &call_args, waited, 0, "crashed", was_stale, reindexed, None,
+                );
                 // A panic inside the tool: report it, then answer with the error.
                 self.auto_report(
                     name,
@@ -308,10 +342,25 @@ impl CodemapServer {
                 );
                 let text = serde_json::to_string(&envelope)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                self.record_call(
+                    name,
+                    &call_args,
+                    waited,
+                    text.len(),
+                    crate::usage::outcome_of(&envelope.data),
+                    was_stale,
+                    reindexed,
+                    Some(id),
+                );
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
+            // Refused arguments are recorded by `call_tool`, with those the
+            // MCP library refuses before the tool runs.
             Err(ToolError::InvalidParams(m)) => Err(ErrorData::invalid_params(m, None)),
             Err(e) => {
+                self.record_call(
+                    name, &call_args, waited, 0, "error", was_stale, reindexed, None,
+                );
                 self.auto_report(
                     name,
                     &call_args,
@@ -323,6 +372,37 @@ impl CodemapServer {
                 Err(ErrorData::internal_error(e.to_string(), None))
             }
         }
+    }
+
+    /// Writes one call to the usage log of the app it was for.
+    #[allow(clippy::too_many_arguments)]
+    fn record_call(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        started: Instant,
+        bytes: usize,
+        outcome: &str,
+        stale: bool,
+        reindexed: usize,
+        call_id: Option<String>,
+    ) {
+        let project = self.project_for(args["app"].as_str());
+        crate::usage::append(
+            project,
+            &crate::usage::Entry::Call {
+                at: codemap_core::time::now_rfc3339(),
+                tool: tool.to_owned(),
+                args: crate::usage::redact(args),
+                ms: started.elapsed().as_millis() as u64,
+                bytes: bytes as u64,
+                outcome: outcome.to_owned(),
+                stale,
+                reindexed,
+                call_id,
+                via: "mcp".into(),
+            },
+        );
     }
 
     /// The project an app name (or the first app) belongs to.
@@ -487,7 +567,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_component",
-        description = "Use before using, changing or creating a Vue component or Nuxt page: props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. Accepts a name (OrderCard), tag (order-card) or file path."
+        description = "Use before using, changing or creating a Vue component, Nuxt page, SwiftUI view or Jetpack Compose function: props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. Accepts a name (OrderCard), tag (order-card) or file path."
     )]
     pub async fn get_component(
         &self,
@@ -498,7 +578,7 @@ impl CodemapServer {
 
     #[tool(
         name = "list_pages",
-        description = "Use to find a screen and the code behind it: Nuxt pages (file-based, incl. layout and middleware), vue-router routes, and Filament admin pages (admin URL → page class, resource, model, form fields, table columns), each with its URL, route name, the component file it renders, and where it is defined. Filters: path_contains, name_prefix, file. For backend endpoints use list_routes. Pass `permissions: true` for who may open admin pages (policy methods, canAccess)."
+        description = "Use to find a screen and the code behind it: Nuxt pages (file-based, incl. layout and middleware), vue-router routes, SwiftUI screens (windows, tabs, navigation pushes, sheets, covers, popovers), Android screens (manifest activities, Navigation Compose destinations, dialogs, sheets, `when`-based screen switches), each with the view shown and where it is opened, Rust binaries and their command-line subcommands, and Filament admin pages (admin URL → page class, resource, model, form fields, table columns), each with its URL, route name, the component file it renders, and where it is defined. Filters: path_contains, name_prefix, file. For backend endpoints use list_routes. Pass `permissions: true` for who may open admin pages (policy methods, canAccess)."
     )]
     pub async fn list_pages(
         &self,
@@ -531,7 +611,7 @@ impl CodemapServer {
 
     #[tool(
         name = "find_usages",
-        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Vue components, composables, stores, translation keys, endpoints ('GET api/v1/orders') and files."
+        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Swift / Kotlin / Java / Rust types and Type.member (or Type::method), Vue components, composables, stores, translation keys, endpoints ('GET api/v1/orders') and files."
     )]
     pub async fn find_usages(
         &self,
@@ -570,6 +650,43 @@ impl CodemapServer {
         description = "Use when a codemap answer turned out wrong after you checked the files or the database: report it once with that answer's `meta.call_id`, then carry on. Give `kind`, the exact `item`, what is `right`, and `evidence` (file:line). Add an `expect` check codemap can re-run, and when you can a made-up `example`: the smallest project giving the same wrong answer, with neutral names and none of the real code (codemap checks it reproduces and contains nothing from this project; fix and resend if it says otherwise). Never ask the person to approve sending; codemap asks them itself. Do not report found: false when you were checking that something does not exist yet, answers marked stale, or your own wrong question."
     )]
     pub async fn report_wrong_answer(
+        &self,
+        params: Parameters<ReportParams>,
+        peer: rmcp::Peer<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let started = Instant::now();
+        let args = serde_json::json!({
+            "call_id": params.0.call_id,
+            "kind": params.0.kind,
+            "item": params.0.item,
+            "app": params.0.app,
+        });
+        let r = self.report_wrong_answer_inner(params, peer).await;
+        let (bytes, outcome) = match &r {
+            Ok(res) => (
+                serde_json::to_string(res).map(|t| t.len()).unwrap_or(0),
+                "ok",
+            ),
+            // Recorded by `call_tool`.
+            Err(e) if e.code == rmcp::model::ErrorCode::INVALID_PARAMS => return r,
+            Err(_) => (0, "error"),
+        };
+        self.record_call(
+            "report_wrong_answer",
+            &args,
+            started,
+            bytes,
+            outcome,
+            false,
+            0,
+            None,
+        );
+        r
+    }
+}
+
+impl CodemapServer {
+    async fn report_wrong_answer_inner(
         &self,
         params: Parameters<ReportParams>,
         peer: rmcp::Peer<rmcp::RoleServer>,
@@ -774,8 +891,46 @@ impl ServerHandler for CodemapServer {
             "AI app connected"
         );
         *lock(&self.shared.client) = Some(request.clone());
+        for app in &self.shared.apps {
+            crate::usage::append(
+                &app.project,
+                &crate::usage::Entry::Session {
+                    at: codemap_core::time::now_rfc3339(),
+                    client: Some(format!(
+                        "{} {}",
+                        request.client_info.name, request.client_info.version
+                    )),
+                    codemap: codemap_core::VERSION.to_owned(),
+                },
+            );
+        }
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)
+    }
+
+    /// Every call goes through the tool router; calls refused for their
+    /// arguments (also by the MCP library, before a tool runs) are recorded here.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        let started = Instant::now();
+        let name = request.name.to_string();
+        let args = serde_json::Value::Object(request.arguments.clone().unwrap_or_default());
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let r = self.tool_router.call(tcc).await;
+        let refused = match &r {
+            Err(e) => (e.code == rmcp::model::ErrorCode::INVALID_PARAMS).then(|| e.message.len()),
+            Ok(rmcp::model::CallToolResponse::Complete(res)) if res.is_error == Some(true) => {
+                Some(serde_json::to_string(res).map(|t| t.len()).unwrap_or(0))
+            }
+            _ => None,
+        };
+        if let Some(bytes) = refused {
+            self.record_call(&name, &args, started, bytes, "invalid_args", false, 0, None);
+        }
+        r
     }
 
     fn get_info(&self) -> ServerConfig {

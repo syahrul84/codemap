@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -14,6 +14,9 @@ repository = "https://github.com/syahrul84/codemap"
 # Internal crates
 codemap-core = { path = "crates/codemap-core" }
 codemap-php = { path = "crates/codemap-php" }
+codemap-swift = { path = "crates/codemap-swift" }
+codemap-android = { path = "crates/codemap-android" }
+codemap-rust = { path = "crates/codemap-rust" }
 codemap-laravel = { path = "crates/codemap-laravel" }
 codemap-mcp = { path = "crates/codemap-mcp" }
 codemap-js = { path = "crates/codemap-js" }
@@ -53,6 +56,10 @@ tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
 tree-sitter = "=0.27.1"
 tree-sitter-php = "=0.25.1"
+tree-sitter-swift = "=0.7.4"
+tree-sitter-kotlin-ng = "=1.1.0"
+tree-sitter-java = "=0.23.5"
+tree-sitter-rust = "=0.24.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

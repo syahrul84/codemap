@@ -26,6 +26,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0012_api_prefixes.sql"),
     include_str!("migrations/0013_api_sends.sql"),
     include_str!("migrations/0014_schema_source.sql"),
+    include_str!("migrations/0015_refs_kind_target.sql"),
+    include_str!("migrations/0016_swift.sql"),
+    include_str!("migrations/0017_android.sql"),
+    include_str!("migrations/0018_rust.sql"),
 ];
 
 /// Schema version this build creates and understands.

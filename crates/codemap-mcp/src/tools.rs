@@ -53,6 +53,7 @@ impl Project {
             .clone()
             .or_else(|| meta(meta_keys::COMPOSER_NAME).filter(|n| n != "laravel/laravel"))
             .or_else(|| meta(meta_keys::GIT_REPO))
+            .or_else(|| apple_project_name(&self.root))
             .unwrap_or_else(|| {
                 self.root
                     .file_name()
@@ -60,6 +61,36 @@ impl Project {
                     .unwrap_or_default()
             })
     }
+}
+
+/// `CleanUp` from `Package.swift` (`name: "CleanUp"`) or `CleanUp.xcodeproj`,
+/// or a Gradle build's root project name.
+fn apple_project_name(root: &std::path::Path) -> Option<String> {
+    // Gradle: `rootProject.name = "mySolat"`.
+    for f in ["settings.gradle.kts", "settings.gradle"] {
+        if let Ok(src) = std::fs::read_to_string(root.join(f))
+            && let Some(rest) = src.split("rootProject.name").nth(1)
+        {
+            let rest = rest.trim_start().trim_start_matches('=').trim_start();
+            let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            return rest[1..].split(quote).next().map(str::to_owned);
+        }
+    }
+    if let Ok(src) = std::fs::read_to_string(root.join("Package.swift")) {
+        let after = src.split("Package(").nth(1)?;
+        let name = after
+            .split_once("name:")?
+            .1
+            .trim_start()
+            .strip_prefix('"')?;
+        return name.split('"').next().map(str::to_owned);
+    }
+    std::fs::read_dir(root).ok()?.flatten().find_map(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.strip_suffix(".xcworkspace")
+            .or_else(|| n.strip_suffix(".xcodeproj"))
+            .map(str::to_owned)
+    })
 }
 
 /// Freshness of the index for this call.
@@ -162,17 +193,23 @@ pub fn call(
         "get_symbol" => get_symbol(store, project, parse(args)?)?.into(),
         "get_component" => {
             let p: GetComponentParams = parse(args)?;
-            let major = codemap_vue::stored_detection(store)?.and_then(|d| d.vue_major);
-            let mut v =
-                codemap_vue::component::get_component(store, &p.name, p.detail.into(), major)?;
-            if let Some(file) = v["file"].as_str().map(str::to_owned) {
-                let keys =
-                    crate::i18n::file_keys(store.conn(), &project.config.i18n.locales, &file)?;
-                if !keys.is_null() {
-                    v["i18n"] = keys;
+            if let Some(v) = codemap_swift::view::get_view(store, &p.name)? {
+                v.into()
+            } else if let Some(v) = codemap_android::view::get_composable(store, &p.name)? {
+                v.into()
+            } else {
+                let major = codemap_vue::stored_detection(store)?.and_then(|d| d.vue_major);
+                let mut v =
+                    codemap_vue::component::get_component(store, &p.name, p.detail.into(), major)?;
+                if let Some(file) = v["file"].as_str().map(str::to_owned) {
+                    let keys =
+                        crate::i18n::file_keys(store.conn(), &project.config.i18n.locales, &file)?;
+                    if !keys.is_null() {
+                        v["i18n"] = keys;
+                    }
                 }
+                v.into()
             }
-            v.into()
         }
         "list_pages" => {
             let p: ListPagesParams = parse(args)?;
@@ -707,6 +744,9 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
         "modules": modules,
         "models": if detail == Detail::Full { json!(models) } else { Value::Null },
         "frontend": frontend_overview(store, detail)?,
+        "swift": codemap_swift::view::overview(store, &project.root)?,
+        "android": codemap_android::view::overview(store)?,
+        "rust": codemap_rust::overview(store, &project.root)?,
         "i18n": crate::i18n::overview(store.conn(), &project.config.i18n.locales)?,
         "health": {
             "warnings": stats.warnings,
@@ -732,14 +772,28 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
     if !mistaken.is_empty() {
         v["often_mistaken"] = json!(mistaken);
     }
-    for key in ["frontend", "i18n", "models"] {
-        if v[key].is_null() {
+    for key in [
+        "frontend", "swift", "android", "rust", "i18n", "models", "key_dirs",
+    ] {
+        if v[key].is_null() || v[key].as_array().is_some_and(|a| a.is_empty()) {
             v.as_object_mut().map(|o| o.remove(key));
         }
     }
     // A frontend-only project: leave out the empty PHP / Laravel sections.
     let laravel = detection.as_ref().is_some_and(|d| d.laravel);
-    if !laravel && v["counts"]["php_files"] == 0 {
+    // PHP files without a `composer.json` (test fixtures in a Rust or Swift
+    // repository) are not a PHP app either.
+    let php_app = v["counts"]["php_files"] != 0 && project.root.join("composer.json").is_file();
+    if !laravel && !php_app {
+        if let Some(list) = v["i18n"].as_array_mut() {
+            list.retain(|c| c["source"] != "laravel");
+            if list.is_empty() {
+                v["i18n"] = Value::Null;
+            }
+        }
+        if v["i18n"].is_null() {
+            v.as_object_mut().map(|o| o.remove("i18n"));
+        }
         if let Some(o) = v.as_object_mut() {
             for key in [
                 "framework",
@@ -753,8 +807,19 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
                 o.remove(key);
             }
         }
+        if unresolved_routes == 0 {
+            v["health"]
+                .as_object_mut()
+                .map(|h| h.remove("unresolved_routes"));
+        }
         v["next"] = json!(
-            "search_symbol before writing new code; get_component before using or changing a component; verify before finishing"
+            if !v["rust"].is_null() && v["swift"].is_null() && v["android"].is_null() {
+                "search_symbol before writing new code; get_symbol for a type's fields and methods (Type::method); list_pages for binaries and their subcommands; find_usages before renaming or removing (tests listed apart); verify before finishing"
+            } else if v["swift"].is_null() && v["android"].is_null() {
+                "search_symbol before writing new code; get_component before using or changing a component; verify before finishing"
+            } else {
+                "search_symbol before writing new code; get_component before using or changing a SwiftUI view or composable; list_pages for the app's screens (windows, activities, tabs, navigation, sheets, dialogs); find_usages before renaming or removing; verify before finishing"
+            }
         );
     }
     if detail == Detail::Full
@@ -840,6 +905,24 @@ fn frontend_overview(store: &Store, detail: Detail) -> ToolResult<Value> {
 
 // ---------------------------------------------------------------- get_symbol
 
+/// Several matches: keep those spelled exactly as asked (`Store`, not the
+/// `store` functions), and when a field and a method share one name (Rust
+/// allows it), the method.
+fn narrow(found: &mut Vec<SymbolRecord>, query: &str) {
+    if found.len() < 2 {
+        return;
+    }
+    let q = query.trim().trim_start_matches('\\');
+    let short = q.rsplit([':', '\\', '.']).next().unwrap_or(q);
+    if found.iter().any(|s| s.name == short) {
+        found.retain(|s| s.name == short);
+    }
+    let same_fqn = found.iter().all(|s| s.fqn == found[0].fqn);
+    if same_fqn && found.iter().any(|s| s.kind != SymbolKind::Property) {
+        found.retain(|s| s.kind != SymbolKind::Property);
+    }
+}
+
 fn candidates(store: &Store, name: &str) -> ToolResult<Vec<SymbolRecord>> {
     let name = name.trim().trim_start_matches('\\');
     let exact = symbols::by_fqn(store.conn(), name)?;
@@ -905,6 +988,7 @@ fn get_symbol(store: &Store, project: &Project, p: GetSymbolParams) -> ToolResul
             json!({ "found": false, "query": p.name, "suggestions": suggestions, "hint": hint }),
         );
     }
+    narrow(&mut found, &p.name);
     if found.len() > 1 {
         let list: Vec<Value> = found
             .iter()

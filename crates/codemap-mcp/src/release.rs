@@ -77,15 +77,17 @@ fn unused_in(store: &Store, root: &std::path::Path, files: &[String]) -> R<Vec<S
         if is_test_path(f) || discovered(f) {
             continue;
         }
-        let pattern = format!("{f}#%");
+        let prefix = format!("{f}#");
+        let prefix_end = crate::usages::range_end(&prefix);
         if f.ends_with(".vue") {
             let rendered = count(
                 "SELECT COUNT(*) FROM component_uses WHERE to_path = ?1",
                 &[f],
             );
             let imported = count(
-                "SELECT COUNT(*) FROM refs WHERE kind = 'import' AND target LIKE ?1",
-                &[&pattern],
+                "SELECT COUNT(*) FROM refs WHERE kind = 'import'
+                 AND target >= ?1 COLLATE NOCASE AND target < ?2 COLLATE NOCASE",
+                &[&prefix, &prefix_end],
             );
             let page: i64 = count("SELECT COUNT(*) FROM pages WHERE file = ?1", &[f]);
             if rendered + imported + page == 0 {
@@ -100,12 +102,18 @@ fn unused_in(store: &Store, root: &std::path::Path, files: &[String]) -> R<Vec<S
                 if !s.kind.is_class_like() {
                     continue;
                 }
-                let members = format!("{}::%", s.fqn);
+                let members = format!("{}::", s.fqn);
+                let members_end = crate::usages::range_end(&members);
+                // Two indexed counts, not one `OR` (that scans every reference).
                 let used = count(
                     "SELECT COUNT(*) FROM refs r JOIN files fl ON fl.id = r.file_id
-                     WHERE fl.path != ?3 AND ((r.kind = 'class' AND r.target = ?1 COLLATE NOCASE)
-                        OR (r.kind = 'call' AND r.target LIKE ?2))",
-                    &[&s.fqn, &members, f],
+                     WHERE fl.path != ?2 AND r.kind = 'class' AND r.target = ?1 COLLATE NOCASE",
+                    &[&s.fqn, f],
+                ) + count(
+                    "SELECT COUNT(*) FROM refs r JOIN files fl ON fl.id = r.file_id
+                     WHERE fl.path != ?3 AND r.kind = 'call'
+                       AND r.target >= ?1 COLLATE NOCASE AND r.target < ?2 COLLATE NOCASE",
+                    &[&members, &members_end, f],
                 );
                 let routed = count(
                     "SELECT COUNT(*) FROM routes WHERE controller_fqn = ?1 COLLATE NOCASE",
@@ -390,6 +398,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
     // mentions left behind after deletions.
     let mut deploy_steps: Vec<Value> = Vec::new();
     let mut rules: Vec<String> = Vec::new();
+    let mut leftover_job: Option<std::thread::JoinHandle<Vec<crate::leftovers::Mention>>> = None;
     if let Some((_, from, changes)) = codemap_core::git::branch_changes(&project.root, base) {
         deploy_steps = crate::deploy::steps(store, project, &from, &changes);
         for (rule, files) in
@@ -406,33 +415,12 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         if !gone.is_empty() {
             checked.push(format!("mentions of {} deleted names", gone.len()));
         }
-        for (name, why, places) in crate::leftovers::mentions(&project.root, &gone) {
-            let (hard, soft): (Vec<_>, Vec<_>) = places
-                .into_iter()
-                .partition(|(kind, _)| matches!(*kind, "code" | "test"));
-            let list = |v: &[(&str, String)]| {
-                v.iter()
-                    .map(|(k, at)| format!("{at} ({k})"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            if !hard.is_empty() {
-                push(
-                    &mut problems,
-                    "leftover",
-                    format!(
-                        "`{name}` is still named after it was removed ({why}): {}",
-                        list(&hard)
-                    ),
-                );
-            }
-            if !soft.is_empty() {
-                low.push(format!(
-                    "leftover: `{name}` is still named in comments or docs ({why}): {}",
-                    list(&soft)
-                ));
-            }
-        }
+        // Reading every text file takes longest: it runs while the other
+        // checks do.
+        let (root, gone) = (project.root.clone(), gone.clone());
+        leftover_job = Some(std::thread::spawn(move || {
+            crate::leftovers::mentions(&root, &gone)
+        }));
     }
 
     // Tests that only pass with the right data already in the database.
@@ -570,6 +558,40 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }
     }
 
+    // Mentions of deleted names, searched in the background.
+    {
+        for (name, why, places) in leftover_job
+            .take()
+            .and_then(|j| j.join().ok())
+            .unwrap_or_default()
+        {
+            let (hard, soft): (Vec<_>, Vec<_>) = places
+                .into_iter()
+                .partition(|(kind, _)| matches!(*kind, "code" | "test"));
+            let list = |v: &[(&str, String)]| {
+                v.iter()
+                    .map(|(k, at)| format!("{at} ({k})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            if !hard.is_empty() {
+                push(
+                    &mut problems,
+                    "leftover",
+                    format!(
+                        "`{name}` is still named after it was removed ({why}): {}",
+                        list(&hard)
+                    ),
+                );
+            }
+            if !soft.is_empty() {
+                low.push(format!(
+                    "leftover: `{name}` is still named in comments or docs ({why}): {}",
+                    list(&soft)
+                ));
+            }
+        }
+    }
     // Marked as intended: `codemap-ignore` on (or above) the line, or `[release] ignore`.
     let mut ignored: Vec<String> = Vec::new();
     problems.retain(|p| {

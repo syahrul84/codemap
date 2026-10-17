@@ -68,7 +68,12 @@ pub(crate) fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<A
         .ok()?
         .into_iter()
         .find(|s| s.kind.is_class_like())?;
-    let path = root.join(&sym.file);
+    parse_file(root, sym.file)
+}
+
+/// The parsed file, from the cache while it is unchanged.
+fn parse_file(root: &Path, file: String) -> Option<Arc<Parsed>> {
+    let path = root.join(&file);
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     if let Ok(guard) = PARSED.lock()
         && let Some((t, p)) = guard.as_ref().and_then(|c| c.get(&path))
@@ -79,11 +84,7 @@ pub(crate) fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<A
     }
     let src = std::fs::read(&path).ok()?;
     let tree = codemap_php::parse::parse(&src)?;
-    let parsed = Arc::new(Parsed {
-        src,
-        tree,
-        file: sym.file,
-    });
+    let parsed = Arc::new(Parsed { src, tree, file });
     if let Ok(mut guard) = PARSED.lock() {
         let cache = guard.get_or_insert_with(HashMap::new);
         if cache.len() > 2000 {
@@ -92,6 +93,28 @@ pub(crate) fn parse_class(conn: &Connection, root: &Path, fqn: &str) -> Option<A
         cache.insert(path, (mtime, Arc::clone(&parsed)));
     }
     Some(parsed)
+}
+
+/// Parses the files of these classes on all cores, ahead of answers that
+/// read them one by one (the controllers behind a backend's routes).
+pub fn prefetch(conn: &Connection, root: &Path, classes: &[&str]) {
+    use rayon::prelude::*;
+    let mut files: Vec<String> = classes
+        .iter()
+        .filter_map(|fqn| {
+            symbols::by_fqn(conn, fqn)
+                .ok()?
+                .into_iter()
+                .find(|s| s.kind.is_class_like())
+                .map(|s| s.file)
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    files.truncate(1500);
+    files.into_par_iter().for_each(|f| {
+        parse_file(root, f);
+    });
 }
 
 pub(crate) fn method<'t>(class: Node<'t>, src: &[u8], name: &str) -> Option<Node<'t>> {

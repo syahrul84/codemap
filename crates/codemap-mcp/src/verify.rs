@@ -822,6 +822,21 @@ impl Verifier<'_> {
                     Check::new("class", name, Status::NotFound)
                         .suggest(self.suggestions(short(name), None)?)
                 }
+                None if self.root.join("Cargo.toml").is_file() => {
+                    Check::new("class", name, Status::NotFound)
+                        .detail("not declared in this project (the standard library and dependencies are not indexed)")
+                        .suggest(self.suggestions(short(name), None)?)
+                }
+                None if codemap_core::scan::is_gradle_project(self.root) => {
+                    Check::new("class", name, Status::NotFound)
+                        .detail("not declared in this project (Android SDK and library classes are not indexed)")
+                        .suggest(self.suggestions(short(name), None)?)
+                }
+                None if codemap_core::scan::is_apple_project(self.root) => {
+                    Check::new("class", name, Status::NotFound)
+                        .detail("not declared in this project (Apple SDK and Swift package types are not indexed)")
+                        .suggest(self.suggestions(short(name), None)?)
+                }
                 None => Check::new("class", name, Status::NotFound)
                     .detail("not in project code (vendor/ is not installed, so packages were not checked)")
                     .suggest(self.suggestions(short(name), None)?),
@@ -830,7 +845,11 @@ impl Verifier<'_> {
     }
 
     fn method(&self, item: &str) -> Result<Check, ToolError> {
-        let Some((class, method)) = item.split_once("::") else {
+        // `Type.method` is the Swift spelling.
+        let Some((class, method)) = item
+            .split_once("::")
+            .or_else(|| item.rsplit_once('.').filter(|(c, _)| !c.contains('/')))
+        else {
             return Ok(
                 Check::new("method", item, Status::Unresolved).detail("expected Class::method")
             );

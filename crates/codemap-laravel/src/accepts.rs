@@ -2,7 +2,7 @@
 //! Request or of an inline `validate([...])`, and the fields it reads
 //! (`$request->input('x')`, `$request->x`, `request('x')`, `->only([...])`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use codemap_core::symbols::{self, MemberLookup};
@@ -312,11 +312,107 @@ impl Walk<'_> {
 }
 
 /// What `controller::action` accepts; `None` when the action is not in project code.
+/// Helper methods already walked while answering one question:
+/// `(controller, helper, request variables)` → what the helper reads.
+#[derive(Default)]
+pub struct AcceptsCache(
+    HashMap<(String, String, String), Option<HelperWalk>>,
+    /// Classes parsed for this answer (a controller serves many actions).
+    HashMap<String, Option<std::sync::Arc<crate::responses::Parsed>>>,
+);
+
+impl AcceptsCache {
+    fn class(
+        &mut self,
+        conn: &Connection,
+        root: &Path,
+        fqn: &str,
+    ) -> Option<std::sync::Arc<crate::responses::Parsed>> {
+        self.1
+            .entry(fqn.to_owned())
+            .or_insert_with(|| parse_class(conn, root, fqn))
+            .clone()
+    }
+}
+
+/// What one controller helper reads from the request.
+pub struct HelperWalk {
+    file: String,
+    reads: Vec<String>,
+    open: Vec<String>,
+    helpers: Vec<(String, u32)>,
+    paginates: bool,
+    rules: Option<(u32, Rules)>,
+}
+
+fn walk_helper(
+    conn: &Connection,
+    root: &Path,
+    controller: &str,
+    h: &str,
+    vars: &[String],
+    classes: &mut AcceptsCache,
+) -> Option<HelperWalk> {
+    let Ok(MemberLookup::Found(hm)) = symbols::find_member(conn, controller, h) else {
+        return None;
+    };
+    let owner = hm
+        .parent_fqn
+        .clone()
+        .unwrap_or_else(|| controller.to_owned());
+    let hp = classes.class(conn, root, &owner)?;
+    let (hc, hscope) = find_class(hp.tree.root_node(), &hp.src, &owner)?;
+    let hbody = method(hc, &hp.src, h).and_then(|m| m.child_by_field_name("body"))?;
+    let mut hv: Vec<String> = hm
+        .meta
+        .params
+        .iter()
+        .filter(|p| {
+            p.type_fqns.iter().any(|t| t.ends_with("Request"))
+                || p.name.trim_start_matches('$') == "request"
+        })
+        .map(|p| p.name.trim_start_matches('$').to_owned())
+        .collect();
+    hv.extend(vars.iter().cloned());
+    let mut hw = Walk {
+        src: &hp.src,
+        scope: &hscope,
+        vars: hv,
+        reads: Vec::new(),
+        rules: None,
+        open: Vec::new(),
+        helpers: Vec::new(),
+        paginates: false,
+    };
+    hw.visit(hbody);
+    Some(HelperWalk {
+        file: hp.file.clone(),
+        reads: hw.reads,
+        open: hw.open,
+        helpers: hw.helpers,
+        paginates: hw.paginates,
+        rules: hw.rules,
+    })
+}
+
+/// [`for_action_with`] without a shared cache.
 pub fn for_action(
     conn: &Connection,
     root: &Path,
     controller: &str,
     action: &str,
+) -> Option<Accepted> {
+    for_action_with(conn, root, controller, action, &mut AcceptsCache::default())
+}
+
+/// What `controller::action` accepts; helpers already walked for other
+/// actions come from `cache`.
+pub fn for_action_with(
+    conn: &Connection,
+    root: &Path,
+    controller: &str,
+    action: &str,
+    cache: &mut AcceptsCache,
 ) -> Option<Accepted> {
     let MemberLookup::Found(m) = symbols::find_member(conn, controller, action).ok()? else {
         return None;
@@ -366,7 +462,7 @@ pub fn for_action(
             .collect();
         add_rules(&items, &mut out);
     }
-    let parsed = parse_class(
+    let parsed = cache.class(
         conn,
         root,
         &m.parent_fqn
@@ -403,59 +499,28 @@ pub fn for_action(
             .collect();
         for (h, called_at) in todo {
             done.push(h.clone());
-            let Ok(MemberLookup::Found(hm)) = symbols::find_member(conn, controller, &h) else {
+            let key = (controller.to_owned(), h.clone(), vars.join(","));
+            if !cache.0.contains_key(&key) {
+                let walked = walk_helper(conn, root, controller, &h, &vars, cache);
+                cache.0.insert(key.clone(), walked);
+            }
+            let Some(hw) = cache.0.get(&key).and_then(Option::as_ref) else {
                 continue;
             };
-            let owner = hm
-                .parent_fqn
-                .clone()
-                .unwrap_or_else(|| controller.to_owned());
-            let Some(hp) = parse_class(conn, root, &owner) else {
-                continue;
-            };
-            let Some((hc, hscope)) = find_class(hp.tree.root_node(), &hp.src, &owner) else {
-                continue;
-            };
-            let Some(hbody) = method(hc, &hp.src, &h).and_then(|m| m.child_by_field_name("body"))
-            else {
-                continue;
-            };
-            let mut hv: Vec<String> = hm
-                .meta
-                .params
-                .iter()
-                .filter(|p| {
-                    p.type_fqns.iter().any(|t| t.ends_with("Request"))
-                        || p.name.trim_start_matches('$') == "request"
-                })
-                .map(|p| p.name.trim_start_matches('$').to_owned())
-                .collect();
-            hv.extend(vars.iter().cloned());
-            let mut hw = Walk {
-                src: &hp.src,
-                scope: &hscope,
-                vars: hv,
-                reads: Vec::new(),
-                rules: None,
-                open: Vec::new(),
-                helpers: Vec::new(),
-                paginates: false,
-            };
-            hw.visit(hbody);
-            w.reads.extend(hw.reads);
-            w.open.extend(hw.open);
-            w.helpers.extend(hw.helpers);
+            w.reads.extend(hw.reads.iter().cloned());
+            w.open.extend(hw.open.iter().cloned());
+            w.helpers.extend(hw.helpers.iter().cloned());
             w.paginates |= hw.paginates;
-            if let Some((hline, r)) = hw.rules {
+            if let Some((hline, r)) = &hw.rules {
                 if rules_at.is_none() {
                     rules_at = Some(format!(
                         "{}:{hline} (in {h}(), called at line {called_at})",
-                        hp.file
+                        hw.file
                     ));
                 }
-                let line = w.rules.as_ref().map_or(hline, |(l, _)| *l);
+                let line = w.rules.as_ref().map_or(*hline, |(l, _)| *l);
                 let mut all = w.rules.take().map(|(_, x)| x).unwrap_or_default();
-                all.extend(r);
+                all.extend(r.iter().cloned());
                 w.rules = Some((line, all));
             }
         }

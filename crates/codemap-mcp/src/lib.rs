@@ -17,6 +17,7 @@ pub mod reports;
 pub mod server;
 pub mod tools;
 pub mod typecheck;
+pub mod usage;
 pub mod usages;
 pub mod verify;
 pub mod workspace;

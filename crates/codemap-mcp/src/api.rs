@@ -95,7 +95,10 @@ pub fn backends(store: &Store, project: &Project) -> R<(Vec<Backend>, Vec<String
             };
             if due {
                 let config = Config::load(&root)?;
-                crate::refresh::refresh(&mut s, &root, &config, ScanOptions::default())?;
+                let started = std::time::Instant::now();
+                let r = crate::refresh::refresh(&mut s, &root, &config, ScanOptions::default());
+                crate::usage::record_index_at(&index, "linked", false, started, r.as_ref().ok());
+                r?;
             }
             Ok(s)
         })();
@@ -340,9 +343,102 @@ pub enum Outcome {
     Unresolved(Vec<(usize, usize)>),
 }
 
+/// A route's first and last word for one call length (`None`: a parameter,
+/// or not fixed because the route has optional segments).
+type Ends = (Option<String>, Option<String>);
+
+/// Routes of one call length, by their first and last words.
+#[derive(Default)]
+struct LenBucket {
+    both: HashMap<Ends, Vec<usize>>,
+    by_first: HashMap<Option<String>, Vec<usize>>,
+    by_last: HashMap<Option<String>, Vec<usize>>,
+    all: Vec<usize>,
+}
+
+/// Routes of one backend by the call lengths they can take, then by their
+/// first and last words, so a call is only tried against routes that could
+/// fit it (a literal word must match exactly; a variable fits anything).
+#[derive(Default)]
+struct RouteIndex {
+    by_len: Vec<LenBucket>,
+}
+
+impl RouteIndex {
+    fn new(segs: &[Vec<Seg>]) -> Self {
+        let mut idx = RouteIndex::default();
+        for (ri, r) in segs.iter().enumerate() {
+            let max = r.len();
+            let has_opt = r.iter().any(|s| matches!(s, Seg::Opt));
+            let min = r.iter().filter(|s| !matches!(s, Seg::Opt)).count();
+            if idx.by_len.len() <= max {
+                idx.by_len.resize_with(max + 1, Default::default);
+            }
+            let word = |s: Option<&Seg>| match s {
+                Some(Seg::Lit(w)) => Some(w.clone()),
+                _ => None,
+            };
+            for len in min..=max {
+                // A literal segment is never skipped, so a route without
+                // optional segments lines up word for word with the call.
+                let first = word(r.first()).filter(|_| !matches!(r.first(), Some(Seg::Opt)));
+                let last = if has_opt { None } else { word(r.last()) };
+                let b = &mut idx.by_len[len];
+                b.both
+                    .entry((first.clone(), last.clone()))
+                    .or_default()
+                    .push(ri);
+                b.by_first.entry(first).or_default().push(ri);
+                b.by_last.entry(last).or_default().push(ri);
+                b.all.push(ri);
+            }
+        }
+        idx
+    }
+
+    /// Routes that may fit `call`, in route order.
+    fn candidates(&self, call: &[&str]) -> Vec<usize> {
+        let Some(b) = self.by_len.get(call.len()) else {
+            return Vec::new();
+        };
+        let known = |s: Option<&&str>| s.filter(|w| !w.contains("{}")).map(|w| (*w).to_owned());
+        let (f, l) = (known(call.first()), known(call.last()));
+        fn get<K: std::hash::Hash + Eq>(m: &HashMap<K, Vec<usize>>, k: K) -> Vec<usize> {
+            m.get(&k).cloned().unwrap_or_default()
+        }
+        let mut out: Vec<usize> = match (&f, &l) {
+            (Some(f), Some(l)) => [
+                (Some(f.clone()), Some(l.clone())),
+                (Some(f.clone()), None),
+                (None, Some(l.clone())),
+                (None, None),
+            ]
+            .into_iter()
+            .flat_map(|k| get(&b.both, k))
+            .collect(),
+            (Some(f), None) => [Some(f.clone()), None]
+                .into_iter()
+                .flat_map(|k| get(&b.by_first, k))
+                .collect(),
+            (None, Some(l)) => [Some(l.clone()), None]
+                .into_iter()
+                .flat_map(|k| get(&b.by_last, k))
+                .collect(),
+            (None, None) => b.all.clone(),
+        };
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 pub struct Matcher<'b> {
     pub backends: &'b [Backend],
     segs: Vec<Vec<Vec<Seg>>>,
+    index: Vec<RouteIndex>,
+    /// Per backend: the distinct route words, and each route's words as
+    /// positions in that list (for "closest route" suggestions).
+    words: Vec<(Vec<String>, Vec<Vec<u32>>)>,
     /// Per backend: the inferred base and how many calls it explained.
     pub bases: Vec<(Vec<String>, usize, usize)>,
 }
@@ -353,9 +449,34 @@ impl<'b> Matcher<'b> {
             .iter()
             .map(|b| b.routes.iter().map(|r| route_segs(&r.uri)).collect())
             .collect();
+        let index = segs.iter().map(|s| RouteIndex::new(s)).collect();
+        let words = segs
+            .iter()
+            .map(|routes| {
+                let mut at: HashMap<&str, u32> = HashMap::new();
+                let mut list: Vec<String> = Vec::new();
+                let per_route = routes
+                    .iter()
+                    .map(|r| {
+                        r.iter()
+                            .filter_map(|s| match s {
+                                Seg::Lit(x) => Some(*at.entry(x.as_str()).or_insert_with(|| {
+                                    list.push(x.clone());
+                                    (list.len() - 1) as u32
+                                })),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .collect();
+                (list, per_route)
+            })
+            .collect();
         let mut m = Self {
             backends,
             segs,
+            index,
+            words,
             bases: Vec::new(),
         };
         // Calls with a known variable prefix vote with their full URLs, so a
@@ -425,7 +546,10 @@ impl<'b> Matcher<'b> {
             .map(String::as_str)
             .chain(c.url.split('/').filter(|s| !s.is_empty()))
             .collect();
-        self.segs[bi].iter().any(|r| fit(&call, r).is_some())
+        self.index[bi]
+            .candidates(&call)
+            .into_iter()
+            .any(|ri| fit(&call, &self.segs[bi][ri]).is_some())
     }
 
     /// Routes of backend `bi` the call fits with `prefix`, ignoring the method.
@@ -441,10 +565,10 @@ impl<'b> Matcher<'b> {
             .map(String::as_str)
             .chain(c.url.split('/').filter(|s| !s.is_empty()))
             .collect();
-        let mut out: Vec<(usize, (usize, usize))> = self.segs[bi]
-            .iter()
-            .enumerate()
-            .filter_map(|(ri, r)| fit_detail(&call, r).map(|score| (ri, score)))
+        let mut out: Vec<(usize, (usize, usize))> = self.index[bi]
+            .candidates(&call)
+            .into_iter()
+            .filter_map(|ri| fit_detail(&call, &self.segs[bi][ri]).map(|score| (ri, score)))
             .collect();
         out.sort_by_key(|a| std::cmp::Reverse(a.1));
         out
@@ -603,6 +727,13 @@ impl<'b> Matcher<'b> {
                         .map(str::to_owned),
                 )
                 .collect();
+            // How alike the call's last word is to each distinct route word.
+            let (list, per_route) = &self.words[bi];
+            let last_lit = call.iter().rev().find(|s| *s != "{}");
+            let alike: Vec<f64> = match last_lit {
+                Some(l) => list.iter().map(|x| strsim::jaro_winkler(x, l)).collect(),
+                None => Vec::new(),
+            };
             for (ri, r) in self.segs[bi].iter().enumerate() {
                 let mut same = 0;
                 for (a, s) in call.iter().zip(r) {
@@ -612,17 +743,10 @@ impl<'b> Matcher<'b> {
                         _ => break,
                     }
                 }
-                let last_lit = call.iter().rev().find(|s| *s != "{}");
-                let sim = last_lit
-                    .map(|l| {
-                        r.iter()
-                            .filter_map(|s| match s {
-                                Seg::Lit(x) => Some(strsim::jaro_winkler(x, l)),
-                                _ => None,
-                            })
-                            .fold(0.0, f64::max)
-                    })
-                    .unwrap_or(0.0);
+                let sim = per_route[ri]
+                    .iter()
+                    .filter_map(|w| alike.get(*w as usize).copied())
+                    .fold(0.0, f64::max);
                 let score = same as f64 + sim;
                 if same > base.len() || sim > 0.85 {
                     scored.push((score, method_ok(c.method.as_deref(), &b.routes[ri]), bi, ri));
@@ -748,6 +872,7 @@ pub struct Shapes<'a> {
     own: &'a Store,
     cache: HashMap<(usize, String, String), ResponseShape>,
     accepts: HashMap<(usize, String, String), Option<codemap_laravel::accepts::Accepted>>,
+    accepts_cache: codemap_laravel::accepts::AcceptsCache,
     /// Time spent reading controllers, for the debug log.
     pub spent_ms: u128,
 }
@@ -758,6 +883,7 @@ impl<'a> Shapes<'a> {
             own,
             cache: HashMap::new(),
             accepts: HashMap::new(),
+            accepts_cache: Default::default(),
             spent_ms: 0,
         }
     }
@@ -800,10 +926,17 @@ impl<'a> Shapes<'a> {
             .clone()
             .unwrap_or_else(|| "__invoke".into());
         let own = self.own;
+        let cache = &mut self.accepts_cache;
         self.accepts
             .entry((bi, ctrl.clone(), action.clone()))
             .or_insert_with(|| {
-                codemap_laravel::accepts::for_action(b.conn(own), &b.root, &ctrl, &action)
+                codemap_laravel::accepts::for_action_with(
+                    b.conn(own),
+                    &b.root,
+                    &ctrl,
+                    &action,
+                    cache,
+                )
             })
             .clone()
     }
@@ -1033,6 +1166,19 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
     let t_backends = t0.elapsed().as_millis();
     let matcher = Matcher::new(&backends, &calls);
     let t_matcher = t0.elapsed().as_millis();
+    // The controllers behind the routes, parsed on all cores now rather than
+    // one at a time while the calls are checked.
+    for b in &backends {
+        let mut ctrls: Vec<&str> = b
+            .routes
+            .iter()
+            .filter_map(|r| r.controller_fqn.as_deref())
+            .collect();
+        ctrls.sort_unstable();
+        ctrls.dedup();
+        responses::prefetch(b.conn(store), &b.root, &ctrls);
+    }
+    let t_prefetch = t0.elapsed().as_millis();
     let mut shapes = Shapes::new(store);
     let limit = p.limit.unwrap_or(20).clamp(1, 100);
     let offset = p
@@ -1611,7 +1757,8 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
     tracing::debug!(
         backends_ms = t_backends,
         matcher_ms = t_matcher - t_backends,
-        rest_ms = t0.elapsed().as_millis() - t_matcher,
+        prefetch_ms = t_prefetch - t_matcher,
+        rest_ms = t0.elapsed().as_millis() - t_prefetch,
         shapes_ms = shapes.spent_ms,
         shapes = shapes.cache.len(),
         "api_usage timings"

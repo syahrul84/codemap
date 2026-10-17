@@ -294,6 +294,7 @@ pub fn refresh(
     opts: ScanOptions,
 ) -> Result<RefreshReport> {
     let base = codemap_php::refresh(store, root, config, opts)?;
+    let t = Instant::now();
     let changed = opts.full || base.scan.reparsed + base.scan.removed > 0;
     let detection_current = get_meta(store.conn(), meta_keys::DETECTION_VERSION)?.as_deref()
         == Some(DETECTION_VERSION.to_string().as_str());
@@ -319,12 +320,17 @@ pub fn refresh(
             scan: &base.scan,
             full: opts.full,
         };
+        tracing::debug!(ms = t.elapsed().as_millis() as u64, "laravel detection");
+        let t = Instant::now();
         laravel.routes = LaravelAdapter.extract(&ctx, &detection, store)?;
+        tracing::debug!(ms = t.elapsed().as_millis() as u64, "laravel routes");
+        let t = Instant::now();
         laravel.route_source = stored_routes_state(store)?.map(|s| s.route_source);
         let data_changed = opts.full
             || data_relevant(store, &base.scan)?
             || other_schema_due(store, config, &base.scan)?;
         laravel.data = extract_data(store, root, config, &detection, data_changed)?;
+        tracing::debug!(ms = t.elapsed().as_millis() as u64, "laravel data");
     } else if store.conn().query_row(
         "SELECT COUNT(*) FROM routes WHERE source != 'next'",
         [],
@@ -354,9 +360,13 @@ pub fn refresh(
             [meta_keys::ROUTES_STATE, meta_keys::DATA_STATE],
         )?;
     }
+    let t = Instant::now();
     crate::lang::refresh(store, root, &base.scan, opts.full)?;
+    tracing::debug!(ms = t.elapsed().as_millis() as u64, "laravel lang");
     if detection.laravel {
+        let t = Instant::now();
         crate::filament::refresh(store, root, &base.scan, opts.full)?;
+        tracing::debug!(ms = t.elapsed().as_millis() as u64, "filament");
     }
     Ok(RefreshReport {
         scan: base.scan,

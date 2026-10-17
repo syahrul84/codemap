@@ -1,0 +1,25 @@
+[package]
+name = "codemap-android"
+description = "Android (Kotlin, Java, Jetpack Compose) symbols, references, screens and translations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+codemap-core.workspace = true
+rayon.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-kotlin-ng.workspace = true
+tree-sitter-java.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

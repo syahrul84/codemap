@@ -98,6 +98,23 @@ enum Command {
         #[arg(long, default_value = "codemap.html")]
         out: PathBuf,
     },
+    /// How codemap is used in this project: tool calls (time taken, answers
+    /// that found nothing, errors, retries, wrong answers reported), AI app
+    /// sessions and index runs. Kept for 90 days on this machine.
+    Usage {
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Print as JSON (every number, per tool and per day).
+        #[arg(long)]
+        json: bool,
+        /// Only the last N days (at most 90).
+        #[arg(long, default_value_t = 90)]
+        days: i64,
+        /// Empty the usage log.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Names the AI asked for that do not exist, most frequent first, with
     /// the real name and what to do about it.
     Misses {
@@ -271,6 +288,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             clear,
         } => cmd_misses(&cli, project, *json, *clear),
         Command::Baseline { project, out } => cmd_baseline(&cli, project, out.as_deref()),
+        Command::Usage {
+            project,
+            json,
+            days,
+            clear,
+        } => cmd_usage(&cli, project, *json, *days, *clear),
         Command::Check {
             project,
             changed,
@@ -286,6 +309,243 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             baseline.as_deref(),
             *json,
         ),
+    }
+}
+
+fn cmd_usage(
+    cli: &Cli,
+    project: &Path,
+    json: bool,
+    days: i64,
+    clear: bool,
+) -> anyhow::Result<ExitCode> {
+    let projects = Project::resolve(cli, project)?;
+    let days = days.clamp(1, codemap_mcp::usage::KEEP_DAYS);
+    if clear {
+        for p in &projects {
+            codemap_mcp::usage::clear(&p.mcp())?;
+        }
+        println!("usage log cleared");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
+    let all: Vec<serde_json::Value> = mcp
+        .iter()
+        .map(|p| codemap_mcp::usage::summary_in(p, days, &mcp))
+        .collect();
+    if json {
+        let out = if all.len() == 1 {
+            all[0].clone()
+        } else {
+            serde_json::json!({ "apps": all })
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if all.len() > 1 {
+        let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+        let per_app: Vec<String> = projects
+            .iter()
+            .zip(&all)
+            .map(|(p, u)| {
+                format!(
+                    "{} {}",
+                    p.app.as_deref().unwrap_or("."),
+                    n(&u["calls"]["total"])
+                )
+            })
+            .collect();
+        // Every app records every session of the workspace's server.
+        let sessions = all
+            .iter()
+            .map(|u| n(&u["sessions"]["count"]))
+            .max()
+            .unwrap_or(0);
+        println!(
+            "workspace: {} tool calls in {} {} ({}); per app below",
+            all.iter().map(|u| n(&u["calls"]["total"])).sum::<u64>(),
+            sessions,
+            if sessions == 1 { "session" } else { "sessions" },
+            per_app.join(", ")
+        );
+    }
+    for (p, u) in projects.iter().zip(&all) {
+        header(&projects, p);
+        print_usage(u);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_usage(u: &serde_json::Value) {
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+    let period = &u["period"];
+    let calls = &u["calls"];
+    if n(&calls["total"]) == 0 && n(&u["indexing"]["runs"]) == 0 && n(&u["sessions"]["count"]) == 0
+    {
+        println!(
+            "no usage recorded in the last {} days (the log starts when the MCP server or `codemap query` is used)",
+            n(&period["days"])
+        );
+        return;
+    }
+    println!(
+        "last {} days ({} to {})",
+        n(&period["days"]),
+        period["from"]
+            .as_str()
+            .unwrap_or("?")
+            .get(..10)
+            .unwrap_or("?"),
+        period["to"]
+            .as_str()
+            .unwrap_or("?")
+            .get(..10)
+            .unwrap_or("?")
+    );
+    let clients: Vec<String> = u["sessions"]["clients"]
+        .as_object()
+        .map(|o| o.iter().map(|(k, v)| format!("{k} ×{}", n(v))).collect())
+        .unwrap_or_default();
+    println!(
+        "sessions     {}{}",
+        n(&u["sessions"]["count"]),
+        if clients.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", clients.join(", "))
+        }
+    );
+    println!(
+        "tool calls   {} (avg {} ms, 95% under {} ms){}",
+        n(&calls["total"]),
+        n(&calls["avg_ms"]),
+        n(&calls["p95_ms"]),
+        if n(&calls["from_cli"]) > 0 {
+            format!("; {} from the CLI", n(&calls["from_cli"]))
+        } else {
+            String::new()
+        }
+    );
+    if let Some(rows) = u["tools"].as_array().filter(|r| !r.is_empty()) {
+        println!();
+        println!(
+            "  {:<20} {:>6} {:>7} {:>7} {:>5} {:>9} {:>7} {:>7} {:>7} {:>9} {:>8}",
+            "tool",
+            "calls",
+            "avg ms",
+            "p95 ms",
+            "slow",
+            "not found",
+            "refused",
+            "errors",
+            "retried",
+            "reported",
+            "missing"
+        );
+        for r in rows {
+            println!(
+                "  {:<20} {:>6} {:>7} {:>7} {:>5} {:>9} {:>7} {:>7} {:>7} {:>9} {:>8}",
+                r["tool"].as_str().unwrap_or("?"),
+                n(&r["calls"]),
+                n(&r["avg_ms"]),
+                n(&r["p95_ms"]),
+                n(&r["slow"]),
+                n(&r["not_found"]),
+                n(&r["invalid_args"]),
+                n(&r["errors"]),
+                n(&r["retried"]),
+                format!(
+                    "{}/{}",
+                    n(&r["wrong_answers_reported_by_ai"]),
+                    n(&r["wrong_answers_found_by_codemap"])
+                ),
+                n(&r["names_ai_asked_that_do_not_exist"]),
+            );
+        }
+        println!(
+            "  (slow: over 5 s; refused: arguments the tool did not accept; retried: the AI asked again with other arguments within 2 minutes;"
+        );
+        println!(
+            "   reported: wrong answers reported by the AI / found by codemap; missing: names the AI asked for that do not exist)"
+        );
+    }
+    let acc = &u["accuracy"];
+    let w = &acc["wrong_answers"];
+    println!();
+    println!(
+        "wrong answers {} ({} open, {} closed); names the AI asked for that do not exist: {}; slow answers codemap reported: {}",
+        n(&w["total"]),
+        n(&w["open"]),
+        n(&w["closed"]),
+        n(&acc["names_ai_asked_that_do_not_exist"]),
+        n(&acc["slow_answers_reported"])
+    );
+    for r in acc["open_reports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(10)
+    {
+        println!(
+            "  open {} {} {}: {}",
+            r["id"].as_str().unwrap_or(""),
+            r["tool"].as_str().unwrap_or(""),
+            r["kind"].as_str().unwrap_or(""),
+            r["item"].as_str().unwrap_or("")
+        );
+    }
+    let top: Vec<String> = acc["top_missing_names"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(5)
+        .map(|m| format!("{} ×{}", m["name"].as_str().unwrap_or(""), n(&m["times"])))
+        .collect();
+    if !top.is_empty() {
+        println!("  most asked for: {}", top.join(", "));
+    }
+    println!(
+        "  codemap cannot see whether an answer was right; these are the signals it has (see `codemap reports`, `codemap misses`)."
+    );
+    let ix = &u["indexing"];
+    println!();
+    let triggers: Vec<String> = ix["by_trigger"]
+        .as_object()
+        .map(|o| o.iter().map(|(k, v)| format!("{k} {}", n(v))).collect())
+        .unwrap_or_default();
+    println!(
+        "indexing     {} index {} ({} full{}), {} files read, {} ms in total, avg {} ms",
+        n(&ix["runs"]),
+        if n(&ix["runs"]) == 1 { "run" } else { "runs" },
+        n(&ix["full_runs"]),
+        if n(&ix["failed_runs"]) > 0 {
+            format!(", {} failed", n(&ix["failed_runs"]))
+        } else {
+            String::new()
+        },
+        n(&ix["files_read"]),
+        n(&ix["total_ms"]),
+        n(&ix["avg_ms"])
+    );
+    if !triggers.is_empty() {
+        println!("  why: {}", triggers.join(", "));
+    }
+    for (label, key) in [("slowest", "slowest"), ("last full", "last_full")] {
+        let e = &ix[key];
+        if e.is_object() {
+            println!(
+                "  {label}: {} ms on {} ({}, {} files read of {})",
+                n(&e["ms"]),
+                e["at"]
+                    .as_str()
+                    .unwrap_or("")
+                    .replace('T', " ")
+                    .trim_end_matches('Z'),
+                e["trigger"].as_str().unwrap_or(""),
+                n(&e["files_read"]),
+                n(&e["files_walked"])
+            );
+        }
     }
 }
 
@@ -515,11 +775,18 @@ impl Project {
 
     /// Opens the index and brings it up to date.
     fn refresh(&self, full: bool) -> anyhow::Result<(Store, RefreshReport)> {
+        self.refresh_as(full, "cli")
+    }
+
+    /// Refreshes the index and writes the run to the usage log.
+    fn refresh_as(&self, full: bool, trigger: &str) -> anyhow::Result<(Store, RefreshReport)> {
         let mut store = Store::open(&self.index_path)?;
         store.set_meta(codemap_core::store::meta_keys::PROJECT_ID, &self.id)?;
+        let started = std::time::Instant::now();
         let report =
-            codemap_mcp::refresh(&mut store, &self.root, &self.config, ScanOptions { full })?;
-        Ok((store, report))
+            codemap_mcp::refresh(&mut store, &self.root, &self.config, ScanOptions { full });
+        codemap_mcp::usage::record_index(&self.mcp(), trigger, full, started, report.as_ref().ok());
+        Ok((store, report?))
     }
 }
 
@@ -588,7 +855,7 @@ fn cmd_scan(cli: &Cli, project: &Path, full: bool, json: bool) -> anyhow::Result
 }
 
 fn scan_one(p: &Project, full: bool, json: bool) -> anyhow::Result<ExitCode> {
-    let (_, report) = p.refresh(full)?;
+    let (_, report) = p.refresh_as(full, "scan")?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -633,8 +900,14 @@ fn scan_one(p: &Project, full: bool, json: bool) -> anyhow::Result<ExitCode> {
                 }
             );
         } else {
-            if !report.vue.detected {
-                println!("no Laravel or Vue project detected (see `codemap doctor`)");
+            if !report.vue.detected
+                && !report.swift.detected
+                && !report.android.detected
+                && !report.rust.detected
+            {
+                println!(
+                    "no Laravel, Vue, Swift, Android or Rust project detected (see `codemap doctor`)"
+                );
             }
         }
         let v = &report.vue;
@@ -652,6 +925,42 @@ fn scan_one(p: &Project, full: bool, json: bool) -> anyhow::Result<ExitCode> {
                 v.js.warnings,
                 v.components,
                 if v.registry_ran { "" } else { " (unchanged)" }
+            );
+        }
+        let sw = &report.swift;
+        if sw.detected {
+            println!(
+                "swift: parsed {} files in {} ms ({} symbols); {} views, {} screens{}",
+                sw.parsed,
+                sw.duration_ms,
+                sw.symbols,
+                sw.views,
+                sw.screens,
+                if sw.parsed == 0 { " (unchanged)" } else { "" }
+            );
+        }
+        let an = &report.android;
+        if an.detected {
+            println!(
+                "android: parsed {} files in {} ms ({} symbols); {} composables, {} screens{}",
+                an.parsed,
+                an.duration_ms,
+                an.symbols,
+                an.composables,
+                an.screens,
+                if an.parsed == 0 { " (unchanged)" } else { "" }
+            );
+        }
+        let rs = &report.rust;
+        if rs.detected {
+            println!(
+                "rust: parsed {} files in {} ms ({} symbols); {} crates, {} binaries and commands{}",
+                rs.parsed,
+                rs.duration_ms,
+                rs.symbols,
+                rs.crates,
+                rs.entry_points,
+                if rs.parsed == 0 { " (unchanged)" } else { "" }
             );
         }
         let d = &report.laravel.data;
@@ -699,8 +1008,37 @@ fn cmd_query(
     };
     let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
     let apps: Vec<(&Store, &codemap_mcp::Project)> = stores.iter().zip(&mcp).collect();
-    let envelope = codemap_mcp::workspace::call(&apps, tool, args, fresh)?;
-    println!("{}", serde_json::to_string_pretty(&envelope)?);
+    let started = std::time::Instant::now();
+    let result = codemap_mcp::workspace::call(&apps, tool, args.clone(), fresh);
+    let target = args["app"]
+        .as_str()
+        .and_then(|a| mcp.iter().find(|p| p.app.as_deref() == Some(a)))
+        .unwrap_or(&mcp[0]);
+    let (text, outcome) = match &result {
+        Ok(env) => (
+            serde_json::to_string_pretty(env)?,
+            codemap_mcp::usage::outcome_of(&env.data),
+        ),
+        Err(codemap_mcp::ToolError::InvalidParams(m)) => (m.clone(), "invalid_args"),
+        Err(e) => (e.to_string(), "error"),
+    };
+    codemap_mcp::usage::append(
+        target,
+        &codemap_mcp::usage::Entry::Call {
+            at: codemap_core::time::now_rfc3339(),
+            tool: tool.to_owned(),
+            args: codemap_mcp::usage::redact(&args),
+            ms: started.elapsed().as_millis() as u64,
+            bytes: text.len() as u64,
+            outcome: outcome.to_owned(),
+            stale: false,
+            reindexed: 0,
+            call_id: None,
+            via: "cli".into(),
+        },
+    );
+    result?;
+    println!("{text}");
     Ok(ExitCode::SUCCESS)
 }
 

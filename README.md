@@ -1,6 +1,6 @@
-# codemap — project index MCP server for Laravel, Vue, Nuxt and Next.js
+# codemap — project index MCP server for Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust
 
-`codemap` reads a Laravel, Vue 2, Vue 3 or Nuxt (2/3/4) project and serves facts about it to Claude over MCP, so Claude checks what exists instead of guessing:
+`codemap` reads a Laravel, Vue 2, Vue 3, Nuxt (2/3/4), Next.js, Swift (iOS / macOS), Android (Kotlin / Java) or Rust project and serves facts about it to Claude over MCP, so Claude checks what exists instead of guessing:
 
 - **PHP symbols:** classes, interfaces, traits, enums, methods, functions, properties, constants, enum cases. Names are fully resolved, with signatures and doc summaries.
 - **Routes:** static analysis of `withRouting()`, `RouteServiceProvider` and route files, including groups, resources and includes. Optionally `php artisan route:list`.
@@ -31,6 +31,9 @@
   - `.env` values are never read.
 - **Find usages:** every use of a class, method, function, route name, component, composable or store, translation key, endpoint or file, with `file:line`. Tests that touch it are listed separately (including PHP tests that hit a controller's routes through `$this->getJson('/api/...')`), so you know which tests to run.
 - **Stores and composables:** Pinia (options and setup stores), Vuex modules with their namespaces (including Nuxt 2 `store/`), composables and exported JS/TS functions.
+- **Swift (iOS / macOS):** classes, structs, enums, actors, protocols and their members (extensions included). SwiftUI views for `get_component`: what callers pass in (`let`, `@Binding`, `@ObservedObject`), own state (`@State`, `@AppStorage`, …) with starting values, environment, the views each shows and where it is shown. Screens for `list_pages`: windows, settings, menu-bar extras, tabs, `NavigationLink` / `.navigationDestination`, sheets, covers, popovers. Translations from `.strings` and `.xcstrings`.
+- **Android (Kotlin / Java):** classes, interfaces, objects, enums and members, named by package. Jetpack Compose functions for `get_component`: parameters, remembered state with starting values, the composables each shows and who shows it. Screens for `list_pages`: manifest activities and other components (with what the launcher activity shows), Navigation Compose destinations, dialogs, bottom sheets, Fragments, and app-made navigation through `when` blocks. Translations from `res/values*/strings.xml`.
+- **Rust:** structs, enums, traits, functions, `impl` methods (attached to their type), fields, variants, consts and macros, named by Rust path (`my_crate::store::Store::open`). Binaries and clap subcommands for `list_pages`; a crate map in `project_overview`.
 
 Every answer is either a fact with `file:line`, or an explicit `found: false` with suggestions. Anything codemap cannot work out statically is reported as `unresolved` rather than guessed.
 
@@ -38,8 +41,12 @@ Supported:
 - Laravel 9 and later, both the 11+ `bootstrap/app.php` layout and the older Kernel/RouteServiceProvider layout (including apps upgraded to 11+ that kept it).
 - Vue 2.6/2.7 and Vue 3, built with Vue CLI, Vite, webpack or Laravel Mix (aliases come from `vue.config.js`, `vite.config` and `tsconfig`/`jsconfig`).
 - Nuxt 2, 3 and 4, with `srcDir` (Nuxt 4 `app/` or the root), component dirs, `pathPrefix` and layers inside the project.
+- Next.js app router and pages router, React function components, Supabase.
+- Swift packages (`Package.swift`) and Xcode apps (`.xcodeproj` / `.xcworkspace`) with SwiftUI. Every top-level folder is read; `.build`, `DerivedData`, `Pods`, `Carthage` and asset catalogs are skipped.
+- Android apps built with Gradle, in Kotlin or Java, with Jetpack Compose or Fragments. The Gradle build can be at the root or one folder down (an `android/` folder beside an iOS app); `build/`, `.gradle/` and `.idea/` are skipped.
+- Rust crates and Cargo workspaces; `target/` is skipped.
 
-A repository can be both: a Laravel app with an Inertia/Vue frontend gets both sets of facts.
+A repository can be several at once: a Laravel app with an Inertia/Vue frontend gets both sets of facts, and an iOS app with an `android/` folder gets the Swift and the Android facts.
 
 The full specification is in [BUILD_PROMPT.md](BUILD_PROMPT.md).
 
@@ -117,7 +124,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.3 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.4 codemap-cli
 ```
 
 ### Docker
@@ -208,16 +215,16 @@ codemap is an MCP server, and MCP is an open standard: Cursor, Windsurf, VS Code
 
 | Tool | When Claude should use it |
 |---|---|
-| `project_overview` | First, in every session: Laravel version and layout, counts, key directories, main namespaces, models, index health. About 1,200 tokens on an 1,200-file app. |
+| `project_overview` | First, in every session: Laravel version and layout, counts, key directories, main namespaces, models, index health. About 1,200 tokens on an 1,200-file app. Swift, Android and Rust projects get their own section: app entry points, modules or crates, counts of types, views / composables and screens. |
 | `search_symbol` | Before writing a class, method or helper, to reuse existing code. Matches short names, FQNs, `Class::method` and partial names. A `kind` filter that matches nothing falls back to other kinds (`useCart` as a composable finds the `useCartStore` store); typos and reworded names (`StatusOfOrder`) give `found: false` + suggestions. |
 | `get_symbol` | Instead of reading a whole file. Models include table/fillable/casts/relations; controllers their routes and Form Requests; Form Requests their rules. `include_source` adds the code. |
-| `get_component` | Before using, changing or creating a Vue component or Nuxt page: props, emits, `v-model`, slots, what it renders (resolved to files or libraries), who renders it, stores and composables it uses. Takes a name (`OrderCard`), tag (`order-card`) or path. |
-| `list_pages` | To find a screen and its code (frontend pages, and Filament admin pages with their form fields): URL, route name, the component file it renders, layout, middleware, and where the route is defined. Filters: `path_contains`, `name_prefix`, `file`. |
+| `get_component` | Before using, changing or creating a Vue component, Nuxt page, SwiftUI view or Compose function: props / inputs / parameters, emits, `v-model`, slots, state, what it renders (resolved to files or libraries), who renders it, how it is opened, stores and composables it uses. Takes a name (`OrderCard`), tag (`order-card`) or path. |
+| `list_pages` | To find a screen and its code (frontend pages, Filament admin pages with their form fields, SwiftUI and Android screens, Rust binaries and subcommands): URL or kind, route name, the component file it renders, layout, middleware, and where it is defined or opened. Filters: `path_contains`, `name_prefix`, `file`. |
 | `list_routes` | To find Laravel endpoints or which controller handles a URI (filters: `uri_contains`, `name_prefix`, `method`, `controller`, `middleware`). |
 | `api_usage` | To link the frontend to the backend: which route each HTTP call hits, calls to missing endpoints (marked as dead code when the function around them is unused), wrong methods, fields read but not returned, and payloads that miss required fields or send fields the action does not take. `git_changes: true` limits it to what the branch touches, `new_only: true` hides findings saved by `codemap baseline`. Calls that can't be tied to one route are listed with `file:line`, the reason and the candidate routes. Pass `endpoint` for its callers and response fields, `file` for one screen, or `status: missing / fields / payload / unresolved`. |
-| `find_usages` | Before changing, renaming or removing anything: every use with `file:line`, the routes involved, and the tests that touch it. Method calls on objects whose class is unknown are listed separately as `possible`. With `changed_files` (or `git_changes: true`) it summarises a whole change instead: what each file affects, the related tests, and the exact commands to run only those (`php artisan test …`, `npx vitest run …`, `npx playwright test …`). It also names the browser tests (Playwright, Cypress) that open the screens the change is close to, or look for test ids the changed code sets; tests that reach the change only through shared building blocks are listed separately for a run before release. The five browser tests that use the change most directly come first (`browser_tests_top`, `run_top`). A backend change is followed through its callers to the controllers, routes and the PHP tests that hit them (`routes_via_callers`, `tests_via_route`). Commands use the project's package manager (`pnpm exec`, `yarn`, `bunx`, `npx`), or the commands set in `[tests]`. In a workspace it also lists the frontend calls (in every app) to the backend routes the change touches, and the browser tests for those screens. Code that exists but that nothing uses comes back as `found: true, unused: true`. |
+| `find_usages` | Before changing, renaming or removing anything: every use with `file:line`, the routes involved, and the tests that touch it. Method calls on objects whose class is unknown are listed separately as `possible`. With `changed_files` (or `git_changes: true`) it summarises a whole change instead: what each file affects, the related tests, and the exact commands to run only those (`php artisan test …`, `npx vitest run …`, `npx playwright test …`). It also names the browser tests (Playwright, Cypress) that open the screens the change is close to, or look for test ids the changed code sets; tests that reach the change only through shared building blocks are listed separately for a run before release. The five browser tests that use the change most directly come first (`browser_tests_top`, `run_top`). A backend change is followed through its callers to the controllers, routes and the PHP tests that hit them (`routes_via_callers`, `tests_via_route`). Commands use the project's package manager (`pnpm exec`, `yarn`, `bunx`, `npx`), or the commands set in `[tests]`. In a workspace it also lists the frontend calls (in every app) to the backend routes the change touches, and the browser tests for those screens. Code that exists but that nothing uses comes back as `found: true, unused: true`. For Swift, Kotlin, Java and Rust, type uses are exact; members are matched by name, so uses outside their own file are `possible`. Rust uses in `#[cfg(test)]` / `#[test]` code are listed as tests. |
 | `get_schema` | Before writing queries, migrations or model code (or, with `settings: true`, to see app settings and config defaults; with `migrations: true`, migrations not yet applied to your local / staging databases): tables, columns, keys, foreign keys, mapped models, where each column was created and changed. |
-| `verify` | Before finishing: checks classes, `Class::method`, functions, routes (name or `METHOD uri`), tables, `table.column`, `Model::relation`, Vue components, endpoints the frontend calls, translation keys (with the locales they are missing in), or a PHP snippet. Each item is `exists`, `not_found` (with suggestions), `external` (vendor / PHP built-in) or `unresolved`. With `release_check: true`: one list of problems before a release (see below). |
+| `verify` | Before finishing: checks classes, `Class::method`, functions, routes (name or `METHOD uri`), tables, `table.column`, `Model::relation`, Vue components, endpoints the frontend calls, translation keys (with the locales they are missing in), or a PHP snippet. Swift, Kotlin and Rust names work as classes and `Type::method` (or `Type.method`). Each item is `exists`, `not_found` (with suggestions), `external` (vendor / PHP built-in) or `unresolved`. With `release_check: true`: one list of problems before a release (see below). |
 
 Every tool takes `detail: "brief" | "full"` (default `brief`). List tools take `limit` (default 20, max 100) and `cursor`. Every response has the same envelope:
 
@@ -232,6 +239,8 @@ Every tool takes `detail: "brief" | "full"` (default `brief`). List tools take `
 There is no file watcher; Docker Desktop bind mounts don't deliver file events reliably. Instead, before answering a call, codemap checks file stats (at most every `check_interval_ms`, default 2 s) and re-indexes what changed. Typical costs through Docker Desktop:
 - On a 4,300-file Laravel project: about 0.1 s after editing a controller, about 0.25 s after editing a route file.
 - On a 2,500-file Vue 2 project: about 0.1 s for a check that finds nothing changed. A full first index takes about 1–2 s.
+- On a 6,100-file Laravel API with 6,100 routes: the first index takes about 4.5 s; `find_usages` on a controller behind 1,000 routes about 0.2 s.
+- Swift and Android apps of 10–40 files index in about 0.1 s; a 135-file Rust workspace in about 0.4 s.
 
 If re-indexing takes longer than 1 s, the answer comes from the previous index with `stale: true` and a warning. The very first index is always awaited, because an empty index would wrongly say "not found".
 
@@ -249,6 +258,7 @@ codemap map    [--project <path>] --out <file.html>   # the code map: one page t
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
 codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear]
 codemap update [--check] [--force]                    # install the latest release
+codemap usage  [--project <path>] [--json] [--days N] [--clear]  # how codemap is used here (see below)
 codemap baseline [--project <path>] [--out <file>]    # save today's API findings; later runs show only new ones
 codemap check api [--project <path>] [--changed] [--base <branch>] [--baseline <file>] [--json]
 ```
@@ -266,6 +276,16 @@ With the Makefile: `make scan PROJECT=/path`, `make doctor PROJECT=/path`, `make
 - grouped warnings (raw SQL in migrations, dynamic table names, code the parser could not read)
 - translations: keys missing per locale, keys used but not defined, plain-text keys and possibly unused keys
 - for Vue / Nuxt: how the frontend was detected, **routes whose component file is missing**, routes built at runtime, and **component tags that resolve to nothing**. These are usually imports of files that no longer exist, or components used without being registered.
+
+### Usage report
+
+`codemap usage` shows how codemap is used in a project, so you can see whether it helps and where it falls short:
+- AI app sessions, and which app connected.
+- Tool calls per tool: how many, time taken (average and 95th percentile, answers over 5 s), answer size, answers that found nothing, refused arguments (also those the MCP library refuses before a tool runs), errors, and calls the AI had to repeat with other arguments within 2 minutes (also in another app of a workspace).
+- Accuracy signals: wrong answers the AI reported (`report_wrong_answer`) or codemap caught itself, open and closed, and names the AI asked for that do not exist; slow answers codemap reported are counted apart. codemap cannot see whether an answer was right; these are the signals it has.
+- Index runs: how many, why (server start-up, before an answer, `codemap scan`, a linked frontend), full or not, files read, and time taken (total, average, slowest, last full index).
+
+`--json` gives every number, also per day, for scripts or for an AI to turn into a page. Each app keeps its log in `usage.jsonl` next to its index for 90 days; it never leaves the machine. Arguments are kept without code: `php_snippet`, type-check output and any long or multi-line text are replaced by their length. `CODEMAP_NO_USAGE_LOG=1` turns the log off; `codemap usage --clear` empties it.
 
 ### Code map page
 
@@ -565,6 +585,12 @@ Routes built at runtime (from `.map()`, loops, or helpers that aren't simple) ar
 - JS / Vue references come from resolved imports (including lazy ones), component tags, and calls by name (Nuxt auto-imports).
 - Column usages are not tracked yet.
 
+**Swift, Kotlin, Java, Rust:** parsed with tree-sitter.
+- There is no type checker: a member call (`model.refresh()`) is matched by name, and uses outside the member's own file are listed as possible.
+- The Apple and Android SDKs, Swift packages and Rust dependencies are not indexed, so `verify` says a name like `URLSession` is not declared in the project.
+- A few valid forms the Swift and Kotlin grammars misread (`@_silgen_name`, regex literals; Kotlin `var x by …; private set`, a modifier word used as a name) are skipped or rewritten before parsing, never reported as errors.
+- API calls from mobile and Rust code are not linked to backend routes.
+
 **Not yet:** column usages, config / settings defaults, embeddings and semantic search.
 
 ## Troubleshooting
@@ -599,12 +625,15 @@ crates/codemap-php      tree-sitter-php parsing, name resolution, symbol extract
 crates/codemap-laravel  detection, routes (static + artisan), models, schema replay, Form Requests, doctor
 crates/codemap-js       oxc JS/TS analysis, Vue SFC splitter, template tokenizer, literal reader
 crates/codemap-vue      Vue/Nuxt detection, component naming and registry, stores, get_component, doctor
+crates/codemap-swift    Swift / SwiftUI: symbols, views, screens, string catalogs (tree-sitter-swift)
+crates/codemap-android  Kotlin / Java / Compose: symbols, composables, manifest, screens, strings.xml
+crates/codemap-rust     Rust: symbols by Rust path, impls, binaries and clap subcommands
 crates/codemap-mcp      MCP server (rmcp, stdio) and the tool implementations shared with `codemap query`
 crates/codemap-cli      the `codemap` binary
 fixtures/            hand-written Laravel, Vue 2, Vue 3, Nuxt 2 and Nuxt 3 projects used by the tests
 ```
 
-Extractor versions (`PHP_EXTRACTOR_VERSION`, `ROUTES_EXTRACTOR_VERSION`, `DATA_EXTRACTOR_VERSION`, `DETECTION_VERSION`, `JS_EXTRACTOR_VERSION`, `REGISTRY_VERSION`, `VUE_DETECTION_VERSION`) make existing indexes re-extract after an upgrade. Bump the relevant one whenever extraction output changes.
+Extractor versions (`PHP_EXTRACTOR_VERSION`, `ROUTES_EXTRACTOR_VERSION`, `DATA_EXTRACTOR_VERSION`, `DETECTION_VERSION`, `JS_EXTRACTOR_VERSION`, `REGISTRY_VERSION`, `VUE_DETECTION_VERSION`, `SWIFT_EXTRACTOR_VERSION`, `ANDROID_EXTRACTOR_VERSION`, `RUST_EXTRACTOR_VERSION`) make existing indexes re-extract after an upgrade. Bump the relevant one whenever extraction output changes.
 
 ## License
 

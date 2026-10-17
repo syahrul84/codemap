@@ -196,6 +196,8 @@ pub fn mentions(root: &Path, gone: &[(String, String)]) -> Vec<Mention> {
             )
         })
         .build();
+    // The files to read, then read and searched on all cores.
+    let mut paths: Vec<(std::path::PathBuf, String, bool)> = Vec::new();
     for entry in walker.flatten() {
         let p = entry.path();
         if !p.is_file() {
@@ -224,31 +226,63 @@ pub fn mentions(root: &Path, gone: &[(String, String)]) -> Vec<Mention> {
         {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(p) else {
-            continue;
-        };
         let code = !matches!(
             ext,
             "md" | "mdx" | "txt" | "json" | "yml" | "yaml" | "neon" | "xml" | "html"
         );
-        let here = if code && gone.iter().any(|(n, _)| text.contains(n.as_str())) {
-            defined(&rel, &text)
-        } else {
-            BTreeSet::new()
-        };
-        for (i, (n, _)) in gone.iter().enumerate() {
-            if here.contains(n) {
-                declared_now[i] = true;
+        paths.push((p.to_path_buf(), rel, code));
+    }
+    paths.sort_by(|a, b| a.1.cmp(&b.1));
+    use rayon::prelude::*;
+    // Per file: (names declared there, per name its hits).
+    type FileHits = (Vec<usize>, Vec<(usize, Vec<(&'static str, String)>)>);
+    let per_file: Vec<FileHits> = paths
+        .par_iter()
+        .map(|(p, rel, code)| {
+            let Ok(text) = std::fs::read_to_string(p) else {
+                return (Vec::new(), Vec::new());
+            };
+            if !gone.iter().any(|(n, _)| text.contains(n.as_str())) {
+                return (Vec::new(), Vec::new());
             }
-            if !text.contains(n.as_str()) || found[i].len() >= 10 {
-                continue;
-            }
-            for (ln, line) in text.lines().enumerate() {
-                if whole_word(line, n) {
-                    found[i].push((place(&rel, line), format!("{rel}:{}", ln + 1)));
-                    if found[i].len() >= 10 {
-                        break;
+            let here = if *code {
+                defined(rel, &text)
+            } else {
+                BTreeSet::new()
+            };
+            let mut declared = Vec::new();
+            let mut hits = Vec::new();
+            for (i, (n, _)) in gone.iter().enumerate() {
+                if here.contains(n) {
+                    declared.push(i);
+                }
+                if !text.contains(n.as_str()) {
+                    continue;
+                }
+                let mut h = Vec::new();
+                for (ln, line) in text.lines().enumerate() {
+                    if whole_word(line, n) {
+                        h.push((place(rel, line), format!("{rel}:{}", ln + 1)));
+                        if h.len() >= 10 {
+                            break;
+                        }
                     }
+                }
+                if !h.is_empty() {
+                    hits.push((i, h));
+                }
+            }
+            (declared, hits)
+        })
+        .collect();
+    for (declared, hits) in per_file {
+        for i in declared {
+            declared_now[i] = true;
+        }
+        for (i, h) in hits {
+            for x in h {
+                if found[i].len() < 10 {
+                    found[i].push(x);
                 }
             }
         }

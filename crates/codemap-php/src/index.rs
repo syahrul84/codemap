@@ -101,6 +101,18 @@ pub fn index_pending(store: &mut Store, root: &Path) -> Result<PhpReport> {
     if bulk {
         symbols::bulk_insert_begin(&tx)?;
     }
+    // A first index: the reference lookups are built once at the end, not
+    // updated on each of the (hundreds of thousands of) inserts.
+    let fresh_refs = bulk
+        && tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM refs)", [], |r| {
+            r.get::<_, bool>(0)
+        })?;
+    if fresh_refs {
+        tx.execute_batch(
+            "DROP INDEX IF EXISTS refs_target; DROP INDEX IF EXISTS refs_file;
+             DROP INDEX IF EXISTS refs_kind_target;",
+        )?;
+    }
     tracing::debug!(
         files = parsed.len(),
         ms = started.elapsed().as_millis() as u64,
@@ -116,39 +128,51 @@ pub fn index_pending(store: &mut Store, root: &Path) -> Result<PhpReport> {
                 continue;
             }
         };
-        tx.execute("DELETE FROM symbols WHERE file_id = ?1", [file_id])?;
-        tx.execute("DELETE FROM refs WHERE file_id = ?1", [file_id])?;
-        for r in &parsed.refs {
-            tx.execute(
-                "INSERT INTO refs (file_id, kind, target, line) VALUES (?1, ?2, ?3, ?4)",
-                params![file_id, r.kind, r.target, r.line],
-            )?;
+        tx.prepare_cached("DELETE FROM symbols WHERE file_id = ?1")?
+            .execute([file_id])?;
+        // Nothing to delete when the table started empty (and no lookup to do it fast).
+        if !fresh_refs {
+            tx.prepare_cached("DELETE FROM refs WHERE file_id = ?1")?
+                .execute([file_id])?;
         }
-        tx.execute(
-            "DELETE FROM warnings WHERE file_id = ?1 AND adapter = ?2",
-            params![file_id, EXTRACTOR],
-        )?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT INTO refs (file_id, kind, target, line) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for r in &parsed.refs {
+                ins.execute(params![file_id, r.kind, r.target, r.line])?;
+            }
+        }
+        tx.prepare_cached("DELETE FROM warnings WHERE file_id = ?1 AND adapter = ?2")?
+            .execute(params![file_id, EXTRACTOR])?;
         for symbol in &parsed.symbols {
             symbols::insert(&tx, *file_id, symbol)?;
         }
         for w in &parsed.warnings {
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT INTO warnings (file_id, path, line, adapter, message)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![file_id, path, w.line, EXTRACTOR, w.message],
-            )?;
+            )?
+            .execute(params![file_id, path, w.line, EXTRACTOR, w.message])?;
         }
-        tx.execute(
+        tx.prepare_cached(
             "INSERT OR REPLACE INTO extractor_state (file_id, extractor, version)
              VALUES (?1, ?2, ?3)",
-            params![file_id, EXTRACTOR, PHP_EXTRACTOR_VERSION],
-        )?;
+        )?
+        .execute(params![file_id, EXTRACTOR, PHP_EXTRACTOR_VERSION])?;
         report.parsed += 1;
         report.symbols += parsed.symbols.len();
         report.warnings += parsed.warnings.len();
     }
     if bulk {
         symbols::bulk_insert_end(&tx)?;
+    }
+    if fresh_refs {
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS refs_target ON refs(target COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS refs_file ON refs(file_id);
+             CREATE INDEX IF NOT EXISTS refs_kind_target ON refs(kind, target);",
+        )?;
     }
     tx.commit()?;
     tracing::debug!(

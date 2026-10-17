@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.4] - 2026-10-18
+
+Rust support, for crates and Cargo workspaces:
+
+- Structs, enums, traits, functions, methods from `impl` blocks (named after the type even when the `impl` is in another file, through its `use` imports), fields, enum variants, consts, statics, type aliases and `macro_rules!` are symbols named by their Rust path (`my_crate::store::Store::open`), for `search_symbol`, `get_symbol` and `verify` (`Type::method`). Module paths follow Cargo's layout: `lib.rs` / `main.rs`, `mod.rs`, `src/bin/`, `tests/`, and a binary-only crate under its binary's name.
+- `find_usages` lists where a type, function, constant or method is used, including names inside macro calls (`println!("{}", MAX)`); uses in `#[cfg(test)]` modules and `#[test]` functions are listed as tests. Methods are matched by name as for Swift and Kotlin.
+- `list_pages` lists the binaries and their command-line subcommands (enums deriving clap's `Subcommand`, with `#[command(name = …)]` and doc comments).
+- `project_overview` gives a Rust section: crates with their folder, library and binaries, file counts and which other crates of the workspace each uses; symbol counts and commands. PHP files without a `composer.json` (test fixtures) no longer make a repository look like a PHP app.
+- `get_symbol` prefers the name spelled exactly as asked (`Store` over `store()`), and a method over a field of the same name.
+- In a Cargo project every top-level folder is read and `target/` is skipped. codemap's own 135 Rust files in 10 crates index in 0.4 s.
+
+Android support, for Kotlin and Java apps with Jetpack Compose:
+
+- Classes, interfaces, objects, enums and their members (functions, properties including `class X(val a: Int)`, enum entries, typealiases; companion members as static) are symbols, named by package (`com.example.ui.Root`), for `search_symbol`, `get_symbol` and `verify` (`Class::method` or `Class.method`).
+- `get_component` takes a `@Composable` function: its parameters (callbacks marked), the state it keeps (`remember`, `rememberSaveable`, `collectAsState`, `viewModel`, … with starting values), the composables it shows, where it is shown and how it is opened.
+- `list_pages` lists the app's screens: activities, services, receivers and providers from `AndroidManifest.xml` (with the launcher activity and what its `setContent` shows), Navigation Compose destinations (`composable("route")`, `composable<Route>`, `dialog`), dialogs and bottom sheets that show the project's composables, Fragments, and app-made navigation: a `when` whose branches show different composables (`is Route.Detail -> DetailScreen()`, `0 -> TimesScreen()`).
+- `find_usages` lists where a class or composable is used, and members by name as for Swift. String keys (`app_name`) are found in code (`R.string.x`, `stringResource`) and XML (`@string/x`).
+- Translations from `res/values*/strings.xml` (`<string>`, `<plurals>`, `<string-array>`; `values-pt-rBR` → `pt-BR`, `values-b+sr+Latn` → `sr-Latn`), with `res/values/` as the base and `translatable="false"` strings expected in no other language.
+- `project_overview` gives an Android section: modules, packages, counts, composables, screens and the manifest's components.
+- In a Gradle project (at the root, or one folder down beside an iOS app) every top-level folder is read; `build/`, `.gradle/`, `.idea/` are skipped. The countSolat Android app (36 Kotlin files) indexes in about 0.1 s.
+- Two Kotlin forms the grammar cannot read are rewritten before parsing, keeping lines and columns: `var x by …; private set`, and a modifier word used as a name (`var open by remember { … }`).
+
+Swift support, for Swift packages and Xcode apps (iOS, macOS) with SwiftUI:
+
+- Classes, structs, enums, actors, protocols and their members (methods, `init`, properties with their wrappers, enum cases, typealiases) are symbols for `search_symbol`, `get_symbol` and `verify` (`Type::method` or `Type.method`). Members added in an extension belong to the type.
+- `get_component` takes a SwiftUI view: what callers pass in (`let`, `@Binding`, `@ObservedObject`), its own state (`@State`, `@StateObject`, `@AppStorage`, …) with starting values, what it reads from the environment, the views it shows, where it is shown, and how it is opened.
+- `list_pages` lists the app's screens: windows (`WindowGroup`, `Window`, `Settings`, `MenuBarExtra`, `DocumentGroup`), tabs, `NavigationLink` and `.navigationDestination` pushes, sheets, full-screen covers, popovers and inspectors, each with the view it shows and where it is opened.
+- `find_usages` lists where a type is used; for a member it lists the uses in its own file and, since there is no type checker, other uses of the same name as possible.
+- Translations: keys from `xx.lproj/*.strings` (UTF-8 or UTF-16) and `.xcstrings` catalogs; texts used through `Text("…")`, `Label`, `Button`, `.navigationTitle` and other SwiftUI calls (shown as written when not translated), `NSLocalizedString` and `String(localized:)`. `InfoPlist` tables are left out.
+- `project_overview` gives a Swift section: package or Xcode project, app entry points, counts of types, views and screens, imported frameworks and folders.
+- In a Swift project every top-level folder is read (not only the usual Laravel / JS folders); `.build`, `DerivedData`, `Pods`, `Carthage` and asset catalogs are skipped. Five apps with 9–38 files each index in about 0.1 s.
+
+Faster, measured on a Laravel API with 6,105 files and 6,126 routes and its two Vue frontends (10,305 files):
+
+- First index of the API 9.4 s → about 4.5 s: translations are scanned in parallel, inserts reuse prepared statements, and a first index builds the reference indexes once at the end. A workspace's apps are indexed side by side.
+- `find_usages` on a controller behind 1,024 routes: 31 s → 0.2 s, and its brief answer lists 50 routes with the total (126 KB → 8 KB).
+- `api_usage` on a frontend with 5,300 calls: 5.6–6 s → about 1 s: routes are looked up by length and first and last word, the controllers are parsed on all cores once, and "closest route" suggestions compare each distinct word once.
+- `get_schema` with `background`: 2.9 s → 0.2–0.7 s. Several reference lookups (`X` or its members, imports, tables) ran as a scan of every reference; they now use indexes, with a new `refs(kind, target)` index.
+- The release check searches for leftover names on all cores while its other checks run.
+
+- `codemap usage` shows how codemap is used in a project: AI app sessions; tool calls per tool with time taken, answer size, answers that found nothing, refused arguments, errors and calls the AI had to repeat; wrong answers reported by the AI or caught by codemap, and names the AI asked for that do not exist; index runs with why they ran, files read and time taken (also for a linked project read by its frontend). `--json` gives every number, per tool and per day. Each app keeps `usage.jsonl` next to its index for 90 days, with code cut out of the arguments; `CODEMAP_NO_USAGE_LOG=1` turns it off.
+
 ## [0.1.3] - 2026-10-17
 
 Fixes for the issues reported through `report_wrong_answer` (#3–#9):

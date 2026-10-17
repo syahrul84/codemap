@@ -523,3 +523,80 @@ async fn wrong_answers_are_reported_by_call_id() {
     );
     client.cancel().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn usage_is_recorded_and_summarised() {
+    let project = tempfile::tempdir().unwrap();
+    copy_dir(&fixture("laravel11-upgraded"), project.path());
+    std::fs::write(
+        project.path().join(".codemap.toml"),
+        "[freshness]\ncheck_interval_ms = 0\n",
+    )
+    .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let client = connect(project.path(), data.path()).await;
+    call(
+        &client,
+        "search_symbol",
+        json!({ "query": "RefundService" }),
+    )
+    .await;
+    std::fs::create_dir_all(project.path().join("app/Services")).unwrap();
+    std::fs::write(
+        project.path().join("app/Services/RefundService.php"),
+        "<?php\nnamespace App\\Services;\n\nclass RefundService {}\n",
+    )
+    .unwrap();
+    call(
+        &client,
+        "search_symbol",
+        json!({ "query": "RefundService" }),
+    )
+    .await;
+    call(
+        &client,
+        "verify",
+        json!({ "php_snippet": "<?php\n$x = \\App\\Services\\RefundService::class;\n" }),
+    )
+    .await;
+    client.cancel().await.unwrap();
+
+    // The log: a session, the calls (code cut out) and the index runs.
+    let log = std::fs::read_to_string(data.path().join("mcp-test").join("usage.jsonl")).unwrap();
+    assert!(log.contains("\"t\":\"session\""), "{log}");
+    assert!(log.contains("chars of code"), "{log}");
+    assert!(!log.contains("RefundService::class"), "{log}");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .env("CODEMAP_NO_UPDATE_CHECK", "1")
+        .args(["usage", "--json", "--project"])
+        .arg(project.path())
+        .arg("--data-dir")
+        .arg(data.path())
+        .args(["--project-id", "mcp-test", "--log-level", "warn"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let u: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(u["calls"]["total"], 3, "{u}");
+    assert_eq!(u["sessions"]["count"], 1, "{u}");
+    let search = u["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "search_symbol")
+        .unwrap();
+    assert_eq!(search["calls"], 2);
+    assert_eq!(search["not_found"], 1);
+    // The first index (start-up) and the run that read the new file.
+    assert!(u["indexing"]["runs"].as_u64().unwrap() >= 2, "{u}");
+    assert_eq!(u["indexing"]["by_trigger"]["startup"], 1, "{u}");
+    assert!(
+        u["indexing"]["by_trigger"]["call"].as_u64().unwrap() >= 1,
+        "{u}"
+    );
+}

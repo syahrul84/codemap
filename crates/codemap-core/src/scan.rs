@@ -30,8 +30,57 @@ const ALWAYS_EXCLUDED: &[&str] = &[
     ".git/",
 ];
 
+/// Build output, dependencies and asset catalogs of Swift projects.
+const APPLE_EXCLUDED: &[&str] = &[
+    ".build/",
+    "DerivedData/",
+    "/Pods/",
+    "/Carthage/",
+    "*.xcassets/",
+    "*.xcodeproj/",
+    "*.xcworkspace/",
+    "*.xcframework/",
+    "*.framework/",
+];
+
+/// Build output of Cargo (Rust) projects.
+const CARGO_EXCLUDED: &[&str] = &["target/"];
+
+/// Build output and IDE folders of Gradle (Android) projects.
+const GRADLE_EXCLUDED: &[&str] = &["build/", ".gradle/", ".idea/", ".cxx/", ".kotlin/"];
+
+/// A Gradle build at the root, or one folder down (`android/` beside an
+/// iOS app).
+pub fn is_gradle_project(root: &Path) -> bool {
+    let has = |d: &Path| {
+        ["settings.gradle", "settings.gradle.kts"]
+            .iter()
+            .any(|f| d.join(f).is_file())
+    };
+    has(root)
+        || std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.path().is_dir() && has(&e.path()))
+}
+
+/// A Swift package or an Xcode project at the root.
+pub fn is_apple_project(root: &Path) -> bool {
+    root.join("Package.swift").is_file()
+        || std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.ends_with(".xcodeproj") || n.ends_with(".xcworkspace")
+            })
+}
+
 /// Indexed from the project root in addition to the include dirs.
 const ROOT_FILES: &[&str] = &[
+    "Package.swift",
     "composer.json",
     "composer.lock",
     "artisan",
@@ -279,21 +328,44 @@ fn walk(
         }
     }
 
-    let starts: Vec<PathBuf> = config
+    let mut starts: Vec<PathBuf> = config
         .scan
         .include
         .iter()
         .map(|inc| root.join(inc.trim_matches('/')))
         .filter(|p| p.is_dir())
         .collect();
+    // Swift packages, Xcode apps, Gradle (Android) apps and Cargo workspaces
+    // keep code in folders of any name (`Sources/`, `app/`, `crates/`): every
+    // top-level folder is scanned.
+    let apple = is_apple_project(root);
+    let cargo = root.join("Cargo.toml").is_file();
+    let mobile = apple || is_gradle_project(root) || cargo;
+    if mobile {
+        for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            let wanted = p.is_dir() || name.ends_with(".swift") || name.ends_with(".rs");
+            if wanted && !name.starts_with('.') && !starts.contains(&p) {
+                starts.push(p);
+            }
+        }
+    }
     let Some((first, rest)) = starts.split_first() else {
         return Ok(found.into_values().collect());
     };
 
     let mut overrides = OverrideBuilder::new(root);
+    let apple_excluded = APPLE_EXCLUDED
+        .iter()
+        .chain(GRADLE_EXCLUDED)
+        .filter(|_| mobile)
+        .chain(CARGO_EXCLUDED.iter().filter(|_| cargo))
+        .map(|p| (*p).to_owned());
     for pattern in ALWAYS_EXCLUDED
         .iter()
         .map(|p| (*p).to_owned())
+        .chain(apple_excluded)
         .chain(config.scan.exclude.iter().cloned())
     {
         overrides
@@ -445,10 +517,27 @@ fn lang_for(path: &Path) -> Option<&'static str> {
         "sql" => Some("sql"),
         "json" => Some("json"),
         "vue" => Some("vue"),
+        "swift" => Some("swift"),
+        "strings" => Some("strings"),
+        "xcstrings" => Some("xcstrings"),
+        "kt" => Some("kotlin"),
+        "java" => Some("java"),
+        "rs" => Some("rust"),
+        // Android resources (strings, layouts, menus) and the manifest.
+        "xml" if name == "AndroidManifest.xml" || is_android_res(path) => Some("androidxml"),
         "js" | "mjs" | "cjs" | "jsx" => Some("js"),
         "ts" | "mts" | "cts" | "tsx" => Some("ts"),
         _ => None,
     }
+}
+
+fn is_android_res(path: &Path) -> bool {
+    let mut parts = path.iter().rev().skip(1).map(|p| p.to_string_lossy());
+    let dir = parts.next().unwrap_or_default();
+    parts.next().is_some_and(|p| p == "res")
+        && ["values", "layout", "menu", "navigation", "xml"]
+            .iter()
+            .any(|d| dir == *d || dir.starts_with(&format!("{d}-")))
 }
 
 fn hash_file(path: &Path) -> std::io::Result<String> {

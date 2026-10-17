@@ -78,13 +78,16 @@ impl Catalog {
         if locales.is_empty() && uses.is_empty() {
             return Ok(None);
         }
-        // The first shipped locale present, else `en`, else the largest.
+        // The first shipped locale present, else Android's `res/values/`
+        // (the fallback for every language), else `en`, else the largest.
         let first_shipped = shipped
             .iter()
             .find(|s| locales.contains_key(s.as_str()) && s.as_str() == "en")
             .or_else(|| shipped.iter().find(|s| locales.contains_key(s.as_str())));
         let base = if let Some(b) = first_shipped {
             b.clone()
+        } else if source == "android" && locales.contains_key("default") {
+            "default".to_owned()
         } else if locales.contains_key("en") {
             "en".to_owned()
         } else {
@@ -377,7 +380,7 @@ impl Catalog {
 
 pub fn catalogs(conn: &Connection, shipped: &[String]) -> R<Vec<Catalog>> {
     let mut out = Vec::new();
-    for s in ["vue", "laravel"] {
+    for s in ["vue", "laravel", "swift", "android"] {
         if let Some(c) = Catalog::load(conn, s, shipped)? {
             out.push(c);
         }

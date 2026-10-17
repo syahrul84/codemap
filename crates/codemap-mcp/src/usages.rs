@@ -57,6 +57,14 @@ pub fn is_test_path(p: &str) -> bool {
         || p.contains(".spec.")
         || p.contains(".test.")
         || p.ends_with("Test.php")
+        || p.starts_with("Tests/")
+        || p.contains("/Tests/")
+        || p.ends_with("Tests.swift")
+        || p.ends_with("Test.swift")
+        || p.contains("/src/test/")
+        || p.contains("/src/androidTest/")
+        || p.ends_with("Test.kt")
+        || p.ends_with("Test.java")
         || p.contains("/e2e/")
 }
 
@@ -70,6 +78,45 @@ struct Found {
     possible: BTreeSet<(String, u32, String)>,
     routes: Vec<String>,
     notes: Vec<String>,
+    /// Test HTTP calls and `route('name')` references, loaded once per answer.
+    test_refs: Option<std::rc::Rc<TestRefs>>,
+}
+
+/// References that point at routes: tests calling a URL, and `route('name')`.
+struct TestRefs {
+    /// `(file, line, verb, url, url segments)`.
+    http: Vec<(String, u32, String, String, Vec<String>)>,
+    by_name: std::collections::HashMap<String, Vec<(String, u32)>>,
+}
+
+impl TestRefs {
+    fn load(store: &Store) -> R<Self> {
+        let mut http = Vec::new();
+        for (file, line, _, target) in refs(store, "r.kind = 'http'", &[])? {
+            let Some((verb, url)) = target.split_once(' ') else {
+                continue;
+            };
+            let url = url.split('?').next().unwrap_or(url).to_owned();
+            let segs: Vec<String> = url
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    if s.contains("{}") {
+                        "{}".to_owned()
+                    } else {
+                        s.to_owned()
+                    }
+                })
+                .collect();
+            http.push((file, line, verb.to_owned(), url, segs));
+        }
+        let mut by_name: std::collections::HashMap<String, Vec<(String, u32)>> =
+            std::collections::HashMap::new();
+        for (file, line, _, target) in refs(store, "r.kind = 'route'", &[])? {
+            by_name.entry(target).or_default().push((file, line));
+        }
+        Ok(Self { http, by_name })
+    }
 }
 
 impl Found {
@@ -91,33 +138,210 @@ fn refs(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Reference kinds of a Swift, Kotlin or Java file: `swift_` or `jvm_`.
+fn mobile_prefix(file: &str) -> Option<&'static str> {
+    if file.ends_with(".swift") {
+        Some("swift_")
+    } else if file.ends_with(".kt") || file.ends_with(".java") {
+        Some("jvm_")
+    } else if file.ends_with(".rs") {
+        Some("rust_")
+    } else {
+        None
+    }
+}
+
+/// Swift, Kotlin and Java: uses of a type (`ContentView`, `com.app.Store`),
+/// or of a member (`AppModel.refresh`, `Store::load`) or top-level function
+/// by name. Members are matched by name only (there is no type checker), so
+/// uses outside their own file are listed as possible. `false` when the
+/// target is not a Swift, Kotlin or Java symbol.
+fn swift_usages(store: &Store, target: &str, f: &mut Found) -> R<bool> {
+    let mobile = |name: &str| -> R<Vec<SymbolRecord>> {
+        Ok(symbols::all_named(store.conn(), name)?
+            .into_iter()
+            .filter(|s| mobile_prefix(&s.file).is_some())
+            .collect())
+    };
+    let split = target
+        .split_once("::")
+        .or_else(|| target.rsplit_once('.'))
+        .filter(|(t, m)| !t.is_empty() && !m.is_empty());
+    if let Some((owner, member)) = split {
+        let member = member.trim_end_matches("()");
+        let last = |s: &str| s.rsplit(['.', ':']).next().unwrap_or(s).to_owned();
+        let owner_short = last(owner);
+        let found: Vec<SymbolRecord> = mobile(member)?
+            .into_iter()
+            .filter(|s| {
+                s.parent_fqn
+                    .as_deref()
+                    .is_some_and(|p| p == owner || last(p) == owner_short)
+            })
+            .collect();
+        // A field and a method may share a name: the method is meant.
+        let sym = found
+            .iter()
+            .find(|s| s.kind == SymbolKind::Method)
+            .or(found.first());
+        if let Some(sym) = sym {
+            f.resolved_as = format!("{} {}", sym.kind.as_str(), sym.fqn);
+            mobile_member_refs(store, &sym.name, sym, f)?;
+            return Ok(true);
+        }
+    }
+    // `com.app.Store` → `Store`, when that is the FQN of a symbol.
+    let mut found = mobile(target)?;
+    if found.is_empty()
+        && let Some((_, last)) = target.rsplit_once("::").or_else(|| target.rsplit_once('.'))
+    {
+        found = mobile(last)?
+            .into_iter()
+            .filter(|s| s.fqn == target)
+            .collect();
+    }
+    let types: Vec<&SymbolRecord> = found.iter().filter(|s| s.kind.is_class_like()).collect();
+    if let [t, ..] = types.as_slice() {
+        let prefix = mobile_prefix(&t.file).unwrap_or("swift_");
+        f.resolved_as = format!("{} {}", t.kind.as_str(), t.fqn);
+        // Exact case: `Item` the type, not `item` the variable.
+        for (file, line, _, name) in refs(
+            store,
+            "r.kind = ?1 AND r.target = ?2 COLLATE NOCASE",
+            &[&format!("{prefix}type"), &t.name],
+        )? {
+            if name == t.name {
+                f.add(file, line, "type");
+            }
+        }
+        f.hits
+            .retain(|(file, line, label)| label != "type" || !(file == &t.file && *line == t.line));
+        if types.len() > 1 {
+            f.notes.push(format!(
+                "{} types are named {}: {}; uses are not told apart",
+                types.len(),
+                t.name,
+                types
+                    .iter()
+                    .map(|s| format!("{} ({}:{})", s.fqn, s.file, s.line))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        return Ok(true);
+    }
+    let Some(sym) = found.first() else {
+        return Ok(false);
+    };
+    f.resolved_as = format!("{} {}", sym.kind.as_str(), sym.fqn);
+    mobile_member_refs(store, &sym.name, sym, f)?;
+    Ok(true)
+}
+
+fn mobile_member_refs(store: &Store, name: &str, sym: &SymbolRecord, f: &mut Found) -> R<()> {
+    let prefix = mobile_prefix(&sym.file).unwrap_or("swift_");
+    let mut kinds = vec![format!("{prefix}member"), format!("{prefix}call")];
+    // Composables and other capitalised functions are called like types.
+    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        kinds.push(format!("{prefix}type"));
+    }
+    let mut rows = Vec::new();
+    for k in &kinds {
+        rows.extend(refs(
+            store,
+            "r.kind = ?1 AND r.target = ?2 COLLATE NOCASE",
+            &[k, &name],
+        )?);
+    }
+    let mut others = 0;
+    for (file, line, kind, t) in rows {
+        if t != name || (file == sym.file && line == sym.line) {
+            continue;
+        }
+        let label = if kind.ends_with("member") {
+            "member"
+        } else {
+            "call"
+        };
+        // A top-level function, or a member used in its own file.
+        if sym.parent_fqn.is_none() || file == sym.file {
+            f.add(file, line, label);
+        } else {
+            f.possible
+                .insert((file, line, format!("{label} (same name)")));
+            others += 1;
+        }
+    }
+    if others > 0 {
+        f.notes.push(format!(
+            "members are matched by name: {others} use(s) outside {} are listed as possible",
+            sym.file
+        ));
+    }
+    Ok(())
+}
+
+/// The end of the index range of strings starting with `prefix` (which ends
+/// in an ASCII character): `X::` → `X:;`. A `LIKE` with a parameter, or an
+/// `OR` of two conditions, makes SQLite scan every reference instead.
+pub(crate) fn range_end(prefix: &str) -> String {
+    let mut s = prefix.to_owned();
+    let last = s.pop().unwrap_or(' ');
+    s.push(char::from(last as u8 + 1));
+    s
+}
+
+/// References to a class and to its members (`X::method`), two indexed
+/// lookups merged in file and line order.
+fn class_refs(store: &Store, fqn: &str) -> R<Vec<(String, u32, String, String)>> {
+    let members = format!("{fqn}::");
+    let mut out = refs(
+        store,
+        "r.kind = 'class' AND r.target = ?1 COLLATE NOCASE",
+        &[&fqn],
+    )?;
+    out.extend(refs(
+        store,
+        "r.kind = 'call' AND r.target >= ?1 COLLATE NOCASE AND r.target < ?2 COLLATE NOCASE",
+        &[&members, &range_end(&members)],
+    )?);
+    out.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    Ok(out)
+}
+
+/// Import references to anything in `file` (`file#name`).
+fn import_refs(store: &Store, file: &str) -> R<Vec<(String, u32, String, String)>> {
+    let prefix = format!("{file}#");
+    refs(
+        store,
+        "r.kind = 'import' AND r.target >= ?1 COLLATE NOCASE AND r.target < ?2 COLLATE NOCASE",
+        &[&prefix, &range_end(&prefix)],
+    )
+}
+
 /// PHP tests calling `$this->getJson('/api/...')` that hit `route`.
 fn tests_hitting(store: &Store, route: &RouteDef, f: &mut Found) -> R<()> {
+    let t = match &f.test_refs {
+        Some(t) => t.clone(),
+        None => {
+            let t = std::rc::Rc::new(TestRefs::load(store)?);
+            f.test_refs = Some(t.clone());
+            t
+        }
+    };
     let segs = route_segs(&route.uri);
-    for (file, line, _, target) in refs(store, "r.kind = 'http'", &[])? {
-        let Some((verb, url)) = target.split_once(' ') else {
-            continue;
-        };
+    for (file, line, verb, url, call) in &t.http {
         if !route.methods.iter().any(|m| m == verb) {
             continue;
         }
-        let url = url.split('?').next().unwrap_or(url);
-        let call: Vec<&str> = url
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .map(|s| if s.contains("{}") { "{}" } else { s })
-            .collect();
+        let call: Vec<&str> = call.iter().map(String::as_str).collect();
         if fit(&call, &segs).is_some() {
-            f.add(file, line, format!("{verb} {url}"));
+            f.add(file.clone(), *line, format!("{verb} {url}"));
         }
     }
-    for (file, line, _, _) in refs(store, "r.kind = 'route' AND r.target = ?1", &[&route.name])? {
-        if route.name.is_some() {
-            f.add(
-                file,
-                line,
-                format!("route('{}')", route.name.as_deref().unwrap_or("")),
-            );
+    if let Some(name) = &route.name {
+        for (file, line) in t.by_name.get(name).into_iter().flatten() {
+            f.add(file.clone(), *line, format!("route('{name}')"));
         }
     }
     Ok(())
@@ -140,12 +364,7 @@ fn class_like(store: &Store, name: &str) -> R<Vec<SymbolRecord>> {
 
 fn php_class(store: &Store, fqn: &str, f: &mut Found) -> R<()> {
     f.resolved_as = format!("class {fqn}");
-    let member_prefix = format!("{fqn}::%");
-    for (file, line, kind, target) in refs(
-        store,
-        "(r.target = ?1 COLLATE NOCASE AND r.kind = 'class') OR (r.kind = 'call' AND r.target LIKE ?2)",
-        &[&fqn, &member_prefix],
-    )? {
+    for (file, line, kind, target) in class_refs(store, fqn)? {
         let label = if kind == "call" {
             format!("{}()", target.rsplit("::").next().unwrap_or(&target))
         } else {
@@ -195,12 +414,7 @@ fn php_caller_chain(store: &Store, file: &str, max_depth: usize) -> R<Vec<(Strin
     for _ in 0..max_depth {
         let mut next = Vec::new();
         for (class, path) in &frontier {
-            let members = format!("{class}::%");
-            for (from, _, _, _) in refs(
-                store,
-                "(r.target = ?1 COLLATE NOCASE AND r.kind = 'class') OR (r.kind = 'call' AND r.target LIKE ?2)",
-                &[class, &members],
-            )? {
+            for (from, _, _, _) in class_refs(store, class)? {
                 if is_test_path(&from) {
                     continue;
                 }
@@ -296,10 +510,7 @@ fn js_symbol(store: &Store, sym: &SymbolRecord, f: &mut Found) -> R<()> {
             let (file, line, tag) = row?;
             f.add(file, line, format!("<{tag}>"));
         }
-        let pattern = format!("{}#%", sym.file);
-        for (file, line, _, _) in
-            refs(store, "r.kind = 'import' AND r.target LIKE ?1", &[&pattern])?
-        {
+        for (file, line, _, _) in import_refs(store, &sym.file)? {
             f.add(file, line, "import");
         }
         f.routes = codemap_vue::pages::routes_for_file(store, &sym.file)?;
@@ -430,6 +641,8 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
             r.uri,
             r.action_label()
         ));
+    } else if swift_usages(store, &target, &mut f)? {
+        // Swift, Kotlin and Java types and their members.
     } else if let Some((class, method)) = target
         .split_once("::")
         .filter(|_| kind.is_empty() || kind == "method")
@@ -457,11 +670,18 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
         // A table used through a query builder (`supabase.from('rooms')`) or
         // known from the schema.
         f.resolved_as = format!("table {target}");
-        let rows = refs(
+        let prefix = format!("{target}:");
+        let mut rows = refs(
             store,
-            "r.kind = 'db_table' AND (r.target LIKE ?1 OR r.target = ?2)",
-            &[&format!("{target}:%"), &format!("rpc:{target}")],
+            "r.kind = 'db_table' AND r.target >= ?1 COLLATE NOCASE AND r.target < ?2 COLLATE NOCASE",
+            &[&prefix, &range_end(&prefix)],
         )?;
+        rows.extend(refs(
+            store,
+            "r.kind = 'db_table' AND r.target = ?1",
+            &[&format!("rpc:{target}")],
+        )?);
+        rows.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         for (file, line, _, t) in rows {
             let op = t.rsplit(':').next().unwrap_or("").to_owned();
             f.add(file, line, op);
@@ -502,10 +722,7 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
         let is_path = target.contains('/') && store.list_files()?.iter().any(|x| x.path == target);
         if is_path || kind == "file" {
             f.resolved_as = format!("file {target}");
-            let pattern = format!("{target}#%");
-            for (file, line, _, _) in
-                refs(store, "r.kind = 'import' AND r.target LIKE ?1", &[&pattern])?
-            {
+            for (file, line, _, _) in import_refs(store, &target)? {
                 f.add(file, line, "import");
             }
             let classes: Vec<SymbolRecord> = symbols::all(store.conn())?
@@ -644,11 +861,20 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
         label != "class" || !specific.contains(&(file.clone(), *line))
     });
 
+    // Split tests from the rest and paginate. In Rust, tests sit in the same
+    // file as the code (`#[cfg(test)] mod tests`).
+    let rust_tests = if f.hits.iter().any(|(file, _, _)| file.ends_with(".rs")) {
+        codemap_rust::test_ranges(store.conn())?
+    } else {
+        Default::default()
+    };
     // Split tests from the rest and paginate.
-    let (tests, usages): (Vec<_>, Vec<_>) = f
-        .hits
-        .into_iter()
-        .partition(|(file, _, _)| is_test_path(file));
+    let (tests, usages): (Vec<_>, Vec<_>) = f.hits.into_iter().partition(|(file, line, _)| {
+        is_test_path(file)
+            || rust_tests
+                .get(file)
+                .is_some_and(|r| r.iter().any(|(a, b)| a <= line && line <= b))
+    });
     let limit = p.limit.unwrap_or(30).clamp(1, 200);
     let offset = p
         .cursor
@@ -689,7 +915,18 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
         data["test_files"] = json!(test_files);
     }
     if !f.routes.is_empty() {
-        data["routes"] = json!(f.routes);
+        // A controller behind hundreds of routes: a sample in brief answers.
+        const BRIEF_ROUTES: usize = 50;
+        if detail != Detail::Full && f.routes.len() > BRIEF_ROUTES {
+            data["routes"] = json!(f.routes[..BRIEF_ROUTES]);
+            data["routes_total"] = json!(f.routes.len());
+            data["routes_note"] = json!(format!(
+                "first {BRIEF_ROUTES} of {} routes; pass detail: \"full\" for all, or use list_routes with controller to filter",
+                f.routes.len()
+            ));
+        } else {
+            data["routes"] = json!(f.routes);
+        }
     }
     if !f.possible.is_empty() {
         data["possible"] = json!(f.possible.iter().take(30).map(fmt).collect::<Vec<_>>());
@@ -715,17 +952,29 @@ fn is_db_table(store: &Store, target: &str) -> R<bool> {
     if target.contains(['/', '\\', ' ', ':', '.']) {
         return Ok(false);
     }
+    let prefix = format!("{target}:");
     let n: i64 = store.conn().query_row(
-        "SELECT COUNT(*) FROM refs WHERE kind = 'db_table' AND (target LIKE ?1 || ':%' OR target = 'rpc:' || ?1)",
-        [target],
+        "SELECT (SELECT COUNT(*) FROM refs WHERE kind = 'db_table'
+                   AND target >= ?1 COLLATE NOCASE AND target < ?2 COLLATE NOCASE)
+              + (SELECT COUNT(*) FROM refs WHERE kind = 'db_table' AND target = ?3)",
+        [prefix.clone(), range_end(&prefix), format!("rpc:{target}")],
         |r| r.get(0),
     )?;
     Ok(n > 0)
 }
 
 fn is_i18n_target(store: &Store, target: &str) -> R<bool> {
-    if !target.contains('.') || target.contains(['/', '\\', ' ', ':']) {
+    if target.contains(['/', '\\', ' ', ':']) {
         return Ok(false);
+    }
+    if !target.contains('.') {
+        // Android keys have no dots (`app_name`).
+        let n: i64 = store.conn().query_row(
+            "SELECT COUNT(*) FROM i18n_keys WHERE source = 'android' AND key = ?1",
+            [target],
+            |r| r.get(0),
+        )?;
+        return Ok(n > 0);
     }
     let n: i64 = store.conn().query_row(
         "SELECT (SELECT COUNT(*) FROM i18n_keys WHERE key = ?1 OR ?1 LIKE '%.' || key)
@@ -942,10 +1191,7 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
                 js_symbol(store, s, &mut f)?;
                 what.push(format!("{} {}", s.kind, s.name));
             }
-            let pattern = format!("{file}#%");
-            for (from, line, _, _) in
-                refs(store, "r.kind = 'import' AND r.target LIKE ?1", &[&pattern])?
-            {
+            for (from, line, _, _) in import_refs(store, &file)? {
                 f.add(from, line, "import");
             }
             if codemap_vue::i18n::locale_of(&file).is_some() {
@@ -961,10 +1207,7 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         let mut indirect = BTreeSet::new();
         if !file.ends_with(".php") {
             for u in &file_users {
-                let pattern = format!("{u}#%");
-                for (from, _, _, _) in
-                    refs(store, "r.kind = 'import' AND r.target LIKE ?1", &[&pattern])?
-                {
+                for (from, _, _, _) in import_refs(store, u)? {
                     if is_test_path(&from) {
                         indirect.insert(from);
                     }

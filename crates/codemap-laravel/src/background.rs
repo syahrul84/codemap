@@ -152,16 +152,22 @@ pub fn signature(cls: &SymbolRecord, root: &Path) -> Option<String> {
 /// Where a class is used (new X, X::dispatch(), X::class) outside its own
 /// file and tests: `file:line`.
 fn triggered_at(conn: &rusqlite::Connection, fqn: &str, own_file: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT f.path, r.line FROM refs r JOIN files f ON f.id = r.file_id
-         WHERE ((r.kind = 'class' AND r.target = ?1 COLLATE NOCASE)
-             OR (r.kind = 'call' AND r.target LIKE ?2))
+    // Two indexed lookups joined, not one `OR`: SQLite plans an `OR` of
+    // these as a scan of every reference.
+    let mut stmt = conn.prepare_cached(
+        "SELECT f.path, r.line FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE r.kind = 'class' AND r.target = ?1 COLLATE NOCASE AND f.path != ?3
+         UNION
+         SELECT f.path, r.line FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE r.kind = 'call' AND r.target >= ?2 COLLATE NOCASE AND r.target < ?4 COLLATE NOCASE
            AND f.path != ?3
-         ORDER BY f.path, r.line",
+         ORDER BY 1, 2",
     )?;
-    let rows = stmt.query_map(rusqlite::params![fqn, format!("{fqn}::%"), own_file], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
-    })?;
+    // `X::%` as a range, which always uses the index.
+    let rows = stmt.query_map(
+        rusqlite::params![fqn, format!("{fqn}::"), own_file, format!("{fqn}:;")],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
+    )?;
     let mut out = Vec::new();
     for row in rows {
         let (f, l) = row?;

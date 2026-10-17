@@ -28,10 +28,14 @@ pub enum SymbolKind {
     Composable,
     /// A Pinia store or Vuex module.
     Store,
+    /// A Swift struct.
+    Struct,
+    /// A Swift protocol.
+    Protocol,
 }
 
 impl SymbolKind {
-    pub const ALL: [SymbolKind; 12] = [
+    pub const ALL: [SymbolKind; 14] = [
         Self::Class,
         Self::Interface,
         Self::Trait,
@@ -44,6 +48,8 @@ impl SymbolKind {
         Self::Component,
         Self::Composable,
         Self::Store,
+        Self::Struct,
+        Self::Protocol,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -60,6 +66,8 @@ impl SymbolKind {
             Self::Component => "component",
             Self::Composable => "composable",
             Self::Store => "store",
+            Self::Struct => "struct",
+            Self::Protocol => "protocol",
         }
     }
 
@@ -70,7 +78,12 @@ impl SymbolKind {
     pub fn is_class_like(self) -> bool {
         matches!(
             self,
-            Self::Class | Self::Interface | Self::Trait | Self::Enum
+            Self::Class
+                | Self::Interface
+                | Self::Trait
+                | Self::Enum
+                | Self::Struct
+                | Self::Protocol
         )
     }
 
@@ -446,16 +459,23 @@ pub fn find_member(conn: &Connection, class_fqn: &str, member: &str) -> Result<M
             external.push(class);
             continue;
         };
-        if let Some(hit) = by_fqn(conn, &format!("{}::{member}", found.fqn))?
-            .into_iter()
-            .next()
-        {
+        // PHP members are `Class::member`, Swift members `Type.member`.
+        let mut hit = by_fqn(conn, &format!("{}::{member}", found.fqn))?;
+        if hit.is_empty() {
+            hit = by_fqn(conn, &format!("{}.{member}", found.fqn))?;
+        }
+        if let Some(hit) = hit.into_iter().next() {
             return Ok(MemberLookup::Found(Box::new(hit)));
         }
         // Parents before traits, so "may be inherited from X" names the base class.
         for c in &classes {
             queue.extend(c.meta.extends.iter().cloned());
             queue.extend(c.meta.traits.iter().cloned());
+            // A Swift type gets members from its superclass and from protocol
+            // extensions, both listed as conformances.
+            if c.file.ends_with(".swift") {
+                queue.extend(c.meta.implements.iter().cloned());
+            }
         }
     }
     Ok(if external.is_empty() {
