@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixes from the 17 Oct retest (round 4):
+  - Test commands never include a base test class (abstract, or without test methods), which made PHPUnit run nothing; the tests that extend it are run instead.
+  - A brief change summary that leaves out a long test list says so (`tests_note`).
 - Fixes from the 17 Oct retest (round 3):
   - Change impact links tests that call a route with `$this->call('POST', '/uri', …)` or `$this->json('PATCH', '/uri')`, and requests after set-up calls (`$this->actingAs($u)->postJson(…)`, `withHeaders(…)->post(…)`).
   - Change impact links tests that run a console command (`$this->artisan('name')`, `Artisan::call('name')`) to the command's class, so a change to anything the command uses lists them.

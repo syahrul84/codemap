@@ -687,6 +687,70 @@ fn is_i18n_target(store: &Store, target: &str) -> R<bool> {
 // ---------------------------------------------------------------- change impact
 
 /// What each changed file affects, the tests that cover it, and how to run them.
+/// A PHP file PHPUnit can run: a concrete class with test methods
+/// (`test…`, `#[Test]`, `@test`) or a Pest file.
+fn is_php_test_file(root: &std::path::Path, file: &str) -> bool {
+    let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        return false;
+    };
+    if src.contains("abstract class ") {
+        return false;
+    }
+    let pest = src.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("it(") || t.starts_with("test(") || t.starts_with("describe(")
+    });
+    pest || src.contains("function test") || src.contains("#[Test]") || src.contains("@test")
+}
+
+/// The test files to run: base test classes are replaced by the concrete
+/// tests that extend them (directly or through other bases).
+fn runnable_tests(
+    store: &Store,
+    root: &std::path::Path,
+    tests: BTreeSet<String>,
+) -> R<BTreeSet<String>> {
+    let mut out = BTreeSet::new();
+    let mut bases: Vec<String> = Vec::new();
+    for t in tests {
+        if !t.ends_with(".php") || is_php_test_file(root, &t) {
+            out.insert(t);
+        } else {
+            bases.push(t);
+        }
+    }
+    if bases.is_empty() {
+        return Ok(out);
+    }
+    let all = symbols::all(store.conn())?;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    while let Some(base_file) = bases.pop() {
+        if !seen.insert(base_file.clone()) {
+            continue;
+        }
+        let base_classes: Vec<&String> = all
+            .iter()
+            .filter(|s| s.file == base_file && s.kind.is_class_like())
+            .map(|s| &s.fqn)
+            .collect();
+        for s in all.iter().filter(|s| {
+            s.kind.is_class_like()
+                && is_test_path(&s.file)
+                && s.meta
+                    .extends
+                    .iter()
+                    .any(|e| base_classes.iter().any(|b| b.eq_ignore_ascii_case(e)))
+        }) {
+            if is_php_test_file(root, &s.file) {
+                out.insert(s.file.clone());
+            } else {
+                bases.push(s.file.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) -> R<ApiOutput> {
     let indexed: std::collections::HashSet<String> =
         store.list_files()?.into_iter().map(|f| f.path).collect();
@@ -898,10 +962,14 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
     for (t, _) in &browser.tests {
         tests.insert(t.clone());
     }
-    let tests: Vec<String> = tests.into_iter().collect();
+    // Only files PHPUnit can run: a base test class (abstract, or without
+    // test methods) is swapped for the tests that extend it.
+    let tests: Vec<String> = runnable_tests(store, &project.root, tests)?
+        .into_iter()
+        .collect();
     let all_tests: Vec<String> = indexed
         .iter()
-        .filter(|p| is_test_path(p))
+        .filter(|p| is_test_path(p) && (!p.ends_with(".php") || is_php_test_file(&project.root, p)))
         .cloned()
         .collect();
     let commands = test_commands(project, &tests, &all_tests);
@@ -937,6 +1005,11 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
     // Brief: the commands already name the tests.
     if detail == Detail::Full || tests.len() <= 15 {
         data["tests"] = json!(tests);
+    } else {
+        data["tests_note"] = json!(format!(
+            "{} test files, named in `run`; pass detail: \"full\" for the list",
+            tests.len()
+        ));
     }
     if browser.tests.len() > 5 && !browser.top.is_empty() {
         data["browser_tests_top"] = json!(
@@ -1216,4 +1289,43 @@ pub(crate) fn test_commands(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod runnable_tests {
+    #[test]
+    fn only_runnable_php_test_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = |p: &str, t: &str| {
+            let path = dir.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, t).unwrap();
+        };
+        w(
+            "tests/Feature/IntegrationTestCase.php",
+            "<?php abstract class IntegrationTestCase extends TestCase { protected function order() {} }",
+        );
+        w(
+            "tests/Feature/HelperCase.php",
+            "<?php class HelperCase extends TestCase { protected function makeOrder() {} }",
+        );
+        w(
+            "tests/Feature/FlowTest.php",
+            "<?php class FlowTest extends IntegrationTestCase { public function test_it() {} }",
+        );
+        w(
+            "tests/Feature/AttrTest.php",
+            "<?php class AttrTest extends TestCase { #[Test] public function it_works() {} }",
+        );
+        w(
+            "tests/Feature/PestTest.php",
+            "<?php\nit('works', function () {});",
+        );
+        let ok = |f: &str| super::is_php_test_file(dir.path(), f);
+        assert!(!ok("tests/Feature/IntegrationTestCase.php"));
+        assert!(!ok("tests/Feature/HelperCase.php"));
+        assert!(ok("tests/Feature/FlowTest.php"));
+        assert!(ok("tests/Feature/AttrTest.php"));
+        assert!(ok("tests/Feature/PestTest.php"));
+    }
 }
