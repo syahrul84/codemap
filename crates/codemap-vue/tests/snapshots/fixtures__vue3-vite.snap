@@ -142,6 +142,34 @@ expression: summary(&store)
       "page component"
     ],
     [
+      "interface",
+      "Props",
+      "src/components/OrderCard.vue#Props",
+      "interface Props",
+      null
+    ],
+    [
+      "property",
+      "compact",
+      "src/components/OrderCard.vue#Props.compact",
+      "compact?: boolean",
+      null
+    ],
+    [
+      "property",
+      "order",
+      "src/components/OrderCard.vue#Props.order",
+      "order: Order",
+      null
+    ],
+    [
+      "property",
+      "size",
+      "src/components/OrderCard.vue#Props.size",
+      "size?: 'sm' | 'lg'",
+      null
+    ],
+    [
       "function",
       "formatPrice",
       "src/composables/useApi.ts#formatPrice",
@@ -189,6 +217,13 @@ expression: summary(&store)
       "src/views/OrdersView.vue",
       "page 'OrdersView'",
       "page component"
+    ],
+    [
+      "function",
+      "label",
+      "src/views/OrdersView.vue#label",
+      "label(s: string)",
+      null
     ]
   ],
   "pages": [

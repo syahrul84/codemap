@@ -298,19 +298,34 @@ pub fn summary(project: &Project, days: i64) -> Value {
 /// calls count when the AI retried there (a call refused for a wrong app
 /// name is kept in the first app's log).
 pub fn summary_in(project: &Project, days: i64, others: &[Project]) -> Value {
+    summary_with(project, &[], days, others)
+}
+
+/// Like [`summary_in`], also reading the logs of `also`: the same app
+/// indexed another way (on its own, or as part of a workspace).
+pub fn summary_with(project: &Project, also: &[Project], days: i64, others: &[Project]) -> Value {
     let since = codemap_core::time::days_ago_rfc3339(days);
+    let mine = |p: &Project| {
+        std::iter::once(p)
+            .chain(also)
+            .any(|x| x.index_path == p.index_path)
+    };
     let other_calls: Vec<Entry> = others
         .iter()
-        .filter(|o| o.index_path != project.index_path)
+        .filter(|o| !mine(o) && o.index_path != project.index_path)
         .flat_map(load)
         .filter(|e| matches!(e, Entry::Call { .. }) && e.at() >= since.as_str())
         .collect();
-    let entries: Vec<Entry> = load(project)
-        .into_iter()
+    let logs: Vec<&Project> = std::iter::once(project).chain(also).collect();
+    let mut entries: Vec<Entry> = logs
+        .iter()
+        .flat_map(|p| load(p))
         .filter(|e| e.at() >= since.as_str())
         .collect();
-    let all_reports: Vec<crate::reports::Report> = crate::reports::load(project)
-        .into_iter()
+    entries.sort_by(|a, b| a.at().cmp(b.at()));
+    let all_reports: Vec<crate::reports::Report> = logs
+        .iter()
+        .flat_map(|p| crate::reports::load(p))
         .filter(|r| r.at.as_str() >= since.as_str())
         .collect();
     // A slow answer is not a wrong one: counted on its own.
@@ -319,8 +334,9 @@ pub fn summary_in(project: &Project, days: i64, others: &[Project]) -> Value {
         .into_iter()
         .filter(|r| r.kind != "slow")
         .collect();
-    let misses: Vec<crate::misses::Miss> = crate::misses::load(project)
-        .into_iter()
+    let misses: Vec<crate::misses::Miss> = logs
+        .iter()
+        .flat_map(|p| crate::misses::load(p))
         .filter(|m| m.at.as_str() >= since.as_str())
         .collect();
 

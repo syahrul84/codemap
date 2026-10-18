@@ -558,6 +558,20 @@ impl<'s, 'c> Blueprint<'s, 'c> {
             "primary" | "unique" | "index" | "fullText" | "spatialIndex" => {
                 let cols = strings(0);
                 let single = cols.len() == 1;
+                if cols.len() > 1 {
+                    let name = a
+                        .get(1)
+                        .and_then(Lit::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| index_name(&table_name, &cols, method));
+                    table.indexes.retain(|i| i.name != name);
+                    table.indexes.push(super::TableIndex {
+                        name,
+                        kind: method.to_owned(),
+                        columns: cols.clone(),
+                        defined_in: Some(at.clone()),
+                    });
+                }
                 for name in &cols {
                     if let Some(c) = table.column_mut(name) {
                         match method {
@@ -581,12 +595,23 @@ impl<'s, 'c> Blueprint<'s, 'c> {
             "dropColumn" => {
                 let cols = all_strings();
                 table.columns.retain(|c| !cols.contains(&c.name));
+                table
+                    .indexes
+                    .retain(|i| !i.columns.iter().any(|c| cols.contains(c)));
             }
             "renameColumn" => {
                 if let (Some(from), Some(to)) = (
                     a.first().and_then(Lit::as_str),
                     a.get(1).and_then(Lit::as_str),
                 ) {
+                    for c in table
+                        .indexes
+                        .iter_mut()
+                        .flat_map(|i| i.columns.iter_mut())
+                        .filter(|c| *c == from)
+                    {
+                        *c = to.to_owned();
+                    }
                     match table.column_mut(from) {
                         Some(c) => {
                             c.name = to.to_owned();
@@ -606,6 +631,24 @@ impl<'s, 'c> Blueprint<'s, 'c> {
                     "dropUnique" => "_unique",
                     _ => "_primary",
                 };
+                // An index over several columns, by its columns or its name.
+                let by_cols = strings(0);
+                let by_name = a.first().and_then(Lit::as_str).map(str::to_owned);
+                let before = table.indexes.len();
+                table.indexes.retain(|i| {
+                    let same_kind = match method {
+                        "dropUnique" => i.kind == "unique",
+                        "dropPrimary" => i.kind == "primary",
+                        "dropIndex" => i.kind != "unique" && i.kind != "primary",
+                        _ => false,
+                    };
+                    !(same_kind
+                        && ((by_cols.len() > 1 && i.columns == by_cols)
+                            || by_name.as_deref() == Some(i.name.as_str())))
+                });
+                if table.indexes.len() != before {
+                    return;
+                }
                 let cols: Vec<String> = match a.first() {
                     Some(Lit::Arr(_)) => strings(0),
                     Some(Lit::Str(index)) => index
@@ -797,4 +840,12 @@ fn chain<'t>(node: Node<'t>, src: &[u8], var: &str) -> Option<Vec<Call<'t>>> {
     };
     calls.push(Call { name, args });
     Some(calls)
+}
+
+/// Laravel's default index name: `labels_shelf_id_slug_unique`.
+fn index_name(table: &str, columns: &[String], kind: &str) -> String {
+    let kind = kind.to_ascii_lowercase();
+    format!("{table}_{}_{kind}", columns.join("_"))
+        .replace(['-', '.'], "_")
+        .to_ascii_lowercase()
 }

@@ -382,3 +382,46 @@ fn changed_files_and_baseline_narrow_the_findings() {
     assert_eq!(ats, ["components/CartLine.vue:5"]);
     assert!(new["baseline"]["calls_hidden"].as_u64().unwrap() > 0);
 }
+
+/// #27: with `changed_files` (or `git_changes`), the calls in the changed files
+/// are listed, matched ones too, and agree with the summary.
+#[test]
+fn changed_files_lists_the_calls_they_make() {
+    let data = tempfile::tempdir().unwrap();
+    let (store, project) = open(data.path());
+    let all = call(&store, &project, "api_usage", json!({ "detail": "full" }));
+    let file = all["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["at"].as_str())
+        .map(|at| at.rsplit_once(':').unwrap().0.to_owned())
+        .next()
+        .unwrap();
+    let scoped = call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "changed_files": [file], "limit": 100 }),
+    );
+    let listed = scoped["calls"].as_array().unwrap().len() as u64;
+    let counted: u64 = scoped["summary"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(k, _)| {
+            matches!(
+                k.as_str(),
+                "matched"
+                    | "missing"
+                    | "method_mismatch"
+                    | "unresolved"
+                    | "external"
+                    | "placeholder"
+            )
+        })
+        .map(|(_, v)| v.as_u64().unwrap())
+        .sum();
+    assert!(listed > 0, "{scoped}");
+    assert_eq!(listed, counted, "{scoped}");
+}

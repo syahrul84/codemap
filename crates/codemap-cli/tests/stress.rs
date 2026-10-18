@@ -70,7 +70,7 @@ fn generate(root: &Path) {
         }
         // A value codemap does not follow: unresolved, saying why.
         if m == 0 {
-            src.push_str("const contract = { base: 'area0/x' }\nexport function viaObject() {\n  return api.get(`${contract.base}/item1/calculate`)\n}\n");
+            src.push_str("const contract = loadContract()\nexport function viaObject() {\n  return api.get(`${contract.base}/item1/calculate`)\n}\n");
         }
         write(root, &format!("resources/js/modules/m{m}.js"), &src);
     }

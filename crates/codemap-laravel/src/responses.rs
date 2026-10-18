@@ -480,9 +480,15 @@ fn nested_resource(conn: &Connection, scope: &Scope, src: &[u8], v: Node<'_>) ->
             .into_iter()
             .find(|c| matches!(c.kind(), "name" | "qualified_name" | "relative_name"))
             .and_then(|n| scope.resolve_class(text(n, src))),
-        "scoped_call_expression" => v
-            .child_by_field_name("scope")
-            .and_then(|n| scope.resolve_class(text(n, src))),
+        // Only `X::make()` and `X::collection()` give X's shape; another static
+        // method (`X::gallery($a)`) returns whatever it returns.
+        "scoped_call_expression"
+            if v.child_by_field_name("name")
+                .is_some_and(|n| matches!(text(n, src), "make" | "collection")) =>
+        {
+            v.child_by_field_name("scope")
+                .and_then(|n| scope.resolve_class(text(n, src)))
+        }
         _ => None,
     }?;
     is_resource(conn, &class).then_some(class)

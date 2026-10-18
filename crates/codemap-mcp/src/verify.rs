@@ -794,8 +794,19 @@ impl Verifier<'_> {
             let classmap =
                 std::fs::read_to_string(composer.join("autoload_classmap.php")).unwrap_or_default();
             let needle = format!("'{}' =>", fqn.replace('\\', "\\\\"));
-            if classmap.contains(&needle) {
-                return Some("vendor class (composer classmap)".into());
+            // A stale entry (the class was deleted, the classmap not rebuilt)
+            // points at a file that is gone: not a class.
+            if let Some(line) = classmap.lines().find(|l| l.contains(&needle))
+                && let Some(path) = crate::vendor::classmap_path(line)
+            {
+                if !self.root.join(&path).is_file() {
+                    return None;
+                }
+                return Some(if path.starts_with("vendor/") {
+                    format!("vendor class ({path})")
+                } else {
+                    format!("class in {path} (composer classmap), outside the indexed folders")
+                });
             }
             return None;
         }
@@ -895,6 +906,29 @@ impl Verifier<'_> {
                 }
                 match other {
                     MemberLookup::Unverifiable(outside) => {
+                        // Read the vendor ancestors' own files when they are installed.
+                        match crate::vendor::find_method(self.root, &outside, method) {
+                            crate::vendor::Lookup::Found(class) => {
+                                return Ok(Check::new("method", item, Status::External)
+                                    .detail(format!("inherited from {class} (vendor)")));
+                            }
+                            crate::vendor::Lookup::Missing(checked) => {
+                                return Ok(Check::new("method", item, Status::NotFound).detail(
+                                    format!(
+                                        "neither {fqn} nor {} has {method}()",
+                                        checked.join(", ")
+                                    ),
+                                ));
+                            }
+                            crate::vendor::Lookup::Magic(class) => {
+                                return Ok(Check::new("method", item, Status::Unresolved).detail(
+                                    format!(
+                                        "not declared in {fqn} or its parents; {class}::__call may handle it at runtime"
+                                    ),
+                                ));
+                            }
+                            crate::vendor::Lookup::Unknown => {}
+                        }
                         match outside.iter().find(|a| self.external_class(a).is_some()) {
                             Some(vendor) => Check::new("method", item, Status::External).detail(
                                 format!("not in project code; may be inherited from {vendor}"),
@@ -931,7 +965,13 @@ impl Verifier<'_> {
         let hit = symbols::by_fqn(conn, name)?
             .into_iter()
             .chain(symbols::all_named(conn, name)?)
-            .find(|s| s.kind == SymbolKind::Function);
+            .find(|s| {
+                // `useShelf` is a composable, `useCartStore` a store: both are functions.
+                matches!(
+                    s.kind,
+                    SymbolKind::Function | SymbolKind::Composable | SymbolKind::Store
+                )
+            });
         if let Some(f) = hit {
             return Ok(Check::new("function", name, Status::Exists)
                 .file(Some(format!("{}:{}", f.file, f.line))));
@@ -1213,7 +1253,7 @@ fn uri_matches(pattern: &str, uri: &str) -> bool {
 }
 
 /// Resolves `vendor/composer/autoload_psr4.php` prefixes to a file path.
-fn psr4_path(autoload: &Path, root: &Path, fqn: &str) -> Option<String> {
+pub(crate) fn psr4_path(autoload: &Path, root: &Path, fqn: &str) -> Option<String> {
     let text = std::fs::read_to_string(autoload).ok()?;
     let mut best: Option<String> = None;
     for line in text.lines() {

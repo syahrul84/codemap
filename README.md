@@ -124,7 +124,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.4 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.5 codemap-cli
 ```
 
 ### Docker
@@ -583,7 +583,7 @@ Routes built at runtime (from `.map()`, loops, or helpers that aren't simple) ar
 **Find usages:**
 - PHP references come from the same parse as symbols: `new`, static calls, `$this->` calls, calls on variables typed by parameters, closures or `new`, type hints, `instanceof`, `catch`, `X::class`, `route('name')`, helper functions and test HTTP calls.
 - JS / Vue references come from resolved imports (including lazy ones), component tags, and calls by name (Nuxt auto-imports).
-- Column usages are not tracked yet.
+- Database columns (`orders.collected_at`) are found by name: in the table's models (`$fillable`, `$casts`, …), in files that use those models or name the table, in factories and in frontend code; other mentions are listed as possible.
 
 **Swift, Kotlin, Java, Rust:** parsed with tree-sitter.
 - There is no type checker: a member call (`model.refresh()`) is matched by name, and uses outside the member's own file are listed as possible.
@@ -591,7 +591,7 @@ Routes built at runtime (from `.map()`, loops, or helpers that aren't simple) ar
 - A few valid forms the Swift and Kotlin grammars misread (`@_silgen_name`, regex literals; Kotlin `var x by …; private set`, a modifier word used as a name) are skipped or rewritten before parsing, never reported as errors.
 - API calls from mobile and Rust code are not linked to backend routes.
 
-**Not yet:** column usages, config / settings defaults, embeddings and semantic search.
+**Not yet:** embeddings and semantic search.
 
 ## Troubleshooting
 

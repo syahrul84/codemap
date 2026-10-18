@@ -611,7 +611,7 @@ impl CodemapServer {
 
     #[tool(
         name = "find_usages",
-        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Swift / Kotlin / Java / Rust types and Type.member (or Type::method), Vue components, composables, stores, translation keys, endpoints ('GET api/v1/orders') and files."
+        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Swift / Kotlin / Java / Rust types and Type.member (or Type::method), Vue components, composables, stores, translation keys, database columns ('orders.collected_at': model $fillable / $casts, queries, resources, factories, frontend reads), endpoints ('GET api/v1/orders') and files."
     )]
     pub async fn find_usages(
         &self,

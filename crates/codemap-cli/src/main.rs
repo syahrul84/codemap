@@ -321,17 +321,23 @@ fn cmd_usage(
 ) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
     let days = days.clamp(1, codemap_mcp::usage::KEEP_DAYS);
+    let data_dir = paths::resolve_data_dir(cli.data_dir.clone())?;
+    let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
+    // An app writes its log under the index it was served with: on its own
+    // (`serve --project backend`) or as part of the workspace. Both count.
+    let aliases: Vec<Vec<codemap_mcp::Project>> =
+        mcp.iter().map(|p| other_indexes(p, &data_dir)).collect();
     if clear {
-        for p in &projects {
-            codemap_mcp::usage::clear(&p.mcp())?;
+        for p in mcp.iter().chain(aliases.iter().flatten()) {
+            codemap_mcp::usage::clear(p)?;
         }
         println!("usage log cleared");
         return Ok(ExitCode::SUCCESS);
     }
-    let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
     let all: Vec<serde_json::Value> = mcp
         .iter()
-        .map(|p| codemap_mcp::usage::summary_in(p, days, &mcp))
+        .zip(&aliases)
+        .map(|(p, also)| codemap_mcp::usage::summary_with(p, also, days, &mcp))
         .collect();
     if json {
         let out = if all.len() == 1 {
@@ -374,6 +380,41 @@ fn cmd_usage(
         print_usage(u);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The same app's other indexes: a workspace app indexed on its own, or an
+/// app indexed as part of the workspace around it. Only those that exist.
+fn other_indexes(p: &codemap_mcp::Project, data_dir: &Path) -> Vec<codemap_mcp::Project> {
+    let mut ids: Vec<String> = Vec::new();
+    if p.app.is_some() {
+        if let Ok(id) = paths::resolve_project_id(None, &p.root) {
+            ids.push(id);
+        }
+    } else if let (Some(parent), Some(dir)) = (p.root.parent(), p.root.file_name()) {
+        let dir: String = dir
+            .to_string_lossy()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        if let Ok(ws) = paths::resolve_project_id(None, parent) {
+            ids.push(format!("{ws}-{dir}"));
+        }
+    }
+    ids.into_iter()
+        .filter(|id| *id != p.id)
+        .map(|id| codemap_mcp::Project {
+            index_path: paths::index_path(data_dir, &id),
+            id,
+            ..p.clone()
+        })
+        .filter(|x| x.index_path.parent().is_some_and(Path::is_dir))
+        .collect()
 }
 
 fn print_usage(u: &serde_json::Value) {

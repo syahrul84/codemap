@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR: &str = "js";
 
 /// Bump when per-file output changes; every JS/TS/Vue file is then re-parsed.
-pub const JS_EXTRACTOR_VERSION: i64 = 37;
+pub const JS_EXTRACTOR_VERSION: i64 = 38;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TagUse {
@@ -673,8 +673,68 @@ fn merge(mut a: ScriptFacts, b: ScriptFacts) -> ScriptFacts {
 /// Symbols a JS/TS module contributes on its own (components and Vuex
 /// modules are added by the registry pass, which knows names and namespaces).
 pub fn module_symbols(path: &str, facts: &ModuleFacts) -> Vec<NewSymbol> {
+    let mut out = Vec::new();
+    // Interfaces and object types with their fields (`ShopCard.visits_7d`),
+    // and functions used only in their own file (a `<script setup>` helper):
+    // code to reuse, so search finds them.
+    for d in &facts.script.decls {
+        let local = !d.exported && !d.default_export;
+        match d.kind {
+            DeclKind::Interface | DeclKind::Type => {
+                let fqn = format!("{path}#{}", d.name);
+                out.push(NewSymbol {
+                    kind: SymbolKind::Interface,
+                    name: d.name.clone(),
+                    fqn: fqn.clone(),
+                    parent_fqn: None,
+                    signature: d.signature.clone(),
+                    visibility: local.then(|| "private".to_owned()),
+                    is_static: false,
+                    is_abstract: false,
+                    is_final: false,
+                    start_line: d.line,
+                    end_line: d.end_line,
+                    doc_summary: d.doc.clone(),
+                    meta: SymbolMeta::default(),
+                });
+                for m in &d.members {
+                    out.push(NewSymbol {
+                        kind: SymbolKind::Property,
+                        name: m.name.clone(),
+                        fqn: format!("{fqn}.{}", m.name),
+                        parent_fqn: Some(fqn.clone()),
+                        signature: m.signature.clone(),
+                        visibility: None,
+                        is_static: false,
+                        is_abstract: false,
+                        is_final: false,
+                        start_line: m.line,
+                        end_line: m.line,
+                        doc_summary: None,
+                        meta: SymbolMeta::default(),
+                    });
+                }
+            }
+            DeclKind::Function if local => out.push(NewSymbol {
+                kind: SymbolKind::Function,
+                name: d.name.clone(),
+                fqn: format!("{path}#{}", d.name),
+                parent_fqn: None,
+                signature: d.signature.clone(),
+                visibility: Some("private".into()),
+                is_static: false,
+                is_abstract: false,
+                is_final: false,
+                start_line: d.line,
+                end_line: d.end_line,
+                doc_summary: d.doc.clone(),
+                meta: SymbolMeta::default(),
+            }),
+            _ => {}
+        }
+    }
     if facts.lang == "vue" {
-        return Vec::new();
+        return out;
     }
     let stem = path.rsplit('/').next().unwrap_or(path);
     let stem = stem.split('.').next().unwrap_or(stem);
@@ -684,7 +744,6 @@ pub fn module_symbols(path: &str, facts: &ModuleFacts) -> Vec<NewSymbol> {
         .iter()
         .filter_map(|s| s.export.as_deref())
         .collect();
-    let mut out = Vec::new();
     // Nuxt 2 store files export `state`, `mutations`, …: the module is the symbol.
     let vuex_parts = facts.script.vuex_module.is_some();
     for d in &facts.script.decls {
@@ -998,6 +1057,12 @@ mod tests {
         assert_eq!(
             syms,
             [
+                // File-local, so search finds it too.
+                (
+                    "internal".into(),
+                    SymbolKind::Function,
+                    "src/composables/useThing.js#internal".into()
+                ),
                 (
                     "useCart".into(),
                     SymbolKind::Composable,

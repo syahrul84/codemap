@@ -59,7 +59,8 @@ fn discovered(path: &str) -> bool {
 /// Code in `files` that nothing uses: components no template renders and no
 /// file imports, exported functions never imported or called, PHP classes
 /// never referenced.
-fn unused_in(store: &Store, root: &std::path::Path, files: &[String]) -> R<Vec<String>> {
+fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> R<Vec<String>> {
+    let root = project.root.as_path();
     let conn = store.conn();
     let count = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> i64 {
         conn.query_row(sql, p, |r| r.get(0)).unwrap_or(1)
@@ -122,18 +123,126 @@ fn unused_in(store: &Store, root: &std::path::Path, files: &[String]) -> R<Vec<S
                 if used + routed == 0 {
                     out.push(format!("{f}: class {} is not used anywhere", s.fqn));
                 }
-            } else if matches!(s.kind.as_str(), "function" | "composable" | "store") {
-                let used = count(
-                    "SELECT COUNT(*) FROM refs WHERE (kind = 'import' AND target = ?1)
-                       OR (kind = 'js_call' AND target = ?2)",
-                    &[&format!("{f}#{}", s.name), &s.name],
+            } else if s.parent_fqn.is_some() || s.visibility.as_deref() == Some("private") {
+                // Fields of a type and file-local helpers: not exports.
+                continue;
+            } else if matches!(
+                s.kind.as_str(),
+                "function" | "composable" | "store" | "const" | "interface"
+            ) {
+                let imported = count(
+                    "SELECT COUNT(*) FROM refs WHERE kind = 'import' AND target = ?1",
+                    &[&format!("{f}#{}", s.name)],
+                );
+                let called = count(
+                    "SELECT COUNT(*) FROM refs WHERE kind = 'js_call' AND target = ?1",
+                    &[&s.name],
                 );
                 // Mentioned again in its own file (called, or passed by name).
                 let local = word_count(&text, &s.name) > 1;
-                if used == 0 && !local {
+                // What `find_usages` says, so both agree (auto-imports, templates).
+                let elsewhere = imported + called > 0
+                    || (s.kind.as_str() != "interface"
+                        && used_elsewhere(store, project, &s.name, f));
+                if !elsewhere && !local {
                     out.push(format!("{f}: {} {} is not used anywhere", s.kind, s.name));
+                } else if !elsewhere && text_exports(&text, &s.name) {
+                    out.push(format!(
+                        "{f}: {} {} is exported but only used in its own file",
+                        s.kind, s.name
+                    ));
                 }
             }
+        }
+        // Translation keys added on the branch that no code reads.
+        for key in new_unread_keys(store, root, base, f)? {
+            out.push(format!("{f}: translation key {key} is not used anywhere"));
+        }
+    }
+    Ok(out)
+}
+
+/// `find_usages` finds a use of `name` outside `file`.
+fn used_elsewhere(store: &Store, project: &Project, name: &str, file: &str) -> bool {
+    let params = crate::usages::FindUsagesParams {
+        target: name.to_owned(),
+        limit: Some(200),
+        ..Default::default()
+    };
+    let Ok(out) = crate::usages::find_usages(store, project, params) else {
+        return true;
+    };
+    let d = &out.data;
+    // Several things share the name: can't tell, so not reported.
+    if d["notes"].as_array().is_some_and(|n| {
+        n.iter()
+            .any(|x| x.as_str().is_some_and(|t| t.contains("ambiguous")))
+    }) {
+        return true;
+    }
+    d["usages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(d["tests"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .any(|u| !u.starts_with(&format!("{file}:")))
+}
+
+/// `export const NAME`, `export function NAME`, `export interface NAME`…
+fn text_exports(text: &str, name: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("export ") && word_count(l, name) > 0
+    })
+}
+
+/// Keys of a changed locale file that are new on the branch (not in the
+/// file at `base`) and that nothing reads.
+fn new_unread_keys(
+    store: &Store,
+    root: &std::path::Path,
+    base: &str,
+    file: &str,
+) -> R<Vec<String>> {
+    let conn = store.conn();
+    let keys: Vec<String> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT k.key FROM i18n_keys k JOIN files f ON f.id = k.file_id
+             WHERE f.path = ?1 ORDER BY k.key",
+        )?;
+        let rows = stmt.query_map([file], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rev = if base.contains(' ') { "HEAD" } else { base };
+    let before = codemap_core::git::show(root, rev, file).unwrap_or_default();
+    let mut out = Vec::new();
+    for key in keys {
+        let last = key.rsplit('.').next().unwrap_or(&key);
+        let was_there = [
+            format!("\"{last}\""),
+            format!("'{last}'"),
+            format!("{last}:"),
+        ]
+        .iter()
+        .any(|q| before.contains(q.as_str()));
+        if was_there {
+            continue;
+        }
+        let read: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM i18n_uses
+                 WHERE key = ?1 OR (dynamic = 1 AND ?1 >= key AND substr(?1, 1, length(key)) = key)
+                    OR ?1 LIKE '%.' || key",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        if read == 0 {
+            out.push(key);
         }
     }
     Ok(out)
@@ -387,7 +496,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
                 "unused code in {} changed files (vs {used_base})",
                 files.len()
             ));
-            for u in unused_in(store, &project.root, &files)? {
+            for u in unused_in(store, project, &used_base, &files)? {
                 push(&mut problems, "unused", u);
             }
         }

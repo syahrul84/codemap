@@ -1519,6 +1519,9 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                 payload_bad
                     || partly_missing
                     || p.file.is_some()
+                    // With `git_changes` / `changed_files`, the calls the
+                    // change touches are what was asked for, matched or not.
+                    || scope.is_some()
                     || matches!(
                         o,
                         Outcome::NotFound(_) | Outcome::MethodMismatch(_) | Outcome::Unresolved(_)

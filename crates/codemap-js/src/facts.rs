@@ -171,6 +171,17 @@ pub struct Decl {
     pub doc: Option<String>,
     pub line: u32,
     pub end_line: u32,
+    /// Fields and methods of an interface or object type: `visits_7d: number`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<Member>,
+}
+
+/// A field or method of an interface or object type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub name: String,
+    pub signature: String,
+    pub line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

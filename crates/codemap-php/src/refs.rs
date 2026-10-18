@@ -456,6 +456,52 @@ impl Collector<'_> {
                 self.cache_key_parts(named_children(a).into_iter().next()?, depth + 1)
             }
             "string" | "encapsed_string" => url_lit(a, self.src),
+            // `$key = 'page:'.$id; Cache::remember($key, …)`
+            "variable_name" => match assigned_before(a, self.src) {
+                Some(v) => self.cache_key_parts(v, depth + 1),
+                None => Some("{}".into()),
+            },
+            // `array_map(fn ($id) => 'row:'.$id, $ids)`, `array_fill_keys($keys, 1)`
+            "function_call_expression" => {
+                let name = a.child_by_field_name("function").map(|f| {
+                    text(f, self.src)
+                        .trim_start_matches('\\')
+                        .to_ascii_lowercase()
+                });
+                let args: Vec<Node> = a
+                    .child_by_field_name("arguments")
+                    .map(|x| {
+                        named_children(x)
+                            .into_iter()
+                            .filter_map(|arg| named_children(arg).into_iter().last())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match name.as_deref() {
+                    Some("array_map") => {
+                        let f = args.first()?;
+                        let body = f.child_by_field_name("body")?;
+                        self.cache_key_parts(body, depth + 1)
+                    }
+                    Some("array_fill_keys" | "array_combine" | "array_keys" | "array_values") => {
+                        self.cache_key_parts(*args.first()?, depth + 1)
+                    }
+                    _ => Some("{}".into()),
+                }
+            }
+            // `Cache::many(['a', 'b'])`, `putMany(['a' => 1])`: the first key.
+            "array_creation_expression" => {
+                let first = named_children(a)
+                    .into_iter()
+                    .find(|e| e.kind() == "array_element_initializer")?;
+                let parts = named_children(first);
+                let key = if parts.len() >= 2 {
+                    parts[0]
+                } else {
+                    *parts.first()?
+                };
+                self.cache_key_parts(key, depth + 1)
+            }
             _ => Some("{}".into()),
         }
     }
@@ -467,8 +513,9 @@ impl Collector<'_> {
         let (kind, ttl_arg) = match method {
             "remember" | "flexible" | "add" | "increment" | "decrement" => ("cache_write", Some(1)),
             "put" | "set" => ("cache_write", Some(2)),
+            "putMany" | "setMultiple" => ("cache_write", Some(1)),
             "rememberForever" | "sear" | "forever" => ("cache_write", None),
-            "get" | "has" | "missing" | "many" => ("cache_read", None),
+            "get" | "has" | "missing" | "many" | "getMultiple" => ("cache_read", None),
             "pull" | "forget" | "delete" => ("cache_forget", None),
             "flush" | "clear" => {
                 let target = if prefix.is_empty() {
@@ -1212,6 +1259,42 @@ pub fn blade_refs(src: &str) -> Vec<Ref> {
         i += 1;
     }
     out
+}
+
+/// The value last assigned to a variable before `var`, in the same function:
+/// `$key = 'page:'.$id;` for `$key`.
+fn assigned_before<'t>(var: Node<'t>, src: &[u8]) -> Option<Node<'t>> {
+    let name = text(var, src);
+    let mut scope = var.parent();
+    while let Some(p) = scope {
+        if matches!(
+            p.kind(),
+            "method_declaration" | "function_definition" | "anonymous_function" | "arrow_function"
+        ) {
+            break;
+        }
+        scope = p.parent();
+    }
+    let scope = scope?;
+    let mut best: Option<Node<'t>> = None;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.start_byte() >= var.start_byte() {
+            continue;
+        }
+        if n.kind() == "assignment_expression"
+            && let (Some(l), Some(r)) = (
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            )
+            && text(l, src) == name
+            && best.is_none_or(|b| n.start_byte() > b.start_byte())
+        {
+            best = Some(r);
+        }
+        stack.extend(named_children(n));
+    }
+    best
 }
 
 #[cfg(test)]

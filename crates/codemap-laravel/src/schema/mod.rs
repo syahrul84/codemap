@@ -69,6 +69,18 @@ pub struct Column {
     pub drift: Option<String>,
 }
 
+/// An index over several columns. Single-column ones are flags on the column.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableIndex {
+    /// As Laravel names it: `labels_shelf_id_slug_unique`, or the name given.
+    pub name: String,
+    /// primary | unique | index | fullText | spatialIndex
+    pub kind: String,
+    pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defined_in: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Table {
     pub name: String,
@@ -80,6 +92,9 @@ pub struct Table {
     pub confidence: Confidence,
     pub source: Option<String>,
     pub drift: Option<String>,
+    /// Indexes over several columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<TableIndex>,
 }
 
 impl Table {
@@ -961,10 +976,13 @@ pub fn store(conn: &Connection, schema: &Schema) -> Result<()> {
         if t.dropped && live_exists {
             continue;
         }
+        let indexes = (!t.indexes.is_empty())
+            .then(|| serde_json::to_string(&t.indexes))
+            .transpose()?;
         conn.execute(
-            "INSERT OR REPLACE INTO db_tables (name, created_in, last_changed_in, dropped, renamed_from, confidence, source, drift)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![t.name, t.created_in, t.last_changed_in, t.dropped, t.renamed_from, t.confidence.as_str(), t.source, t.drift],
+            "INSERT OR REPLACE INTO db_tables (name, created_in, last_changed_in, dropped, renamed_from, confidence, source, drift, indexes_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![t.name, t.created_in, t.last_changed_in, t.dropped, t.renamed_from, t.confidence.as_str(), t.source, t.drift, indexes],
         )?;
         if t.dropped {
             continue;
@@ -1204,6 +1222,29 @@ pub fn describe(conn: &Connection, table: Option<&str>, detail: Detail) -> Resul
     }
     if let Some(d) = drift {
         o.insert("drift".into(), json!(d));
+    }
+    let indexes: Option<String> = conn
+        .query_row(
+            "SELECT indexes_json FROM db_tables WHERE name = ?1 AND dropped = 0",
+            [tname],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    if let Some(list) = indexes.and_then(|j| serde_json::from_str::<Vec<TableIndex>>(&j).ok()) {
+        let list: Vec<Value> = list
+            .iter()
+            .map(|i| {
+                json!({
+                    "name": i.name,
+                    "columns": i.columns,
+                    "unique": i.kind == "unique" || i.kind == "primary",
+                    "kind": i.kind,
+                    "defined_in": i.defined_in,
+                })
+            })
+            .collect();
+        o.insert("indexes".into(), json!(list));
     }
     Ok(v)
 }

@@ -25,8 +25,8 @@ pub struct FindUsagesParams {
     pub app: Option<String>,
     /// What to look for: `App\Models\Order`, `Order`, `Order::save`, a function,
     /// a route name (`orders.show`), a component (`OrderCard`), a composable or
-    /// store (`useCart`), a translation key (`orders.title`), an endpoint
-    /// (`GET api/v1/orders`), or a file path.
+    /// store (`useCart`), a translation key (`orders.title`), a database column
+    /// (`orders.collected_at`), an endpoint (`GET api/v1/orders`), or a file path.
     #[serde(default)]
     pub target: String,
     /// Change impact instead of one target: files you changed (paths from the
@@ -666,6 +666,8 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
                 ));
             }
         }
+    } else if let Some((table, column)) = db_column(store, &target, &kind)? {
+        column_usages(store, project, &table, &column, &mut f)?;
     } else if kind == "table" || (kind.is_empty() && is_db_table(store, &target)?) {
         // A table used through a query builder (`supabase.from('rooms')`) or
         // known from the schema.
@@ -948,6 +950,129 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
 
 /// A database table this project reads or writes through a query builder
 /// (or an `rpc` function), not otherwise a class or symbol.
+/// `orders.collected_at` when the schema has that column.
+fn db_column(store: &Store, target: &str, kind: &str) -> R<Option<(String, String)>> {
+    if !(kind.is_empty() || kind == "column") || target.contains(['/', '\\', ' ', ':']) {
+        return Ok(None);
+    }
+    let Some((table, column)) = target.split_once('.') else {
+        return Ok(None);
+    };
+    let n: i64 = store.conn().query_row(
+        "SELECT COUNT(*) FROM db_columns WHERE table_name = ?1 AND name = ?2",
+        [table, column],
+        |r| r.get(0),
+    )?;
+    Ok((n > 0).then(|| (table.to_owned(), column.to_owned())))
+}
+
+/// Where a column is read or written, before dropping or renaming it. There is
+/// no type information, so this is a text search for the column's name:
+/// uses in the table's models and in files that use them (or name the table)
+/// are listed; other mentions are possible uses.
+fn column_usages(
+    store: &Store,
+    project: &Project,
+    table: &str,
+    column: &str,
+    f: &mut Found,
+) -> R<()> {
+    f.resolved_as = format!("column {table}.{column}");
+    let conn = store.conn();
+    // The table's models, and the files that use one of them.
+    let models: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT fqn, file FROM models WHERE table_name = ?1")?;
+        let rows = stmt.query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let model_files: BTreeSet<String> = models.iter().map(|(_, file)| file.clone()).collect();
+    let mut related: BTreeSet<String> = model_files.clone();
+    for (fqn, _) in &models {
+        for (file, _, _, _) in class_refs(store, fqn)? {
+            related.insert(file);
+        }
+    }
+    // The column's history comes from the schema, not from uses.
+    let history: (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT created_in, last_changed_in FROM db_columns WHERE table_name = ?1 AND name = ?2",
+            [table, column],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((None, None));
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    for file in store.list_files()? {
+        let path = file.path;
+        let code = [".php", ".vue", ".ts", ".tsx", ".js", ".jsx", ".mjs"]
+            .iter()
+            .any(|e| path.ends_with(e));
+        if !code || path.starts_with("database/migrations/") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(project.root.join(&path)) else {
+            continue;
+        };
+        if !text.contains(column) {
+            continue;
+        }
+        let names_table =
+            text.contains(&format!("'{table}'")) || text.contains(&format!("\"{table}\""));
+        let sure = related.contains(&path) || names_table;
+        let mut block = "";
+        for (i, line) in text.lines().enumerate() {
+            // The array a model entry sits in: `$fillable`, `casts()`, …
+            for b in [
+                "fillable", "guarded", "casts", "hidden", "visible", "appends", "dates",
+            ] {
+                if line.contains(&format!("${b}")) || line.contains(&format!("function {b}(")) {
+                    block = b;
+                }
+            }
+            let b = line.as_bytes();
+            let hit = line.match_indices(column).any(|(at, _)| {
+                let before = at.checked_sub(1).map(|j| b[j]);
+                let after = b.get(at + column.len()).copied();
+                !before.is_some_and(ident) && !after.is_some_and(ident)
+            });
+            if !hit {
+                continue;
+            }
+            let t = line.trim();
+            if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+                continue;
+            }
+            let label = if model_files.contains(&path) && !block.is_empty() {
+                format!("model ${block}")
+            } else if path.starts_with("database/factories/") {
+                "factory".to_owned()
+            } else if !path.ends_with(".php") {
+                "frontend".to_owned()
+            } else if line.contains(&format!("->{column}")) {
+                "property".to_owned()
+            } else {
+                "name".to_owned()
+            };
+            let n = i as u32 + 1;
+            if sure || !path.ends_with(".php") {
+                f.add(path.clone(), n, label);
+            } else {
+                f.possible.insert((path.clone(), n, label));
+            }
+        }
+    }
+    let mut note = format!(
+        "a text search for `{column}`: uses in the {table} model(s), files that use them or name the table are listed; other PHP mentions are possible"
+    );
+    if let (Some(c), changed) = &history {
+        note.push_str(&format!("; created in {c}"));
+        if let Some(ch) = changed.as_ref().filter(|ch| *ch != c) {
+            note.push_str(&format!(", last changed in {ch}"));
+        }
+    }
+    f.notes.push(note);
+    Ok(())
+}
+
 fn is_db_table(store: &Store, target: &str) -> R<bool> {
     if target.contains(['/', '\\', ' ', ':', '.']) {
         return Ok(false);
@@ -1074,6 +1199,8 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         }
         let mut f = Found::default();
         let mut what: Vec<String> = Vec::new();
+        // Classes that call the changed file's classes, with the path to them.
+        let mut php_chain: Vec<(String, Vec<String>)> = Vec::new();
         if file.ends_with(".php") {
             let classes: Vec<SymbolRecord> = symbols::all(store.conn())?
                 .into_iter()
@@ -1100,8 +1227,10 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
             let mut via = Found::default();
             let mut via_routes: Vec<String> = Vec::new();
             if !classes.is_empty() {
-                let chain = php_caller_chain(store, &file, 4)?;
-                for (class, path) in &chain {
+                php_chain = php_caller_chain(store, &file, 4)?;
+            }
+            if !classes.is_empty() {
+                for (class, path) in &php_chain {
                     for r in all_routes.iter().filter(|r| {
                         r.controller_fqn
                             .as_deref()
@@ -1128,7 +1257,7 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
                     .iter()
                     .map(|c| (c.fqn.clone(), vec![c.name.clone()]))
                     .collect();
-                reach.extend(php_caller_chain(store, &file, 4)?);
+                reach.extend(php_chain.iter().cloned());
                 let mut seen = BTreeSet::new();
                 for (class, path) in reach {
                     let Some(sym) = symbols::by_fqn(store.conn(), &class)?.into_iter().next()
@@ -1184,7 +1313,10 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
             let syms: Vec<SymbolRecord> = symbols::all(store.conn())?
                 .into_iter()
                 .filter(|s| {
-                    s.file == file && !matches!(s.kind, SymbolKind::Method | SymbolKind::Property)
+                    // File-local helpers and types are not what other files use.
+                    s.file == file
+                        && !matches!(s.kind, SymbolKind::Method | SymbolKind::Property)
+                        && s.visibility.as_deref() != Some("private")
                 })
                 .collect();
             for s in &syms {
@@ -1209,6 +1341,17 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
             for u in &file_users {
                 for (from, _, _, _) in import_refs(store, u)? {
                     if is_test_path(&from) {
+                        indirect.insert(from);
+                    }
+                }
+            }
+        } else {
+            // PHP: tests of the classes that call the changed one
+            // (`ViewWidgetTest` for a change to `WidgetActions`, used by `ViewWidget`).
+            // Two steps away at most: the path holds the class and its callers.
+            for (class, _) in php_chain.iter().filter(|(_, path)| path.len() <= 3) {
+                for (from, _, _, _) in class_refs(store, class)? {
+                    if is_test_path(&from) && !file_tests.contains(&from) {
                         indirect.insert(from);
                     }
                 }

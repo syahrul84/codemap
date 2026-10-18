@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.5] - 2026-10-18
+
+Fixes for issues #16–#29:
+
+- `verify`: a method missing from a model and from its vendor parent is `not_found`; codemap reads the installed vendor files (Composer's maps, or the usual package folders) instead of saying "may be inherited". A parent with `__call` gives `unresolved` (#16).
+- `verify`: a class in a stale Composer classmap (its file is gone) is `not_found`, not a vendor class (#19). A composable or store asked for as a function exists (#24).
+- `find_usages` change impact: tests of the classes that call a changed PHP class are suggested (`ViewWidgetTest` for a change to `WidgetActions`, used by `ViewWidget`) (#17).
+- `get_schema`: indexes over several columns (`$table->unique(['shelf_id', 'slug'])`, composite primary keys) are listed with their name and migration, also after `dropUnique` / `renameColumn` (#18).
+- Cache map: keys built in a variable first (`$key = 'page:'.$id; Cache::remember($key, …)`), from `array_map(fn … => 'row:'.$id)`, `array_fill_keys`, and `Cache::many` / `putMany` (#20).
+- `search_symbol` finds functions used only in their own file (a `<script setup>` helper) and the fields of TypeScript interfaces and object types (`ShopCard.visits_7d`) (#21, #22).
+- `api_usage`: a URL taken from a constant object (`ENDPOINT[kind]`, `ENDPOINT.shops`) is expanded to each of its values (#23). With `git_changes` / `changed_files`, the calls in scope are listed, matched ones too, and agree with the summary (#27). A static helper on a Resource (`OtherResource::gallery(…)`) is no longer described as that Resource; only `new`, `::make` and `::collection` are (#28).
+- `codemap usage` finds the logs of apps served on their own (`serve --project backend`) when run from the workspace, and the other way round (#25).
+- Release check: exported constants, types and interfaces nothing uses, exports only used in their own file, and translation keys added on the branch that nothing reads are listed (#26).
+- `find_usages` on a database column (`orders.collected_at`): the model's `$fillable` / `$casts` / `$hidden` entries, queries and properties in files that use the model or name the table, factories, frontend reads and tests; other PHP mentions are listed as possible, and the migration that created it is named (#29).
+
 ## [0.1.4] - 2026-10-18
 
 Rust support, for crates and Cargo workspaces:

@@ -215,6 +215,13 @@ expression: summary(&store)
       null
     ],
     [
+      "function",
+      "Orders",
+      "src/router/index.js#Orders",
+      "Orders()",
+      null
+    ],
+    [
       "store",
       "auth",
       "src/store/modules/auth.js",
@@ -227,6 +234,13 @@ expression: summary(&store)
       "src/store/modules/cart.js",
       "Vuex module 'cart' (namespaced)",
       "state: items, total · getters: count · mutations: SET_ITEMS · actions: load"
+    ],
+    [
+      "function",
+      "state",
+      "src/store/modules/cart.js#state",
+      "state()",
+      null
     ],
     [
       "store",

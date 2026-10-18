@@ -390,7 +390,19 @@ expression: snapshot
       ],
       "models": [],
       "created_in": "database/migrations/2024_05_01_000004_create_tags_tables.php:17",
-      "last_changed_in": "database/migrations/2024_05_01_000004_create_tags_tables.php:21"
+      "last_changed_in": "database/migrations/2024_05_01_000004_create_tags_tables.php:21",
+      "indexes": [
+        {
+          "name": "order_tag_order_id_tag_id_primary",
+          "columns": [
+            "order_id",
+            "tag_id"
+          ],
+          "unique": true,
+          "kind": "primary",
+          "defined_in": "database/migrations/2024_05_01_000004_create_tags_tables.php:21"
+        }
+      ]
     },
     "orders": {
       "found": true,

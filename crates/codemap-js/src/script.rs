@@ -583,7 +583,26 @@ where
             doc,
             line: self.line(span.start),
             end_line: self.line(span.end),
+            members: Vec::new(),
         });
+    }
+
+    /// Fields and methods of an interface or object type literal.
+    fn members_of(&self, list: &[TSSignature<'a>]) -> Vec<crate::facts::Member> {
+        list.iter()
+            .filter_map(|m| {
+                let (key, span) = match m {
+                    TSSignature::TSPropertySignature(p) => (&p.key, p.span),
+                    TSSignature::TSMethodSignature(p) => (&p.key, p.span),
+                    _ => return None,
+                };
+                Some(crate::facts::Member {
+                    name: key.static_name()?.to_string(),
+                    signature: self.compact(span, 120),
+                    line: self.line(span.start),
+                })
+            })
+            .collect()
     }
 
     fn declaration(&mut self, decl: &'a Declaration<'a>, exported: bool, outer: Span) {
@@ -673,6 +692,10 @@ where
                     i.span,
                     outer.start,
                 );
+                let members = self.members_of(&i.body.body);
+                if let Some(d) = self.facts.decls.last_mut() {
+                    d.members = members;
+                }
             }
             Declaration::TSTypeAliasDeclaration(t) => {
                 let sig = format!("type {}", t.id.name);
@@ -684,6 +707,12 @@ where
                     t.span,
                     outer.start,
                 );
+                if let TSType::TSTypeLiteral(l) = &t.type_annotation {
+                    let members = self.members_of(&l.members);
+                    if let Some(d) = self.facts.decls.last_mut() {
+                        d.members = members;
+                    }
+                }
             }
             Declaration::TSEnumDeclaration(e) => {
                 let sig = format!("enum {}", e.id.name);
@@ -2414,7 +2443,19 @@ where
                 })
                 .collect()
         };
-        let Some((url, base_var, optional_tail)) = self.url_of(url_expr, trusted) else {
+        // `ENDPOINT[kind]`: no text of its own, but known values.
+        let mut options: Vec<String> = Vec::new();
+        let parsed = self.url_of(url_expr, trusted).or_else(|| {
+            let opts = self
+                .string_options(url_expr, 0)?
+                .into_iter()
+                .filter(|o| trusted || o.contains('/'))
+                .collect::<Vec<_>>();
+            let first = opts.first()?.clone();
+            options = opts;
+            Some((first, false, false))
+        });
+        let Some((url, base_var, optional_tail)) = parsed else {
             return;
         };
         // Laravel method spoofing: `api.post(url, { …, _method: 'PUT' })`,
@@ -2429,7 +2470,9 @@ where
         } else {
             (Vec::new(), None)
         };
-        let (variants, variants_loose) = if base_var {
+        let (variants, variants_loose) = if options.len() > 1 {
+            (options.iter().map(|o| normalize_url(o)).collect(), false)
+        } else if base_var {
             (Vec::new(), false)
         } else {
             self.url_variants(url_expr)
@@ -4014,8 +4057,59 @@ impl<'a> Analyzer<'_, 'a> {
             {
                 self.member_options.get(m.property.name.as_str())?.clone()
             }
+            // `ENDPOINT.shops` on a constant object.
+            Expression::StaticMemberExpression(m) => {
+                let values =
+                    self.object_values(&m.object, Some(m.property.name.as_str()), depth)?;
+                values.into_iter().flatten().flatten().collect()
+            }
+            // `ENDPOINT[kind]` on a constant object: every value it holds.
+            Expression::ComputedMemberExpression(m) => {
+                let key = match strip_ts(&m.expression).without_parentheses() {
+                    Expression::StringLiteral(k) => Some(k.value.as_str()),
+                    _ => None,
+                };
+                let values = self.object_values(&m.object, key, depth)?;
+                // All of them, or none: one unknown value makes the set unknown.
+                values
+                    .into_iter()
+                    .collect::<Option<Vec<Vec<String>>>>()?
+                    .concat()
+            }
             _ => return None,
         };
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The string values of a constant object's properties (`key` only, when
+    /// given); `None` per value that is not a known string.
+    fn object_values(
+        &self,
+        obj: &Expression<'a>,
+        key: Option<&str>,
+        depth: u8,
+    ) -> Option<Vec<Option<Vec<String>>>> {
+        let Expression::Identifier(id) = obj.without_parentheses() else {
+            return None;
+        };
+        let init = *self.consts.get(id.name.as_str())?;
+        let Expression::ObjectExpression(o) = strip_ts(init).without_parentheses() else {
+            return None;
+        };
+        let mut out = Vec::new();
+        for p in &o.properties {
+            let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = p else {
+                // A spread: values unknown.
+                out.push(None);
+                continue;
+            };
+            if let Some(k) = key
+                && p.key.static_name().as_deref() != Some(k)
+            {
+                continue;
+            }
+            out.push(self.string_options(&p.value, depth + 1));
+        }
         (!out.is_empty()).then_some(out)
     }
 
