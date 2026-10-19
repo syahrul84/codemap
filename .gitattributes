@@ -1,0 +1,4 @@
+# Fixtures and snapshots are compared byte for byte: keep LF on every system.
+* text=auto eol=lf
+*.png binary
+*.ico binary

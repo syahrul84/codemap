@@ -1368,6 +1368,7 @@ fn cmd_serve(cli: &Cli, project: &Path) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
     // Once a day, in the background: is there a newer release?
     if let Ok(data_dir) = paths::resolve_data_dir(cli.data_dir.clone()) {
+        update::clean_old_copy();
         update::check_in_background(data_dir);
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

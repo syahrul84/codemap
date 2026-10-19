@@ -1,4 +1,4 @@
-# Builds codemap for macOS and Linux and publishes a GitHub release when a
+# Builds codemap for macOS, Linux and Windows and publishes a GitHub release when a
 # version tag (v0.1.0, …) is pushed. The tag must match the workspace version
 # in Cargo.toml.
 name: release
@@ -19,7 +19,14 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml version
@@ -29,6 +36,7 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $version"; exit 1; }
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - run: cargo fmt --all -- --check
+        if: runner.os == 'Linux'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
@@ -42,20 +50,36 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
           - { target: aarch64-apple-darwin, os: macos-14 }
           - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022 }
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target ${{ matrix.target }}
       - run: cargo build --release --locked -p codemap-cli --target ${{ matrix.target }}
       - name: Package
         run: |
-          bin=target/${{ matrix.target }}/release/codemap
-          "$bin" --version || true   # cross-built x86_64 macOS runs under Rosetta when installed
-          tar czf codemap-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release codemap
+          dir=target/${{ matrix.target }}/release
+          if [ "$RUNNER_OS" = Windows ]; then
+            "$dir/codemap.exe" --version
+            # A smoke test of the Windows program on a real project.
+            "$dir/codemap.exe" --data-dir "$RUNNER_TEMP/cm" scan --project fixtures/laravel11-slim
+            "$dir/codemap.exe" --data-dir "$RUNNER_TEMP/cm" query --project fixtures/laravel11-slim search_symbol '{"query":"Order"}'
+            (cd "$dir" && 7z a -tzip "$GITHUB_WORKSPACE/codemap-${{ matrix.target }}.zip" codemap.exe)
+            # `codemap update` unpacks it with Windows' own tar.exe: check it can.
+            mkdir -p "$RUNNER_TEMP/unzip"
+            /c/Windows/System32/tar.exe -xf "codemap-${{ matrix.target }}.zip" -C "$RUNNER_TEMP/unzip"
+            "$RUNNER_TEMP/unzip/codemap.exe" --version
+          else
+            "$dir/codemap" --version || true   # cross-built x86_64 macOS runs under Rosetta when installed
+            tar czf codemap-${{ matrix.target }}.tar.gz -C "$dir" codemap
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: codemap-${{ matrix.target }}
-          path: codemap-${{ matrix.target }}.tar.gz
+          path: codemap-${{ matrix.target }}.*
 
   release:
     needs: build
@@ -69,7 +93,7 @@ jobs:
           merge-multiple: true
       - name: Checksums and notes
         run: |
-          cd dist && sha256sum codemap-*.tar.gz > SHA256SUMS && cd ..
+          cd dist && sha256sum codemap-*.tar.gz codemap-*.zip > SHA256SUMS && cd ..
           # The section of CHANGELOG.md for this version.
           awk -v v="${GITHUB_REF_NAME#v}" '
             /^## / { on = index($0, "[" v "]") > 0; next }

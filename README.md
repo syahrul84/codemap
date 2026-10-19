@@ -60,11 +60,11 @@ codemap is one program with no dependencies. Pick one way to get it:
 | **Cargo** | Rust 1.99+ and a C compiler | building from source |
 | **Docker** | Docker | keeping the program away from your machine; the project is mounted read-only |
 
-On **Windows**, use WSL or Docker Desktop: see [Windows](#windows).
+On **Windows**, download the Windows program (or use WSL or Docker Desktop): see [Windows](#windows).
 
 ### Download
 
-Ready-made programs for macOS (Apple Silicon and Intel) and Linux (x86-64 and ARM64) are on the [Releases](https://github.com/syahrul84/codemap/releases) page. To install the latest one:
+Ready-made programs for macOS (Apple Silicon and Intel), Linux (x86-64 and ARM64) and Windows (x86-64) are on the [Releases](https://github.com/syahrul84/codemap/releases) page. To install the latest one:
 
 ```bash
 curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-aarch64-apple-darwin.tar.gz | tar xz
@@ -81,9 +81,29 @@ If macOS refuses to open a file downloaded with a browser, remove the download f
 
 ### Windows
 
-There is no Windows program yet. codemap runs on Windows through WSL (Windows' built-in Linux) or Docker Desktop.
+**The Windows program (recommended)**
 
-**WSL (recommended)**
+In PowerShell (Windows 10 and later have `curl.exe` and `tar`):
+
+```powershell
+curl.exe -fsSLO https://github.com/syahrul84/codemap/releases/latest/download/codemap-x86_64-pc-windows-msvc.zip
+tar -xf codemap-x86_64-pc-windows-msvc.zip
+New-Item -ItemType Directory -Force "$HOME\bin" | Out-Null
+Move-Item -Force codemap.exe "$HOME\bin\"
+[Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path', 'User'));$HOME\bin", "User")
+```
+
+Open a new terminal, then check it with `codemap --version`, and in your project folder connect it to Claude Code:
+
+```powershell
+claude mcp add codemap -- codemap serve --project "$PWD"
+```
+
+`codemap update` works the same as on macOS and Linux. Windows cannot overwrite a running program, so the old one is moved aside as `codemap.old.exe` and removed the next time codemap starts. Git for Windows is needed for the git-based features (changed files, release check), as on other systems.
+
+You can also run codemap through WSL or Docker Desktop:
+
+**WSL**
 
 1. Install WSL once, in PowerShell as administrator, then restart:
    ```powershell
@@ -124,7 +144,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.5 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.6 codemap-cli
 ```
 
 ### Docker

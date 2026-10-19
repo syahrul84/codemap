@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.6] - 2026-10-19
+
+- A Windows program: `codemap-x86_64-pc-windows-msvc.zip` on each release, built and tested on Windows (the whole test suite, plus indexing a project with the built program). WSL and Docker Desktop still work.
+- `codemap update` works on Windows: it downloads the zip with `curl.exe`, unpacks it with Windows' own `tar.exe`, and moves the running `codemap.exe` aside (Windows cannot overwrite a running program); the old copy is removed the next time codemap starts.
+
 ## [0.1.5] - 2026-10-18
 
 Fixes for issues #16–#29:
