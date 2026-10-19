@@ -1,5 +1,17 @@
 # codemap — project index MCP server for Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust
 
+## Why use codemap
+
+1. **It catches the AI's wrong guesses before they ship.** Columns, methods, endpoints and fields that don't exist come back from `verify` as `not_found`, with the closest real name. These bugs look correct in review and only fail in production.
+2. **It knows what a change will break.** Before something is renamed or removed, `find_usages` lists every place it's used, with `file:line`. After a change, it names the tests that cover it and gives the exact commands to run only those, not the whole suite.
+3. **It checks the frontend against the backend.** `api_usage` matches every API call in Vue, Nuxt or Next.js code to the Laravel route that serves it, and flags calls to routes that don't exist, the wrong method, and fields the frontend reads that the backend never returns. Grep can't find these.
+4. **The AI works faster and cheaper.** It asks for one class, one component or one table instead of reading whole files. Most answers take well under a second and are a few kilobytes, so sessions use fewer tokens.
+5. **It catches problems before a release.** `verify` with `release_check: true` gives one list: missing endpoints, fields not returned, missing translations, unused code added on the branch, migrations not yet run, new environment variables, and what the server needs (migrate, cache clear, restart).
+
+The same tools work across Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust. Nothing leaves your machine: your code is never sent anywhere, and the index stays local.
+
+## What it reads
+
 `codemap` reads a Laravel, Vue 2, Vue 3, Nuxt (2/3/4), Next.js, Swift (iOS / macOS), Android (Kotlin / Java) or Rust project and serves facts about it to Claude over MCP, so Claude checks what exists instead of guessing:
 
 - **PHP symbols:** classes, interfaces, traits, enums, methods, functions, properties, constants, enum cases. Names are fully resolved, with signatures and doc summaries.
