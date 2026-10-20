@@ -78,10 +78,14 @@ struct Paths {
 fn paths(scope: Scope) -> anyhow::Result<Paths> {
     Ok(match scope {
         Scope::User => {
-            let home = dirs::home_dir().context("no home folder")?;
+            // Claude Code's own setting for its folder, else `~/.claude`.
+            let dir = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+                Some(d) => PathBuf::from(d),
+                None => dirs::home_dir().context("no home folder")?.join(".claude"),
+            };
             Paths {
-                rules: home.join(".claude").join("CLAUDE.md"),
-                settings: home.join(".claude").join("settings.json"),
+                rules: dir.join("CLAUDE.md"),
+                settings: dir.join("settings.json"),
             }
         }
         Scope::Project => Paths {

@@ -205,7 +205,7 @@ It does three things for Claude Code:
 
 Without the hook, AI apps often keep using grep even with codemap connected. `codemap usage` shows how many searches the hook refused or allowed.
 
-`--scope project` writes into this folder instead (`CLAUDE.md`, `.claude/settings.json`). `codemap setup --check` shows what is installed; `codemap setup --remove` undoes it. In `.codemap.toml`, `[agent] search_window_minutes = 30` and `allow_search = ["docs/", "*.md"]` change the window and add searches that are always allowed.
+`--scope project` writes into this folder instead (`CLAUDE.md`, `.claude/settings.json`). With `CLAUDE_CONFIG_DIR` set, the user scope writes there, as Claude Code does. `codemap setup --check` shows what is installed; `codemap setup --remove` undoes it. In `.codemap.toml`, `[agent] search_window_minutes = 30` and `allow_search = ["docs/", "*.md"]` change the window and add searches that are always allowed.
 
 To register it by hand instead:
 

@@ -436,8 +436,7 @@ fn setup_installs_and_removes() {
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_codemap"))
             .args(args)
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
+            .env("CLAUDE_CONFIG_DIR", &claude_dir)
             // No `claude` command: the MCP server step only prints what to run.
             .env("PATH", "")
             .output()
