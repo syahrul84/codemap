@@ -371,3 +371,115 @@ fn migrations_not_yet_applied_are_listed_per_database() {
     assert_eq!(staging["status"], "unreachable");
     assert_eq!(staging["database"], "postgres 127.0.0.1:1/none");
 }
+
+/// #34: the search hook refuses a code search until a codemap tool has run in
+/// the session, then lets it through; it never fails on bad input.
+#[test]
+fn search_hook_refuses_until_codemap_was_used() {
+    use std::io::Write as _;
+    let data = tempfile::tempdir().unwrap();
+    let run = |action: &str, input: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(["--data-dir", data.path().to_str().unwrap(), "hook", action])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "hook {action} must exit 0");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let grep = r#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"grep -rn Order app/"},"cwd":"/nowhere"}"#;
+    let refused = run("check", grep);
+    assert!(
+        refused.contains("\"permissionDecision\":\"deny\""),
+        "{refused}"
+    );
+    // Not a code search: allowed without codemap.
+    assert_eq!(
+        run(
+            "check",
+            r#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"git log | grep fix"}}"#
+        ),
+        ""
+    );
+    // After a codemap call in this session the search goes through; other sessions still wait.
+    assert_eq!(
+        run(
+            "used",
+            r#"{"session_id":"s1","tool_name":"mcp__codemap__search_symbol"}"#
+        ),
+        ""
+    );
+    assert_eq!(run("check", grep), "");
+    assert!(run("check", &grep.replace("s1", "s2")).contains("deny"));
+    // Bad input fails open.
+    assert_eq!(run("check", "not json"), "");
+    assert_eq!(run("check", ""), "");
+}
+
+/// #34: `codemap setup` writes the rule block and hook pair, `--check` sees
+/// them, `--remove` takes them out and leaves the rest of the files alone.
+#[test]
+fn setup_installs_and_removes() {
+    let home = tempfile::tempdir().unwrap();
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("CLAUDE.md"), "# Mine\n").unwrap();
+    std::fs::write(claude_dir.join("settings.json"), r#"{"model":"x"}"#).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            // No `claude` command: the MCP server step only prints what to run.
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    run(&["setup"]);
+    let rules = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(
+        rules.starts_with("# Mine") && rules.contains("<!-- codemap:begin -->"),
+        "{rules}"
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["model"], "x");
+    assert!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with(" hook check")
+    );
+    let check = run(&["setup", "--check"]);
+    assert!(
+        check.contains("yes rule block") && check.contains("yes search hook"),
+        "{check}"
+    );
+    run(&["setup"]);
+    let rules = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert_eq!(rules.matches("<!-- codemap:begin -->").count(), 1);
+    run(&["setup", "--remove"]);
+    assert_eq!(
+        std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap(),
+        "# Mine\n"
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings, serde_json::json!({"model": "x"}));
+}

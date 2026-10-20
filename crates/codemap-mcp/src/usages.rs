@@ -948,8 +948,6 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
     })
 }
 
-/// A database table this project reads or writes through a query builder
-/// (or an `rpc` function), not otherwise a class or symbol.
 /// `orders.collected_at` when the schema has that column.
 fn db_column(store: &Store, target: &str, kind: &str) -> R<Option<(String, String)>> {
     if !(kind.is_empty() || kind == "column") || target.contains(['/', '\\', ' ', ':']) {
@@ -1073,6 +1071,8 @@ fn column_usages(
     Ok(())
 }
 
+/// A database table this project reads or writes through a query builder
+/// (or an `rpc` function), not otherwise a class or symbol.
 fn is_db_table(store: &Store, target: &str) -> R<bool> {
     if target.contains(['/', '\\', ' ', ':', '.']) {
         return Ok(false);

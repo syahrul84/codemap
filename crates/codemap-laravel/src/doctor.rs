@@ -190,6 +190,12 @@ pub fn build(store: &Store, root: &Path, config: &Config, project: &str) -> Resu
 }
 
 pub fn render_text(r: &DoctorReport) -> String {
+    render_text_with(r, false)
+}
+
+/// `all`: every warning, also the ones repeated in many files (by default
+/// those are one line with a count, so the rare ones stay visible).
+pub fn render_text_with(r: &DoctorReport, all: bool) -> String {
     let mut s = String::new();
     let yes_no = |b: bool| if b { "yes" } else { "no" };
     let _ = writeln!(s, "project      {}", r.project);
@@ -357,11 +363,36 @@ pub fn render_text(r: &DoctorReport) -> String {
             .or_default()
             .push(w.line);
     }
+    // The same message in many files (`raw SQL is built dynamically` in 40
+    // settled migrations) is one line with a count.
+    const MANY: usize = 3;
+    let mut places: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (adapter, _, message) in grouped.keys() {
+        *places.entry((adapter, message)).or_default() += 1;
+    }
+    let repeated = |adapter: &str, message: &str| !all && places[&(adapter, message)] >= MANY;
+    // Parse failures first: they hide symbols, so they matter most.
+    let mut entries: Vec<_> = grouped.iter().collect();
+    entries.sort_by_key(|((adapter, _, message), _)| {
+        (!message.starts_with("could not parse"), *adapter)
+    });
     let mut current = "";
-    for ((adapter, path, message), lines) in &grouped {
+    let mut collapsed: Vec<(&str, &str)> = Vec::new();
+    for ((adapter, path, message), lines) in entries {
         if *adapter != current {
             let _ = writeln!(s, "  [{adapter}]");
             current = adapter;
+        }
+        if repeated(adapter, message) {
+            if !collapsed.contains(&(adapter, message)) {
+                collapsed.push((adapter, message));
+                let _ = writeln!(
+                    s,
+                    "  {message} (in {} files; `codemap doctor --all-warnings` lists them)",
+                    places[&(*adapter, *message)]
+                );
+            }
+            continue;
         }
         let lines: Vec<String> = lines.iter().flatten().map(u32::to_string).collect();
         let at = match lines.len() {

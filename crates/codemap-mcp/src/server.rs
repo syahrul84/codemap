@@ -24,7 +24,9 @@ use crate::verify::VerifyParams;
 /// How long a call waits for re-indexing before answering from the old index.
 pub const REFRESH_BUDGET: Duration = Duration::from_secs(1);
 
-pub const INSTRUCTIONS: &str = "Facts about this project's code, routes, models and database \
+pub const INSTRUCTIONS: &str = "Use these tools instead of grep, find or reading whole files \
+for any question about this project's code; load them first if your client defers them. \
+Facts about this project's code, routes, models and database \
 schema, read from the source. Call project_overview at the start of a task. Call search_symbol \
 before creating any class, method or helper and reuse what exists. Call get_schema before writing \
 queries, migrations or model code; never assume column names. Prefer get_symbol over reading whole \

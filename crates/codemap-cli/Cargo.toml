@@ -12,6 +12,7 @@ name = "codemap"
 path = "src/main.rs"
 
 [dependencies]
+dirs.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 codemap-core.workspace = true

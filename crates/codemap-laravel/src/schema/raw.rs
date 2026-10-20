@@ -155,6 +155,28 @@ fn apply_one(schema: &mut Schema, stmt: &str, at: &str, conditional: bool) -> bo
         }
         return true;
     }
+    // Statements that change no table or column: indexes renamed or dropped,
+    // sequences, comments, grants, extensions, settings.
+    const NO_COLUMNS: &[&str] = &[
+        "ALTER INDEX",
+        "DROP INDEX",
+        "REINDEX",
+        "CREATE SEQUENCE",
+        "ALTER SEQUENCE",
+        "DROP SEQUENCE",
+        "COMMENT ON",
+        "GRANT",
+        "REVOKE",
+        "CREATE EXTENSION",
+        "DROP EXTENSION",
+        "ANALYZE",
+        "VACUUM",
+        "SET ",
+        "CLUSTER",
+    ];
+    if NO_COLUMNS.iter().any(|p| upper.starts_with(p)) {
+        return true;
+    }
     if !upper.starts_with("ALTER TABLE") {
         return false;
     }
@@ -330,5 +352,21 @@ mod tests {
         assert!(apply(&mut s, "CREATE TABLE IF NOT EXISTS tags (id bigserial PRIMARY KEY, name varchar(50) NOT NULL); DROP TABLE IF EXISTS outlets", "m.php:9", false).is_empty());
         assert_eq!(names(&s, "tags"), ["id", "name"]);
         assert!(s.tables.iter().any(|t| t.name == "outlets" && t.dropped));
+    }
+}
+
+#[cfg(test)]
+mod no_column_tests {
+    /// #33: an index rename changes no column: not a schema warning.
+    #[test]
+    fn index_rename_is_understood() {
+        let mut schema = super::super::Schema::default();
+        let left = super::apply(
+            &mut schema,
+            "ALTER INDEX old_name_pkey RENAME TO new_name_pkey",
+            "m.php:3",
+            false,
+        );
+        assert!(left.is_empty(), "{left:?}");
     }
 }

@@ -151,21 +151,9 @@ fn unresolved_cases_are_recorded_not_guessed() {
     assert_eq!(in_loop.len(), 1);
     assert!(in_loop[0].uri.contains("letters"));
 
-    let dynamic = all
-        .iter()
-        .find(|r| {
-            r.unresolved_reason
-                .as_deref()
-                .is_some_and(|x| x.contains("URI is not a literal"))
-        })
-        .unwrap();
-    assert!(
-        dynamic
-            .unresolved_reason
-            .as_deref()
-            .unwrap()
-            .contains("variable $uri")
-    );
+    // `$uri = '/dynamic'; Route::get($uri, …)`: the variable is followed.
+    let dynamic = one(&all, "dynamic");
+    assert_eq!(dynamic.unresolved_reason, None);
 
     let macro_route = one(&all, "macro");
     assert!(

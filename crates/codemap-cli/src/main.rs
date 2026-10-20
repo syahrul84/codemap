@@ -9,6 +9,7 @@ use codemap_core::{Config, ScanOptions, Store, paths};
 use codemap_mcp::RefreshReport;
 use serde::Serialize;
 
+mod setup;
 mod update;
 
 #[derive(Debug, Parser)]
@@ -203,6 +204,30 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// List every warning (by default, one repeated in many files is one line).
+        #[arg(long)]
+        all_warnings: bool,
+    },
+    /// Make codemap the AI app's first stop for code questions (Claude Code):
+    /// registers the MCP server, writes a rule block into CLAUDE.md and adds a
+    /// hook that refuses code searches until a codemap tool has run.
+    Setup {
+        /// `user` (every project, the default) or `project` (this folder).
+        #[arg(long, default_value = "user")]
+        scope: String,
+        /// Only report what is installed.
+        #[arg(long)]
+        check: bool,
+        /// Undo it: rule block, hook and MCP server entry.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Called by the hooks `codemap setup` installs (`check` before a search,
+    /// `used` after a codemap tool); reads the tool call as JSON on stdin.
+    #[command(hide = true)]
+    Hook {
+        /// `check` or `used`.
+        action: String,
     },
 }
 
@@ -257,7 +282,28 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             tool,
             args,
         } => cmd_query(&cli, project, tool, args.as_deref()),
-        Command::Doctor { project, json } => cmd_doctor(&cli, project, *json),
+        Command::Doctor {
+            project,
+            json,
+            all_warnings,
+        } => cmd_doctor(&cli, project, *json, *all_warnings),
+        Command::Setup {
+            scope,
+            check,
+            remove,
+        } => {
+            let scope = match scope.as_str() {
+                "user" => setup::Scope::User,
+                "project" => setup::Scope::Project,
+                other => anyhow::bail!("--scope is `user` or `project`, not `{other}`"),
+            };
+            setup::run(scope, *check, *remove)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Hook { action } => {
+            setup::hook(action, paths::resolve_data_dir(cli.data_dir.clone()).ok());
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Map { project, out } => cmd_map(&cli, project, out),
         Command::Reports {
             project,
@@ -339,12 +385,17 @@ fn cmd_usage(
         .zip(&aliases)
         .map(|(p, also)| codemap_mcp::usage::summary_with(p, also, days, &mcp))
         .collect();
+    // The search hook from `codemap setup` (all projects of this machine).
+    let hook = setup::counts(&data_dir, &codemap_core::time::days_ago_rfc3339(days));
     if json {
-        let out = if all.len() == 1 {
+        let mut out = if all.len() == 1 {
             all[0].clone()
         } else {
             serde_json::json!({ "apps": all })
         };
+        if hook.as_object().is_some_and(|h| !h.is_empty()) {
+            out["search_hook"] = hook;
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(ExitCode::SUCCESS);
     }
@@ -378,6 +429,15 @@ fn cmd_usage(
     for (p, u) in projects.iter().zip(&all) {
         header(&projects, p);
         print_usage(u);
+    }
+    if hook.as_object().is_some_and(|h| !h.is_empty()) {
+        let n = |k: &str| hook[k].as_u64().unwrap_or(0);
+        println!(
+            "\nsearch hook (codemap setup, all projects): {} code searches refused, {} allowed after a codemap call; {} codemap tool calls",
+            n("search_refused"),
+            n("search_allowed"),
+            n("codemap_call")
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1381,7 +1441,12 @@ fn cmd_serve(cli: &Cli, project: &Path) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_doctor(cli: &Cli, project: &Path, json: bool) -> anyhow::Result<ExitCode> {
+fn cmd_doctor(
+    cli: &Cli,
+    project: &Path,
+    json: bool,
+    all_warnings: bool,
+) -> anyhow::Result<ExitCode> {
     let projects = Project::resolve(cli, project)?;
     if let Ok(data_dir) = paths::resolve_data_dir(cli.data_dir.clone()) {
         update::check_if_due(&data_dir, 5);
@@ -1400,12 +1465,12 @@ fn cmd_doctor(cli: &Cli, project: &Path, json: bool) -> anyhow::Result<ExitCode>
         if !json {
             header(&projects, p);
         }
-        doctor_one(p, json)?;
+        doctor_one(p, json, all_warnings)?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn doctor_one(p: &Project, json: bool) -> anyhow::Result<ExitCode> {
+fn doctor_one(p: &Project, json: bool, all_warnings: bool) -> anyhow::Result<ExitCode> {
     let (store, _) = p.refresh(false)?;
     let report = codemap_laravel::doctor::build(&store, &p.root, &p.config, &p.name(&store))?;
     let vue = codemap_vue::doctor::build(&store)?;
@@ -1415,7 +1480,10 @@ fn doctor_one(p: &Project, json: bool) -> anyhow::Result<ExitCode> {
         v["i18n"] = codemap_mcp::i18n::health_json(store.conn(), &p.config.i18n.locales)?;
         println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
-        print!("{}", codemap_laravel::doctor::render_text(&report));
+        print!(
+            "{}",
+            codemap_laravel::doctor::render_text_with(&report, all_warnings)
+        );
         if let Some(vue) = &vue {
             print!("{}", codemap_vue::doctor::render_text(vue));
             print!("{}", codemap_mcp::api::doctor_text(&store, &p.mcp())?);

@@ -15,7 +15,7 @@ use crate::detect::{Detection, Layout, detect};
 use crate::routes::{self, artisan, sources};
 
 /// Bump when route extraction output changes; routes are then rebuilt.
-pub const ROUTES_EXTRACTOR_VERSION: i64 = 4;
+pub const ROUTES_EXTRACTOR_VERSION: i64 = 5;
 
 /// Bump when model / schema / Form Request extraction output changes.
 pub const DATA_EXTRACTOR_VERSION: i64 = 10;

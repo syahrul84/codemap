@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.7] - 2026-10-20
+
+- `codemap setup` makes codemap the AI app's first stop for questions about code (Claude Code): it registers the MCP server, writes a rule block into `CLAUDE.md` between markers, and adds a hook pair that refuses grep / rg / find code searches until a codemap tool has run in the session (logs, git history, other machines, dependencies and build output are never refused). `--check` reports what is installed, `--remove` undoes it, `--scope project` writes into the folder. The hooks are `codemap hook check|used` and fail open. `[agent] search_window_minutes` and `allow_search` in `.codemap.toml`; `codemap usage` counts refused and allowed searches. The server instructions now open by saying to prefer these tools over grep (#34).
+- PHP: a cast in front of `match` (`(int) match ($x) { … }`) no longer stops parsing (#30).
+- Routes defined in a closure held in a variable (`$shared = function () { … }; Route::prefix('{lang}')->group($shared);`) are found; variables in route files are followed (#35).
+- Migrations: `Schema::hasTable` / `hasColumn` guards are evaluated against the tables replayed so far, and an early `return` stops the rest of `up()`, so two guarded migrations no longer report "created twice" (#32).
+- `doctor`: a warning repeated in many files is one line with a count (`--all-warnings` lists them), parse failures come first, and `ALTER INDEX … RENAME`, `DROP INDEX`, sequences, comments and grants are not schema warnings (#33).
+- A linked backend counts only the calls no better-matching backend explains, so a CMS linked next to the API no longer shows "42 of 140 calls match"; one the app never calls says so (#31).
+
 ## [0.1.6] - 2026-10-19
 
 - A Windows program: `codemap-x86_64-pc-windows-msvc.zip` on each release, built and tested on Windows (the whole test suite, plus indexing a project with the built program). WSL and Docker Desktop still work.

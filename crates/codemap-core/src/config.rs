@@ -34,6 +34,20 @@ pub struct Config {
     pub rules: Vec<RuleConfig>,
     /// Wrong-answer reports.
     pub report: ReportConfig,
+    /// The search hook installed by `codemap setup`.
+    pub agent: AgentConfig,
+}
+
+/// `[agent]`: how the search hook from `codemap setup` treats code searches.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// A code search is allowed this long after a codemap tool ran (default 30).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_window_minutes: Option<u64>,
+    /// Searches always allowed: path parts or globs (`logs/`, `*.md`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_search: Vec<String>,
 }
 
 /// `[report] send = "ask" | "never"`: whether a wrong-answer report may be
@@ -307,6 +321,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("rules", &["files", "note", "when", "level", "app"]),
     ("report", &["send"]),
+    ("agent", &["search_window_minutes", "allow_search"]),
 ];
 
 impl Config {

@@ -156,7 +156,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.6 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.7 codemap-cli
 ```
 
 ### Docker
@@ -190,6 +190,24 @@ codemap map --out codemap.html   # the code map page; open it in a browser
 The index lives outside the project (`~/Library/Caches/codemap` on macOS, `~/.cache/codemap` on Linux; `--data-dir` or `CODEMAP_DATA_DIR` to change it). codemap only reads the project: it never writes to it and never runs its code (unless you turn on artisan mode).
 
 ## Use it from Claude Code
+
+The quickest way, for every project:
+
+```bash
+codemap setup
+```
+
+It does three things for Claude Code:
+
+1. Registers the MCP server for every project (`claude mcp add --scope user codemap -- codemap serve --project .`).
+2. Writes a short rule block into `~/.claude/CLAUDE.md`, between `<!-- codemap:begin -->` and `<!-- codemap:end -->`, saying to ask codemap before grep or reading files.
+3. Adds a hook pair to `~/.claude/settings.json`: a code search (grep, rg, find, the Grep and Glob tools) is refused until a codemap tool has run in the session in the last 30 minutes. The refusal tells the AI which codemap tool to use. Searches codemap does not answer go through: logs, git history, `ssh`, `docker`, dependencies, build output and temp folders. The hooks are `codemap hook check` / `codemap hook used`; any error lets the search through.
+
+Without the hook, AI apps often keep using grep even with codemap connected. `codemap usage` shows how many searches the hook refused or allowed.
+
+`--scope project` writes into this folder instead (`CLAUDE.md`, `.claude/settings.json`). `codemap setup --check` shows what is installed; `codemap setup --remove` undoes it. In `.codemap.toml`, `[agent] search_window_minutes = 30` and `allow_search = ["docs/", "*.md"]` change the window and add searches that are always allowed.
+
+To register it by hand instead:
 
 Register it for a project (run inside that project's folder):
 

@@ -213,6 +213,8 @@ struct MigrationCtx<'a, 'c> {
     /// Body of the migration class, for `$this->helper()` methods.
     class_body: Option<Node<'a>>,
     depth: std::cell::Cell<u8>,
+    /// A `return` on a path that runs was reached: the rest of `up()` does not run.
+    returned: std::cell::Cell<bool>,
 }
 
 impl MigrationCtx<'_, '_> {
@@ -545,6 +547,7 @@ fn replay_migration(
         members,
         class_body,
         depth: std::cell::Cell::new(0),
+        returned: std::cell::Cell::new(false),
     };
     statements(schema, &m, body, false);
 }
@@ -604,7 +607,16 @@ fn find_method<'t>(node: Node<'t>, src: &[u8], name: &str) -> Option<Node<'t>> {
 
 fn statements(schema: &mut Schema, m: &MigrationCtx<'_, '_>, node: Node<'_>, conditional: bool) {
     for s in named_children(node) {
+        if m.returned.get() {
+            return;
+        }
         match s.kind() {
+            // `if (Schema::hasTable('items')) { return; }` with the table there:
+            // nothing after it runs.
+            "return_statement" if !conditional => {
+                m.returned.set(true);
+                return;
+            }
             "expression_statement" => {
                 if let Some(e) = named_children(s).into_iter().next() {
                     m.track_assignment(e);
@@ -634,8 +646,8 @@ fn statements(schema: &mut Schema, m: &MigrationCtx<'_, '_>, node: Node<'_>, con
 /// known. Returns false (caller treats every branch as conditional) otherwise.
 fn if_known(schema: &mut Schema, m: &MigrationCtx<'_, '_>, s: Node<'_>, conditional: bool) -> bool {
     let truth = |node: Node<'_>| -> Option<bool> {
-        node.child_by_field_name("condition")
-            .and_then(|c| literal::truthy(&m.eval(c).0))
+        let c = node.child_by_field_name("condition")?;
+        schema_truth(schema, m, c).or_else(|| literal::truthy(&m.eval(c).0))
     };
     let mut branch = Some(s);
     let mut alternatives = {
@@ -672,6 +684,46 @@ fn if_known(schema: &mut Schema, m: &MigrationCtx<'_, '_>, s: Node<'_>, conditio
         }
     }
     true
+}
+
+/// `Schema::hasTable('items')`, `! Schema::hasColumn('items', 'data')`:
+/// known from the migrations replayed so far.
+fn schema_truth(schema: &Schema, m: &MigrationCtx<'_, '_>, c: Node<'_>) -> Option<bool> {
+    match c.kind() {
+        "parenthesized_expression" => {
+            schema_truth(schema, m, named_children(c).into_iter().next()?)
+        }
+        "unary_op_expression" if text(c, m.src).trim_start().starts_with('!') => Some(
+            !schema_truth(schema, m, named_children(c).into_iter().last()?)?,
+        ),
+        "scoped_call_expression" => {
+            let class = c.child_by_field_name("scope").map(|n| text(n, m.src))?;
+            if !class.trim_start_matches('\\').ends_with("Schema") {
+                return None;
+            }
+            let method = c.child_by_field_name("name").map(|n| text(n, m.src))?;
+            let args: Vec<String> = c
+                .child_by_field_name("arguments")
+                .map(|a| {
+                    named_children(a)
+                        .into_iter()
+                        .filter_map(|arg| named_children(arg).into_iter().last())
+                        .filter_map(|v| m.eval(v).0.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let table = |name: &str| schema.tables.iter().find(|t| t.name == name && !t.dropped);
+            match method {
+                "hasTable" => Some(table(args.first()?).is_some()),
+                "hasColumn" => {
+                    let t = table(args.first()?)?;
+                    Some(t.columns.iter().any(|col| Some(&col.name) == args.get(1)))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Expands a `foreach` over a statically known array. Returns false (so the

@@ -307,7 +307,8 @@ fn conditional_raw_rename_drop_and_unknown() {
         names,
         ["id", "name", "holder_id", "widget_id", "flag", "odd"]
     );
-    assert_eq!(col(&items, "flag").confidence, schema::Confidence::Low);
+    // `if (! Schema::hasColumn('things', 'flag'))` is known from the replay: added.
+    assert_eq!(col(&items, "flag").confidence, schema::Confidence::High);
     assert_eq!(col(&items, "odd").r#type, "unknown(weirdColumn)");
     // foreignIdFor of an unknown model: inferred table, low confidence.
     let widget = col(&items, "widget_id");

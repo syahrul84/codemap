@@ -1257,6 +1257,11 @@ impl<'r> Evaluator<'r> {
                 .map_or_else(|_| Val::Dynamic("integer".into()), Val::Int),
             "boolean" => Val::Bool(raw.eq_ignore_ascii_case("true")),
             "null" => Val::Null,
+            // `$shared = function () { … }; Route::group([], $shared);`
+            "variable_name" => match assigned_before(n, f.src) {
+                Some(v) => self.eval(v, f),
+                None => Val::Dynamic(format!("variable {raw}")),
+            },
             "name" => match raw {
                 "__DIR__" => Val::Str(f.dir.to_string_lossy().into_owned()),
                 "__FILE__" => Val::Str(self.root.join(&f.rel).to_string_lossy().into_owned()),
@@ -1357,7 +1362,6 @@ impl<'r> Evaluator<'r> {
                     Val::Dynamic(format!("property {raw}"))
                 }
             }
-            "variable_name" => Val::Dynamic(format!("variable {raw}")),
             other => Val::Dynamic(other.replace('_', " ")),
         }
     }
@@ -1507,6 +1511,47 @@ fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// The value last assigned to a variable before `var`, in the same function
+/// or file: `function () { … }` for `$shared` after `$shared = function () { … };`.
+fn assigned_before<'t>(var: Node<'t>, src: &[u8]) -> Option<Node<'t>> {
+    let name = text(var, src);
+    let mut scope = var.parent();
+    while let Some(p) = scope {
+        if matches!(
+            p.kind(),
+            "method_declaration" | "function_definition" | "anonymous_function" | "program"
+        ) {
+            break;
+        }
+        scope = p.parent();
+    }
+    let scope = scope?;
+    let mut best: Option<Node<'t>> = None;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.start_byte() >= var.start_byte() {
+            continue;
+        }
+        // Not into other functions: their variables are their own.
+        if n != scope && matches!(n.kind(), "method_declaration" | "function_definition") {
+            continue;
+        }
+        if n.kind() == "assignment_expression"
+            && let (Some(l), Some(r)) = (
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            )
+            && text(l, src) == name
+            && r.end_byte() <= var.start_byte()
+            && best.is_none_or(|b| n.start_byte() > b.start_byte())
+        {
+            best = Some(r);
+        }
+        stack.extend(named_children(n));
+    }
+    best
 }
 
 #[cfg(test)]

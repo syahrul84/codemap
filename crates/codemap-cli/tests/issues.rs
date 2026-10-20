@@ -716,3 +716,113 @@ fn issue_29_find_usages_of_a_column() {
         "{v}"
     );
 }
+
+/// #35: routes in a closure held in a variable and passed to `->group($shared)`.
+const ISSUE_35: &[(&str, &str)] = &[
+    (
+        "composer.json",
+        r#"{"require":{"laravel/framework":"^13.0"},"autoload":{"psr-4":{"App\\":"app/"}}}"#,
+    ),
+    (
+        "bootstrap/app.php",
+        r#"<?php
+use Illuminate\Foundation\Application;
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->create();
+"#,
+    ),
+    (
+        "routes/web.php",
+        r#"<?php
+use Illuminate\Support\Facades\Route;
+
+$shared = function (): void {
+    Route::get('/widgets/{id}', fn () => 'ok')->name('widgets.show');
+};
+
+Route::prefix('{lang}')->group($shared);
+Route::group([], $shared);
+"#,
+    ),
+];
+
+#[test]
+fn issue_35_routes_in_a_closure_variable() {
+    let v = call(
+        ISSUE_35,
+        "verify",
+        json!({"claims": {"routes": ["widgets.show"]}}),
+    );
+    assert_eq!(v["results"][0]["status"], "exists", "{v}");
+    let r = call(ISSUE_35, "list_routes", json!({}));
+    let text = r.to_string();
+    assert!(
+        text.contains("{lang}/widgets/{id}") && text.contains("\"widgets/{id}"),
+        "{r}"
+    );
+}
+
+/// #32: two migrations guarded by `Schema::hasTable`: one creates the table.
+const ISSUE_32: &[(&str, &str)] = &[
+    (
+        "composer.json",
+        r#"{"require":{"laravel/framework":"^11.0"},"autoload":{"psr-4":{"App\\":"app/"}}}"#,
+    ),
+    (
+        "database/migrations/2025_11_28_000000_update_items_table.php",
+        r#"<?php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        if (! Schema::hasTable('items')) {
+            Schema::create('items', function (Blueprint $t) { $t->id(); $t->json('data'); });
+            return;
+        }
+        Schema::table('items', function (Blueprint $t) { $t->json('data')->nullable(); });
+    }
+};
+"#,
+    ),
+    (
+        "database/migrations/2025_12_01_000000_create_items_table.php",
+        r#"<?php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        if (Schema::hasTable('items')) {
+            return;
+        }
+        Schema::create('items', function (Blueprint $t) { $t->id(); $t->json('data'); });
+    }
+};
+"#,
+    ),
+];
+
+#[test]
+fn issue_32_has_table_guards_are_followed() {
+    let v = call(
+        ISSUE_32,
+        "get_schema",
+        json!({"table": "items", "detail": "full"}),
+    );
+    assert_eq!(v["found"], true, "{v}");
+    assert!(
+        v["created_in"].as_str().unwrap().contains("2025_11_28"),
+        "{v}"
+    );
+    assert!(!v.to_string().contains("\"confidence\":\"low\""), "{v}");
+    let o = call(ISSUE_32, "project_overview", json!({}));
+    assert_eq!(o["health"]["warnings"], 0, "{o}");
+}

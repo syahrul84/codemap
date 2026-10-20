@@ -31,7 +31,7 @@ GET|HEAD   settings/edit                        settings.edit            App\Htt
 PUT|PATCH  settings                             settings.update          App\Http\Controllers\ProfileController@update            [web] routes/web.php:32 static
 GET|HEAD   legacy                               -                        LegacyController@index                                   [web] routes/web.php:34 static  UNRESOLVED: string action 'LegacyController@index' needs a controller namespace (none is set for this group)
 GET|HEAD   '/letters/'.$letter                  -                        Closure                                                  [web] routes/web.php:37 static  UNRESOLVED: defined inside a loop
-GET|HEAD   $uri                                 -                        Closure                                                  [web] routes/web.php:41 static  UNRESOLVED: URI is not a literal (variable $uri)
+GET|HEAD   dynamic                              -                        Closure                                                  [web] routes/web.php:41 static
 GET|HEAD   macro                                -                        Closure                                                  [web] routes/web.php:43 static  UNRESOLVED: unknown route method ->customMacro() (macro?)
 GET|HEAD   debug                                -                        Closure                                                  [web] routes/web.php:46 static
 GET|HEAD   no-session                           -                        Closure                                                  [web] routes/web.php:49 static

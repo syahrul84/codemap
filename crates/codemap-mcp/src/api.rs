@@ -536,6 +536,29 @@ impl<'b> Matcher<'b> {
                 .count();
             m.bases.push((best.0, explained, internal.len()));
         }
+        // A call counts for a backend only when no backend that explains more
+        // calls fits it too: generic routes of a CMS linked next to the API
+        // must not look like calls to the CMS.
+        if m.backends.len() > 1 {
+            let order: Vec<usize> = {
+                let mut o: Vec<usize> = (0..m.bases.len()).collect();
+                o.sort_by(|a, b| m.bases[*b].1.cmp(&m.bases[*a].1));
+                o
+            };
+            let mut own = vec![0usize; m.bases.len()];
+            for c in &internal {
+                if let Some(bi) = order
+                    .iter()
+                    .copied()
+                    .find(|bi| m.fits_any(*bi, &m.bases[*bi].0, c))
+                {
+                    own[bi] += 1;
+                }
+            }
+            for (bi, n) in own.into_iter().enumerate() {
+                m.bases[bi].1 = n;
+            }
+        }
         m
     }
 
@@ -1197,7 +1220,13 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                 "name": b.name,
                 "routes": b.routes.len(),
                 "api_base": format!("/{}", base.join("/")),
-                "api_base_source": if b.configured_base.is_some() { "configured".to_owned() } else { format!("inferred: {n} of {total} calls match with it") },
+                "api_base_source": if b.configured_base.is_some() {
+                    "configured".to_owned()
+                } else if *n == 0 && backends.len() > 1 {
+                    "none: no call of this app goes to this backend".to_owned()
+                } else {
+                    format!("inferred: {n} of {total} calls match with it")
+                },
             })
         })
         .collect();
