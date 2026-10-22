@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Demo</string>
+    <string name="items_title">Items</string>
+    <string name="unused_text">Nobody reads me</string>
+    <string name="internal_id" translatable="false">demo</string>
+</resources>

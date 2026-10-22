@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.1.8] - 2026-10-22
+
+- Exact references from an `index.scip` file: when the project root has one (written by rust-analyzer, scip-typescript, scip-php, scip-java, scip-python and other SCIP indexers), `find_usages` uses it for the symbol it resolved. Uses matched by name ("possible") that the index confirms are listed; the others are dropped; references only the index knows are added. The answer says how many were confirmed, and when files changed after the index was written. Without the file, nothing changes.
+- One view model for every UI framework: Vue / React components, SwiftUI views and Compose functions, and which view shows which, in shared `views` / `view_uses` tables. `verify` (`components`), `find_usages` and the release check read it, so the release check now also lists SwiftUI views and composables that nothing shows.
+- Reports become tests: `codemap reports --to-fixture <id>` writes a reproducing report's made-up example to `fixtures/report-cases/<name>/` (`project/` and `case.json`), and a test runs every case, so a fixed bug cannot come back.
+- Every tool accepts the argument names AI apps use in practice instead of refusing them: `name` / `symbol` / `query` for `find_usages`' `target`, `files` for `changed_files`, singular claim names in `verify` (`class`, `method`, `route`, `column`, …), `uri` / `path` for `list_routes`, `route` / `url` for `api_usage`'s `endpoint`, and booleans sent as strings (`"true"`). Unknown names are still refused with the accepted ones. In a week of real use, 11 of 390 calls were refused for these.
+- `search_symbol`: `namespace_prefix` works for Rust (`my_crate::store`) and Swift / Kotlin (`com.app.ui`) paths, not only PHP. A query with several word parts (`cart store`, `order_status`, `MallCard`) matches names holding all of them in any order when nothing matches as written.
+- `find_usages` change impact works for Swift, Kotlin, Java and Rust files: who uses the changed file's types and functions, and the test commands (`cargo test -p <crate> --test <name>`, `gradle :app:test --tests <class>`, `swift test --filter <name>`) instead of `npx vitest`. It also loads the symbols once per call, not once per changed file (a 250-file branch loaded them 250 times).
+- Rust uses keep the path they were written with (`views::replace(..)`, `crate::store::open()`, or the `use` line that brought the name in), so `find_usages` and change impact tell `config::load()` from `store::load()`. A name declared in the same file, or bound by `let` there, is that file's own. Inside macros (`format!`, `assert!`), `s.replace(..)` is a method and `names.len()` a variable, not calls of a function named `replace` or `names`. A top-level function's `x.name()` uses are listed as possible, not certain. On codemap's own code, changing `precise.rs` went from 18 affected files to the 1 that uses it.
+- `codemap reports`: an open report whose answer changed since it was filed but still does not match the check says `answer changed`, so a person can decide (`not_found` that became `unresolved`).
+- `verify` with `components` checks SwiftUI views and Compose functions in Swift and Android apps (it said "no Vue / Nuxt app detected").
+- Swift, Android and Rust fixture projects under `fixtures/`, indexed end to end by the tests (screens, views and composables, usages, translations, verify).
+- README: a five-minute start at the top.
+
 ## [0.1.7] - 2026-10-20
 
 - `codemap setup` makes codemap the AI app's first stop for questions about code (Claude Code): it registers the MCP server, writes a rule block into `CLAUDE.md` between markers, and adds a hook pair that refuses grep / rg / find code searches until a codemap tool has run in the session (logs, git history, other machines, dependencies and build output are never refused). `--check` reports what is installed, `--remove` undoes it, `--scope project` writes into the folder; `CLAUDE_CONFIG_DIR` is honored. The hooks are `codemap hook check|used` and fail open. `[agent] search_window_minutes` and `allow_search` in `.codemap.toml`; `codemap usage` counts refused and allowed searches. The server instructions now open by saying to prefer these tools over grep (#34).

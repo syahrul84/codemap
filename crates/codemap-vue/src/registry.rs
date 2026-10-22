@@ -912,6 +912,36 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
                 u.package
             ])?;
         }
+        // The shared view model: components and who renders them.
+        let views: Vec<codemap_core::views::View> = reg
+            .components
+            .iter()
+            .filter_map(|(path, (kind, name, _))| {
+                Some(codemap_core::views::View {
+                    file_id: *ids.get(path.as_str())?,
+                    name: name.clone(),
+                    path: path.clone(),
+                    line: 1,
+                    kind: kind.clone(),
+                })
+            })
+            .collect();
+        let uses: Vec<codemap_core::views::Use> = reg
+            .uses
+            .iter()
+            .map(|u| codemap_core::views::Use {
+                from_path: u.from_path.clone(),
+                from_name: reg.components.get(&u.from_path).map(|(_, n, _)| n.clone()),
+                to_name: reg
+                    .components
+                    .get(u.to_path.as_deref().unwrap_or(""))
+                    .map(|(_, n, _)| n.clone())
+                    .unwrap_or_else(|| u.tag.clone()),
+                to_path: u.to_path.clone(),
+                line: u.line,
+            })
+            .collect();
+        codemap_core::views::replace(&tx, "vue", &views, &uses)?;
     }
     if bulk {
         symbols::bulk_insert_end(&tx)?;

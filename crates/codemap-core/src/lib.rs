@@ -13,6 +13,7 @@ pub mod store;
 pub mod symbols;
 pub mod time;
 pub mod updates;
+pub mod views;
 
 pub use config::Config;
 pub use error::{Error, Result};

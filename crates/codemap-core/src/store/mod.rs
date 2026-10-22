@@ -31,6 +31,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0017_android.sql"),
     include_str!("migrations/0018_rust.sql"),
     include_str!("migrations/0019_table_indexes.sql"),
+    include_str!("migrations/0020_views.sql"),
 ];
 
 /// Schema version this build creates and understands.

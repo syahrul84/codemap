@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+scip.workspace = true
+protobuf.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 codemap-core.workspace = true

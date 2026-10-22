@@ -560,6 +560,29 @@ pub fn search(conn: &Connection, input: &SearchInput) -> Result<SearchResult> {
             ));
         }
     }
+    // `cart store`, `order_status`, `MallCard`: every word part in the name,
+    // in any order (`useCartStore`, `OrderStatus`, `MallListCard`).
+    if scored.is_empty() {
+        let parts = query_parts(&input.query);
+        let words: Vec<&String> = parts.iter().filter(|p| p.chars().count() >= 3).collect();
+        if parts.len() >= 2 && !words.is_empty() {
+            let m = words
+                .iter()
+                .map(|w| fts_phrase(w))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            scored = candidates_with(conn, &query, Some(&m), input)?
+                .into_iter()
+                .filter_map(|r| score_parts(&parts, &r).map(|s| (s, r)))
+                .collect();
+            if !scored.is_empty() {
+                kind_note = Some(format!(
+                    "No exact match; showing names with all of: {}.",
+                    parts.join(", ")
+                ));
+            }
+        }
+    }
     if scored.is_empty() {
         let mut suggestions = suggest(conn, &query, &input.query, input.kind)?;
         if suggestions.is_empty() && input.kind.is_some() {
@@ -616,7 +639,52 @@ fn normalize_query(q: &str) -> String {
     q.trim().trim_start_matches('\\').to_lowercase()
 }
 
+/// Lowercased word parts of a name or phrase: `useCartStore` → use, cart,
+/// store; `order_status` → order, status; `mall card` → mall, card.
+pub fn query_parts(q: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in q.chars() {
+        let boundary = !c.is_alphanumeric() || (c.is_uppercase() && prev_lower);
+        if boundary && !cur.is_empty() {
+            parts.push(std::mem::take(&mut cur));
+        }
+        if c.is_alphanumeric() {
+            cur.push(c.to_ascii_lowercase());
+        }
+        prev_lower = c.is_lowercase() || c.is_ascii_digit();
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// Every part in the name (0.7), or in the FQN (0.55).
+fn score_parts(parts: &[String], r: &SymbolRecord) -> Option<f64> {
+    let name = r.name.to_lowercase();
+    let fqn = r.fqn.to_lowercase();
+    if parts.iter().all(|p| name.contains(p.as_str())) {
+        Some(0.7)
+    } else if parts.iter().all(|p| fqn.contains(p.as_str())) {
+        Some(0.55)
+    } else {
+        None
+    }
+}
+
 fn candidates(conn: &Connection, query: &str, input: &SearchInput) -> Result<Vec<SymbolRecord>> {
+    candidates_with(conn, query, None, input)
+}
+
+/// Like [`candidates`]; `fts_match` replaces the query as the FTS expression.
+fn candidates_with(
+    conn: &Connection,
+    query: &str,
+    fts_match: Option<&str>,
+    input: &SearchInput,
+) -> Result<Vec<SymbolRecord>> {
     let mut filters = String::new();
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let Some(kind) = input.kind {
@@ -624,16 +692,31 @@ fn candidates(conn: &Connection, query: &str, input: &SearchInput) -> Result<Vec
         args.push(Box::new(kind.as_str()));
     }
     if let Some(prefix) = input.namespace_prefix.as_deref() {
-        let prefix = prefix.trim().trim_matches('\\');
+        // PHP `App\Models`, Rust `my_crate::store`, Swift / Kotlin `com.app.ui`.
+        let prefix = prefix.trim().trim_matches(['\\', ':', '.']);
         if !prefix.is_empty() {
-            filters.push_str(" AND (s.fqn LIKE ? ESCAPE '!' OR s.fqn = ? COLLATE NOCASE)");
-            args.push(Box::new(format!("{}\\%", escape_like(prefix))));
+            filters.push_str(
+                " AND (s.fqn LIKE ? ESCAPE '!' OR s.fqn LIKE ? ESCAPE '!' OR s.fqn LIKE ? ESCAPE '!' OR s.fqn = ? COLLATE NOCASE)",
+            );
+            let p = escape_like(prefix);
+            args.push(Box::new(format!("{p}\\%")));
+            args.push(Box::new(format!("{p}::%")));
+            args.push(Box::new(format!("{p}.%")));
             args.push(Box::new(prefix.to_owned()));
         }
     }
 
     // Trigram FTS needs at least 3 characters; shorter queries scan with LIKE.
-    let sql = if query.chars().count() >= 3 {
+    let sql = if let Some(m) = fts_match {
+        args.insert(0, Box::new(m.to_owned()));
+        format!(
+            "SELECT {RECORD_COLUMNS} FROM symbols_fts
+             JOIN symbols s ON s.id = symbols_fts.rowid
+             JOIN files f ON f.id = s.file_id
+             WHERE symbols_fts MATCH ?{filters}
+             LIMIT {MAX_CANDIDATES}"
+        )
+    } else if query.chars().count() >= 3 {
         args.insert(0, Box::new(fts_phrase(query)));
         format!(
             "SELECT {RECORD_COLUMNS} FROM symbols_fts

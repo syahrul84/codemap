@@ -2,7 +2,7 @@
 //! composable / store, translation key, endpoint or file is used, with the
 //! tests that touch it listed separately.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use codemap_core::Store;
 use codemap_core::envelope::Detail;
@@ -27,14 +27,22 @@ pub struct FindUsagesParams {
     /// a route name (`orders.show`), a component (`OrderCard`), a composable or
     /// store (`useCart`), a translation key (`orders.title`), a database column
     /// (`orders.collected_at`), an endpoint (`GET api/v1/orders`), or a file path.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "name",
+        alias = "symbol",
+        alias = "query",
+        alias = "class",
+        alias = "file",
+        alias = "path"
+    )]
     pub target: String,
     /// Change impact instead of one target: files you changed (paths from the
     /// project root). Returns what each affects and the tests to run, with commands.
-    #[serde(default)]
+    #[serde(default, alias = "files", alias = "changed")]
     pub changed_files: Option<Vec<String>>,
     /// Change impact for the files git shows as changed (uncommitted, incl. untracked).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::tools::lenient_bool")]
     pub git_changes: bool,
     /// Force an interpretation: class, method, function, route, component,
     /// composable, store, i18n, endpoint, file.
@@ -138,6 +146,92 @@ fn refs(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// With an `index.scip` in the project: the resolved symbol's references come
+/// from it (exact), and "possible" uses by name it does not list are dropped.
+fn exact_from_scip(store: &Store, project: &Project, f: &mut Found) {
+    if f.resolved_as.is_empty() {
+        return;
+    }
+    let Some(index) = crate::precise::load(&project.root) else {
+        return;
+    };
+    // `method App\Models\Order::refresh`, `struct Item`, `function demo::label`
+    let fqn = f
+        .resolved_as
+        .split_once(' ')
+        .map(|(_, rest)| rest.split(" (").next().unwrap_or(rest).trim())
+        .unwrap_or("");
+    let Some(sym) = symbols::by_fqn(store.conn(), fqn)
+        .ok()
+        .and_then(|v| v.into_iter().next())
+    else {
+        return;
+    };
+    let Some(scip_symbol) =
+        crate::precise::symbol_at(&index, &sym.file, sym.line, sym.end_line, &sym.name)
+    else {
+        f.notes.push(format!(
+            "{} has no definition of {} at {}:{}; uses are matched by name",
+            crate::precise::FILE,
+            sym.name,
+            sym.file,
+            sym.line
+        ));
+        return;
+    };
+    let exact = crate::precise::references(&index, &scip_symbol);
+    let exact_lines: BTreeSet<(String, u32)> =
+        exact.iter().map(|o| (o.path.clone(), o.line)).collect();
+    let checked = f.possible.len();
+    // The name-matching caveat no longer applies.
+    f.notes
+        .retain(|n| !n.starts_with("members are matched by name"));
+    let confirmed: Vec<(String, u32, String)> = std::mem::take(&mut f.possible)
+        .into_iter()
+        .filter(|(file, line, _)| exact_lines.contains(&(file.clone(), *line)))
+        .collect();
+    for (file, line, label) in confirmed.iter().cloned() {
+        f.hits
+            .insert((file, line, label.replace(" (same name)", "")));
+    }
+    let known: BTreeSet<(String, u32)> = f.hits.iter().map(|(p, l, _)| (p.clone(), *l)).collect();
+    let mut added = 0;
+    for o in &exact {
+        if !known.contains(&(o.path.clone(), o.line)) {
+            f.hits
+                .insert((o.path.clone(), o.line, "reference (index.scip)".into()));
+            added += 1;
+        }
+    }
+    let mut files: Vec<&str> = exact.iter().map(|o| o.path.as_str()).collect();
+    files.push(&sym.file);
+    files.sort_unstable();
+    files.dedup();
+    let newer = crate::precise::newer_than_index(&index, &project.root, &files);
+    let mut note = format!(
+        "exact references from {}: {} in all{}",
+        crate::precise::FILE,
+        exact.len(),
+        if checked > 0 {
+            format!(
+                "; {} of {checked} possible uses by name confirmed, the others dropped",
+                confirmed.len()
+            )
+        } else {
+            String::new()
+        }
+    );
+    if added > 0 {
+        note.push_str(&format!("; {added} found only through it"));
+    }
+    if newer > 0 {
+        note.push_str(&format!(
+            "; {newer} of these files changed after it was written: regenerate it for exact answers"
+        ));
+    }
+    f.notes.push(note);
+}
+
 /// Reference kinds of a Swift, Kotlin or Java file: `swift_` or `jvm_`.
 fn mobile_prefix(file: &str) -> Option<&'static str> {
     if file.ends_with(".swift") {
@@ -195,9 +289,11 @@ fn swift_usages(store: &Store, target: &str, f: &mut Found) -> R<bool> {
     if found.is_empty()
         && let Some((_, last)) = target.rsplit_once("::").or_else(|| target.rsplit_once('.'))
     {
+        // `views::replace`: a module path, the end of the FQN.
+        let tail = format!("::{target}");
         found = mobile(last)?
             .into_iter()
-            .filter(|s| s.fqn == target)
+            .filter(|s| s.fqn == target || s.fqn.ends_with(&tail))
             .collect();
     }
     let types: Vec<&SymbolRecord> = found.iter().filter(|s| s.kind.is_class_like()).collect();
@@ -205,12 +301,13 @@ fn swift_usages(store: &Store, target: &str, f: &mut Found) -> R<bool> {
         let prefix = mobile_prefix(&t.file).unwrap_or("swift_");
         f.resolved_as = format!("{} {}", t.kind.as_str(), t.fqn);
         // Exact case: `Item` the type, not `item` the variable.
+        let mut paths = RustPaths::default();
         for (file, line, _, name) in refs(
             store,
             "r.kind = ?1 AND r.target = ?2 COLLATE NOCASE",
             &[&format!("{prefix}type"), &t.name],
         )? {
-            if name == t.name {
+            if name == t.name && paths.allows(store, &file, line, &t.name, &t.fqn)? {
                 f.add(file, line, "type");
             }
         }
@@ -238,6 +335,43 @@ fn swift_usages(store: &Store, target: &str, f: &mut Found) -> R<bool> {
     Ok(true)
 }
 
+/// Rust: the paths names were written with (`rust_path` refs), per file, to
+/// tell `config::load()` from `store::load()`. A use whose path is not known
+/// is kept: the name is all there is.
+#[derive(Default)]
+struct RustPaths(HashMap<String, Vec<(u32, String)>>);
+
+impl RustPaths {
+    fn allows(&mut self, store: &Store, file: &str, line: u32, name: &str, fqn: &str) -> R<bool> {
+        if !file.ends_with(".rs") {
+            return Ok(true);
+        }
+        if !self.0.contains_key(file) {
+            let rows = refs(store, "r.kind = 'rust_path' AND f.path = ?1", &[&file])?;
+            self.0.insert(
+                file.to_owned(),
+                rows.into_iter().map(|(_, l, _, t)| (l, t)).collect(),
+            );
+        }
+        let crate_of = |p: &str| p.split("::").next().unwrap_or(p).to_owned();
+        let mut here = self.0[file]
+            .iter()
+            .filter(|(l, p)| *l == line && p.rsplit("::").next() == Some(name))
+            .map(|(_, p)| p)
+            .peekable();
+        if here.peek().is_none() {
+            return Ok(true);
+        }
+        // The same path, a shorter one ending it, or a re-export at the top
+        // of the same crate (`my_crate::Store`).
+        Ok(here.any(|p| {
+            p == fqn
+                || fqn.ends_with(&format!("::{p}"))
+                || (p.matches("::").count() == 1 && crate_of(p) == crate_of(fqn))
+        }))
+    }
+}
+
 fn mobile_member_refs(store: &Store, name: &str, sym: &SymbolRecord, f: &mut Found) -> R<()> {
     let prefix = mobile_prefix(&sym.file).unwrap_or("swift_");
     let mut kinds = vec![format!("{prefix}member"), format!("{prefix}call")];
@@ -254,17 +388,19 @@ fn mobile_member_refs(store: &Store, name: &str, sym: &SymbolRecord, f: &mut Fou
         )?);
     }
     let mut others = 0;
+    let mut paths = RustPaths::default();
     for (file, line, kind, t) in rows {
         if t != name || (file == sym.file && line == sym.line) {
             continue;
         }
-        let label = if kind.ends_with("member") {
-            "member"
-        } else {
-            "call"
-        };
-        // A top-level function, or a member used in its own file.
-        if sym.parent_fqn.is_none() || file == sym.file {
+        let member = kind.ends_with("member");
+        let label = if member { "member" } else { "call" };
+        if sym.parent_fqn.is_none() && !paths.allows(store, &file, line, name, &sym.fqn)? {
+            continue;
+        }
+        // A top-level function called by name, or a member used in its own
+        // file. `x.name()` is someone's method of the same name.
+        if (sym.parent_fqn.is_none() && !member) || (sym.parent_fqn.is_some() && file == sym.file) {
             f.add(file, line, label);
         } else {
             f.possible
@@ -391,14 +527,12 @@ fn php_class(store: &Store, fqn: &str, f: &mut Found) -> R<()> {
 /// Classes that use the classes of `file`, and the classes using those (up to
 /// `max_depth` steps), with the chain of short names that reached each:
 /// `Popularity` → `BrandDirectory` → `BrandController`.
-fn php_caller_chain(store: &Store, file: &str, max_depth: usize) -> R<Vec<(String, Vec<String>)>> {
-    let mut classes_by_file: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for s in symbols::all(store.conn())? {
-        if s.kind.is_class_like() && s.file.ends_with(".php") {
-            classes_by_file.entry(s.file).or_default().push(s.fqn);
-        }
-    }
+fn php_caller_chain(
+    store: &Store,
+    classes_by_file: &HashMap<String, Vec<String>>,
+    file: &str,
+    max_depth: usize,
+) -> R<Vec<(String, Vec<String>)>> {
     let short = |fqn: &str| fqn.rsplit('\\').next().unwrap_or(fqn).to_owned();
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -781,7 +915,21 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
                 ([], [s]) => js_symbol(store, s, &mut f)?,
                 ([], []) => {
                     let funcs = refs(store, "r.kind = 'function' AND r.target = ?1", &[&target])?;
-                    if funcs.is_empty() {
+                    let views = codemap_core::views::find(store.conn(), &target)?;
+                    if funcs.is_empty() && !views.is_empty() {
+                        let v = &views[0];
+                        f.resolved_as = format!("{} view {} ({})", v.framework, v.name, v.path);
+                        let mut stmt = store.conn().prepare_cached(
+                            "SELECT from_path, line FROM view_uses WHERE to_path = ?1 AND to_name = ?2 ORDER BY from_path, line",
+                        )?;
+                        let rows = stmt.query_map(rusqlite::params![v.path, v.name], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+                        })?;
+                        for row in rows {
+                            let (file, line) = row?;
+                            f.add(file, line, "shows it");
+                        }
+                    } else if funcs.is_empty() {
                         f.notes.push(format!(
                             "nothing named `{target}` was found (classes, methods as Class::method, functions, routes, components, composables, stores, translation keys, endpoints, files)"
                         ));
@@ -851,6 +999,9 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
             }
         }
     }
+
+    // An `index.scip` (from a compiler or type checker) settles uses by name.
+    exact_from_scip(store, project, &mut f);
 
     // `Order::query()` records the class and the call on one line: keep the call.
     let specific: BTreeSet<(String, u32)> = f
@@ -1181,9 +1332,38 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
     let indexed: std::collections::HashSet<String> =
         store.list_files()?.into_iter().map(|f| f.path).collect();
     let all_routes = routes::all(store.conn())?;
+    // Every symbol once, by file: a change of 250 files must not load them 250 times.
+    let mut by_file: HashMap<String, Vec<SymbolRecord>> = HashMap::new();
+    for s in symbols::all(store.conn())? {
+        by_file.entry(s.file.clone()).or_default().push(s);
+    }
+    let php_classes_by_file: HashMap<String, Vec<String>> = by_file
+        .iter()
+        .filter(|(f, _)| f.ends_with(".php"))
+        .map(|(f, syms)| {
+            (
+                f.clone(),
+                syms.iter()
+                    .filter(|s| s.kind.is_class_like())
+                    .map(|s| s.fqn.clone())
+                    .collect(),
+            )
+        })
+        .collect();
     let mut entries = Vec::new();
     let mut tests: BTreeSet<String> = BTreeSet::new();
     let mut affected: BTreeSet<String> = BTreeSet::new();
+    // Rust keeps tests in the code's own file (`#[cfg(test)] mod tests`).
+    let rust_tests = if files.iter().any(|f| f.ends_with(".rs")) {
+        codemap_rust::test_ranges(store.conn())?
+    } else {
+        Default::default()
+    };
+    let in_rust_test = |file: &str, line: u32| {
+        rust_tests
+            .get(file)
+            .is_some_and(|r| r.iter().any(|(a, b)| *a <= line && line <= *b))
+    };
     // Per changed PHP file: routes reached through callers, and the tests hitting them.
     let mut route_chain: Vec<(String, Vec<String>, BTreeSet<String>)> = Vec::new();
     for file in files {
@@ -1202,9 +1382,12 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         // Classes that call the changed file's classes, with the path to them.
         let mut php_chain: Vec<(String, Vec<String>)> = Vec::new();
         if file.ends_with(".php") {
-            let classes: Vec<SymbolRecord> = symbols::all(store.conn())?
+            let classes: Vec<SymbolRecord> = by_file
+                .get(&file)
                 .into_iter()
-                .filter(|s| s.file == file && s.kind.is_class_like())
+                .flatten()
+                .filter(|s| s.kind.is_class_like())
+                .cloned()
                 .collect();
             for c in &classes {
                 php_class(store, &c.fqn, &mut f)?;
@@ -1227,7 +1410,7 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
             let mut via = Found::default();
             let mut via_routes: Vec<String> = Vec::new();
             if !classes.is_empty() {
-                php_chain = php_caller_chain(store, &file, 4)?;
+                php_chain = php_caller_chain(store, &php_classes_by_file, &file, 4)?;
             }
             if !classes.is_empty() {
                 for (class, path) in &php_chain {
@@ -1310,31 +1493,85 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
                 f.routes.push(format!("… {} more", n - 20));
             }
         } else {
-            let syms: Vec<SymbolRecord> = symbols::all(store.conn())?
+            let syms: Vec<SymbolRecord> = by_file
+                .get(&file)
                 .into_iter()
+                .flatten()
                 .filter(|s| {
                     // File-local helpers and types are not what other files use.
-                    s.file == file
-                        && !matches!(s.kind, SymbolKind::Method | SymbolKind::Property)
+                    !matches!(s.kind, SymbolKind::Method | SymbolKind::Property)
                         && s.visibility.as_deref() != Some("private")
                 })
+                .cloned()
                 .collect();
-            for s in &syms {
-                js_symbol(store, s, &mut f)?;
-                what.push(format!("{} {}", s.kind, s.name));
-            }
-            for (from, line, _, _) in import_refs(store, &file)? {
-                f.add(from, line, "import");
+            match mobile_prefix(&file) {
+                // Swift, Kotlin, Java, Rust: uses of the file's types and
+                // top-level functions, by name.
+                Some(prefix) => {
+                    if rust_tests.contains_key(&file) {
+                        // Its own tests run too.
+                        tests.insert(file.clone());
+                    }
+                    let mut paths = RustPaths::default();
+                    for s in &syms {
+                        if s.parent_fqn.is_some() {
+                            continue;
+                        }
+                        what.push(format!("{} {}", s.kind, s.name));
+                        let mut kinds = vec![format!("{prefix}type")];
+                        if !s.kind.is_class_like() {
+                            kinds.push(format!("{prefix}call"));
+                        }
+                        for k in &kinds {
+                            for (from, line, _, t) in refs(
+                                store,
+                                "r.kind = ?1 AND r.target = ?2 COLLATE NOCASE",
+                                &[k, &s.name],
+                            )? {
+                                if t == s.name
+                                    && from != file
+                                    && paths.allows(store, &from, line, &s.name, &s.fqn)?
+                                {
+                                    f.add(
+                                        from,
+                                        line,
+                                        if k.ends_with("type") { "type" } else { "call" },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    for s in &syms {
+                        js_symbol(store, s, &mut f)?;
+                        what.push(format!("{} {}", s.kind, s.name));
+                    }
+                    for (from, line, _, _) in import_refs(store, &file)? {
+                        f.add(from, line, "import");
+                    }
+                }
             }
             if codemap_vue::i18n::locale_of(&file).is_some() {
                 what.push("translations".into());
             }
         }
-        let users: BTreeSet<String> = f.hits.iter().map(|h| h.0.clone()).collect();
-        let (file_tests, file_users): (Vec<String>, Vec<String>) = users
-            .into_iter()
-            .filter(|u| *u != file)
-            .partition(|u| is_test_path(u));
+        // A user is a test when it is a test file, or (Rust) when every use
+        // sits inside a `#[cfg(test)]` module.
+        let mut test_users: BTreeSet<String> = BTreeSet::new();
+        let mut code_users: BTreeSet<String> = BTreeSet::new();
+        for (u, line, _) in &f.hits {
+            if *u == file {
+                continue;
+            }
+            if is_test_path(u) || in_rust_test(u, *line) {
+                test_users.insert(u.clone());
+            } else {
+                code_users.insert(u.clone());
+            }
+        }
+        let file_tests: Vec<String> = test_users.difference(&code_users).cloned().collect();
+        let file_users: Vec<String> = code_users.into_iter().collect();
         // Frontend: tests that import a file that uses the changed one.
         let mut indirect = BTreeSet::new();
         if !file.ends_with(".php") {
@@ -1405,11 +1642,17 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
     let tests: Vec<String> = runnable_tests(store, &project.root, tests)?
         .into_iter()
         .collect();
-    let all_tests: Vec<String> = indexed
+    let mut all_tests: Vec<String> = indexed
         .iter()
         .filter(|p| is_test_path(p) && (!p.ends_with(".php") || is_php_test_file(&project.root, p)))
         .cloned()
         .collect();
+    // Rust files with their own `#[cfg(test)]` tests count as test files too.
+    if !rust_tests.is_empty() {
+        all_tests.extend(rust_tests.keys().filter(|f| !is_test_path(f)).cloned());
+        all_tests.sort();
+        all_tests.dedup();
+    }
     let commands = test_commands(project, &tests, &all_tests);
     let mut data = json!({
         "found": !files.is_empty(),
@@ -1665,7 +1908,150 @@ pub(crate) fn test_commands(
             collapse(&php, all_tests).join(" ")
         ));
     }
-    let js: Vec<&String> = tests.iter().filter(|t| !t.ends_with(".php")).collect();
+    // Rust: one `cargo test` per crate, naming the integration tests.
+    let rust: Vec<&String> = tests.iter().filter(|t| t.ends_with(".rs")).collect();
+    if !rust.is_empty() {
+        let paths: Vec<String> = rust.iter().map(|s| (*s).clone()).collect();
+        let crates = codemap_rust::index::crates(root, &paths);
+        // Per crate: library tests, binary tests, integration test names.
+        let mut per_crate: std::collections::BTreeMap<String, (bool, bool, BTreeSet<String>)> =
+            Default::default();
+        for t in &rust {
+            let krate = crates
+                .iter()
+                .filter(|c| c.dir.is_empty() || t.starts_with(&format!("{}/", c.dir)))
+                .max_by_key(|c| c.dir.len());
+            let (name, dir, bin_files) = match krate {
+                Some(c) => (
+                    c.name.clone(),
+                    c.dir.clone(),
+                    c.bins.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(),
+                ),
+                None => (String::new(), String::new(), Vec::new()),
+            };
+            let rel = if dir.is_empty() {
+                t.as_str()
+            } else {
+                &t[dir.len() + 1..]
+            };
+            let entry = per_crate.entry(name).or_default();
+            match rel.strip_prefix("tests/") {
+                Some(file) => {
+                    let stem = file
+                        .split('/')
+                        .next()
+                        .unwrap_or(file)
+                        .trim_end_matches(".rs");
+                    entry.2.insert(stem.to_owned());
+                }
+                // In-file tests of a binary (`src/main.rs`, `src/bin/…`) or the library.
+                None if bin_files.iter().any(|b| b == *t) || rel.starts_with("src/bin/") => {
+                    entry.1 = true
+                }
+                None => entry.0 = true,
+            }
+        }
+        for (name, (lib, bins, integration)) in per_crate {
+            let mut cmd = String::from("cargo test");
+            if !name.is_empty() {
+                cmd.push_str(&format!(" -p {name}"));
+            }
+            if lib {
+                cmd.push_str(" --lib");
+            }
+            if bins {
+                cmd.push_str(" --bins");
+            }
+            for t in integration {
+                cmd.push_str(&format!(" --test {t}"));
+            }
+            out.push(format!("{cd}{cmd}"));
+        }
+    }
+    // Kotlin / Java: Gradle, by test class; Swift: `swift test`.
+    let jvm: Vec<&String> = tests
+        .iter()
+        .filter(|t| t.ends_with(".kt") || t.ends_with(".java"))
+        .collect();
+    if !jvm.is_empty() {
+        let gradle = if root.join("gradlew").is_file() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        // (module, instrumented on a device) → test classes.
+        let mut by_module: std::collections::BTreeMap<(String, bool), Vec<String>> =
+            Default::default();
+        for t in &jvm {
+            let device = t.contains("/src/androidTest/");
+            let module = t
+                .split("/src/")
+                .next()
+                .filter(|m| *m != t.as_str())
+                .unwrap_or("");
+            let class = t
+                .split("/src/")
+                .nth(1)
+                .and_then(|rest| rest.splitn(3, '/').nth(2))
+                .unwrap_or(t)
+                .trim_end_matches(".kt")
+                .trim_end_matches(".java")
+                .replace('/', ".");
+            by_module
+                .entry((module.to_owned(), device))
+                .or_default()
+                .push(class);
+        }
+        for ((module, device), classes) in by_module {
+            let name = if device {
+                "connectedAndroidTest"
+            } else {
+                "test"
+            };
+            let task = if module.is_empty() {
+                name.to_owned()
+            } else {
+                format!(":{}:{name}", module.replace('/', ":"))
+            };
+            // Instrumented tests filter by class through a runner argument.
+            if device {
+                out.push(format!(
+                    "{cd}{gradle} {task} -Pandroid.testInstrumentationRunnerArguments.class={}",
+                    classes.join(",")
+                ));
+                continue;
+            }
+            out.push(format!(
+                "{cd}{gradle} {task} {}",
+                classes
+                    .iter()
+                    .map(|c| format!("--tests {c}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
+    }
+    // `swift test` runs a Swift package's tests; an Xcode-only app needs its
+    // scheme (`xcodebuild test -scheme …`), which codemap does not know.
+    let swift: Vec<&String> = tests.iter().filter(|t| t.ends_with(".swift")).collect();
+    if !swift.is_empty() && root.join("Package.swift").is_file() {
+        let filters: Vec<String> = swift
+            .iter()
+            .filter_map(|t| t.rsplit('/').next())
+            .map(|f| format!("--filter {}", f.trim_end_matches(".swift")))
+            .collect();
+        out.push(format!("{cd}swift test {}", filters.join(" ")));
+    }
+    let js: Vec<&String> = tests
+        .iter()
+        .filter(|t| {
+            !t.ends_with(".php")
+                && !t.ends_with(".rs")
+                && !t.ends_with(".kt")
+                && !t.ends_with(".java")
+                && !t.ends_with(".swift")
+        })
+        .collect();
     if !js.is_empty() {
         let pkg: Value = std::fs::read_to_string(root.join("package.json"))
             .ok()

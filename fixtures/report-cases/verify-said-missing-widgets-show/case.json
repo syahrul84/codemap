@@ -1,0 +1,9 @@
+{
+  "report": "github #35",
+  "tool": "verify",
+  "args": { "claims": { "routes": ["widgets.show"] } },
+  "expect": { "verify": { "routes": ["widgets.show"] }, "is": "exists" },
+  "wrong": "widgets.show is not_found (no routes are indexed)",
+  "right": "widgets.show exists; it is defined in a closure held in a variable and passed to ->group($shared)",
+  "fixed_in": "0.1.7"
+}

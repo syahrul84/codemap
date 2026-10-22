@@ -96,6 +96,28 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
             }
             continue;
         }
+        // SwiftUI views and Compose functions: shown by another view, or a screen.
+        for v in codemap_core::views::in_file(conn, f)?
+            .into_iter()
+            .filter(|v| v.framework != "vue")
+        {
+            let shown = count(
+                "SELECT COUNT(*) FROM view_uses WHERE to_path = ?1 AND to_name = ?2 AND (from_name IS NULL OR from_name != ?2)",
+                &[f, &v.name],
+            );
+            let screen = count(
+                "SELECT COUNT(*) FROM pages WHERE name = ?1 OR meta LIKE ?2",
+                &[&v.name, &format!("%\"shows\":\"{}\"%", v.name)],
+            );
+            if shown + screen == 0 {
+                let what = if v.framework == "swiftui" {
+                    "SwiftUI view"
+                } else {
+                    "composable"
+                };
+                out.push(format!("{f}: {what} {} is not shown anywhere", v.name));
+            }
+        }
         let syms = by_file.remove(f.as_str()).unwrap_or_default();
         let text = std::fs::read_to_string(root.join(f)).unwrap_or_default();
         for s in syms {

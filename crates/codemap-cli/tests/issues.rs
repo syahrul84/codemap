@@ -826,3 +826,68 @@ fn issue_32_has_table_guards_are_followed() {
     let o = call(ISSUE_32, "project_overview", json!({}));
     assert_eq!(o["health"]["warnings"], 0, "{o}");
 }
+
+/// Argument names AI apps use in practice are accepted: `name` for
+/// `target`, singular claim names, and booleans sent as strings.
+#[test]
+fn common_argument_aliases_are_accepted() {
+    let v = call(ISSUE_17, "find_usages", json!({"name": "ViewWidget"}));
+    assert_eq!(v["resolved_as"], "class App\\Panel\\ViewWidget", "{v}");
+    let v = call(
+        ISSUE_17,
+        "find_usages",
+        json!({"files": ["app/Panel/WidgetActions.php"], "git_changes": "false"}),
+    );
+    assert_eq!(v["affected_files"], 1, "{v}");
+    let v = call(
+        ISSUE_17,
+        "verify",
+        json!({"claims": {"class": ["ViewWidget"], "method": ["ViewWidget::actions"]}}),
+    );
+    assert_eq!(v["summary"], "2 ok, 0 not_found", "{v}");
+    let v = call(ISSUE_17, "search_symbol", json!({"name": "WidgetActions"}));
+    assert_eq!(v["found"], true, "{v}");
+    let v = call(ISSUE_17, "get_symbol", json!({"symbol": "ViewWidget"}));
+    assert_eq!(v["found"], true, "{v}");
+    // Unknown names are still refused, naming the accepted ones.
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    for (path, body) in ISSUE_17 {
+        let p = dir.path().join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    let root = dir.path().canonicalize().unwrap();
+    let project = codemap_mcp::Project {
+        app: None,
+        config: Config::load(&root).unwrap(),
+        root: root.clone(),
+        id: "i".into(),
+        index_path: data.path().join("i").join("index.db"),
+    };
+    let mut store = Store::open(&project.index_path).unwrap();
+    codemap_mcp::refresh(&mut store, &root, &project.config, ScanOptions::default()).unwrap();
+    let err = codemap_mcp::call(
+        &store,
+        &project,
+        "find_usages",
+        json!({"zzz": 1}),
+        codemap_mcp::Freshness::default(),
+    );
+    assert!(err.is_err());
+}
+
+/// `search_symbol` finds a name from its word parts, in any order.
+#[test]
+fn search_matches_word_parts() {
+    let v = call(
+        ISSUE_17,
+        "search_symbol",
+        json!({"query": "actions widget"}),
+    );
+    assert_eq!(v["found"], true, "{v}");
+    assert_eq!(v["matches"][0]["name"], "WidgetActions", "{v}");
+    assert!(v["note"].as_str().unwrap().contains("all of"), "{v}");
+    let v = call(ISSUE_17, "search_symbol", json!({"query": "view_widget"}));
+    assert_eq!(v["matches"][0]["name"], "ViewWidget", "{v}");
+}

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -60,6 +60,8 @@ tree-sitter-swift = "=0.7.4"
 tree-sitter-kotlin-ng = "=1.1.0"
 tree-sitter-java = "=0.23.5"
 tree-sitter-rust = "=0.24.2"
+scip = "=0.10.0"
+protobuf = "=3.7.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

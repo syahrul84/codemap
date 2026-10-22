@@ -205,6 +205,38 @@ fn ask(apps: &[(&Store, &Project)], tool: &str, args: Value) -> Option<Value> {
         .map(|e| e.data)
 }
 
+/// The same call as the report's, answered now, differs from the answer
+/// that was reported. For a `verify` check: the statuses differ.
+fn answer_changed(apps: &[(&Store, &Project)], r: &Report) -> bool {
+    let Some(expect) = &r.expect else {
+        return false;
+    };
+    fn statuses(v: &Value) -> std::collections::BTreeSet<String> {
+        v["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x["status"].as_str().map(str::to_owned))
+            .collect()
+    }
+    if let Some(claims) = expect.get("verify") {
+        if r.tool != "verify" {
+            return false;
+        }
+        let Some(now) = ask(apps, "verify", json!({ "claims": claims })) else {
+            return false;
+        };
+        let (before, after) = (statuses(&r.answer), statuses(&now));
+        return !before.is_empty() && !after.is_empty() && before.is_disjoint(&after);
+    }
+    let same_call = expect["tool"].as_str() == Some(r.tool.as_str())
+        && expect.get("args").cloned().unwrap_or(json!({})) == r.args;
+    if !same_call {
+        return false;
+    }
+    ask(apps, &r.tool, r.args.clone()).is_some_and(|now| now != r.answer)
+}
+
 /// Does the answer now match what is right? `None`: no usable check.
 ///
 /// `{ "verify": { "columns": ["orders.x"] }, "is": "exists" }` or
@@ -266,6 +298,10 @@ pub fn recheck(
                     r.closed_in = Some(VERSION.into());
                     changed = true;
                 }
+                // Still not what was expected, but no longer the reported
+                // answer either (`not_found` became `unresolved`): a person
+                // decides, the check cannot.
+                Some(false) if answer_changed(apps, r) => note = Some("answer changed"),
                 Some(false) => {}
                 None => note = Some("no check"),
             }
@@ -313,6 +349,78 @@ pub fn open_count(project: &Project) -> usize {
 pub fn summary_line(projects: &[&Project]) -> Option<String> {
     let n: usize = projects.iter().map(|p| open_count(p)).sum();
     (n > 0).then(|| format!("{n} open wrong-answer reports: run `codemap reports`"))
+}
+
+/// `--to-fixture`: a report's made-up example as a test case the codemap
+/// test suite runs: `<dir>/<name>/project/…` (the example's files) and
+/// `<dir>/<name>/case.json` (the call, the check, what was wrong and right).
+/// Only an example that reproduces can become a case.
+pub fn to_fixture(project: &Project, id: &str, dir: &Path) -> Result<PathBuf, String> {
+    let r = load(project)
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or_else(|| format!("no report {id}"))?;
+    let ex = r.example.as_ref().ok_or_else(|| {
+        format!("{id} has no made-up example; only an example that reproduces can become a test")
+    })?;
+    if r.example_status.as_deref() != Some("reproduces") {
+        return Err(format!(
+            "{id}'s example {}; fix it so it reproduces first",
+            r.example_status.as_deref().unwrap_or("was not checked")
+        ));
+    }
+    let files = ex["files"].as_object().ok_or("the example has no files")?;
+    let expect = ex
+        .get("expect")
+        .or(r.expect.as_ref())
+        .ok_or("the example has no `expect` check")?;
+    let name: String = format!("{}-{}-{}", r.tool, r.kind, r.item)
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .take(80)
+        .collect();
+    let folder = dir.join(&name);
+    if folder.exists() {
+        return Err(format!("{} exists already", folder.display()));
+    }
+    for (path, content) in files {
+        // Paths stay inside the case folder.
+        if path.starts_with('/') || path.split(['/', '\\']).any(|p| p == "..") {
+            return Err(format!("unsafe path in the example: {path}"));
+        }
+        let p = folder.join("project").join(path);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&p, content.as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+    }
+    let case = json!({
+        "report": r.id,
+        "tool": ex["call"]["tool"],
+        "args": ex["call"]["args"],
+        "expect": expect,
+        "wrong": ex.get("wrong").cloned().unwrap_or(json!(r.kind)),
+        "right": ex.get("right").cloned().unwrap_or(json!(r.right)),
+        "fixed_in": r.closed_in,
+    });
+    std::fs::write(
+        folder.join("case.json"),
+        serde_json::to_string_pretty(&case).unwrap_or_default() + "\n",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(folder)
 }
 
 /// `--export`: one folder per open report with the report, the cited lines
@@ -1520,6 +1628,62 @@ mod tests {
         assert!(looks_secret("server 10.2.3.4").is_some());
         assert!(looks_secret("http://localhost:8000/api").is_none());
         assert!(looks_secret("fetch('https://api.internal.corp/x')").is_some());
+    }
+
+    #[test]
+    fn a_reproducing_example_becomes_a_test_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            config: codemap_core::Config::default(),
+            id: "t".into(),
+            index_path: dir.path().join("idx").join("index.db"),
+            app: None,
+        };
+        std::fs::create_dir_all(dir.path().join("idx")).unwrap();
+        let example = json!({
+            "files": { "composer.json": "{}", "app/Note.php": "<?php class Note {}" },
+            "call": { "tool": "verify", "args": { "claims": { "classes": ["Note"] } } },
+            "expect": { "verify": { "classes": ["Note"] }, "is": "exists" },
+            "wrong": "not_found",
+            "right": "Note exists",
+        });
+        let mut r = Report {
+            id: "r_1".into(),
+            tool: "verify".into(),
+            kind: "said_missing".into(),
+            item: "Note".into(),
+            status: "open".into(),
+            example: Some(example.clone()),
+            example_status: Some("does not reproduce".into()),
+            ..Report::default()
+        };
+        save_all(&project, std::slice::from_ref(&r)).unwrap();
+        let out = dir.path().join("cases");
+        assert!(
+            to_fixture(&project, "r_1", &out)
+                .unwrap_err()
+                .contains("reproduces")
+        );
+        r.example_status = Some("reproduces".into());
+        save_all(&project, std::slice::from_ref(&r)).unwrap();
+        let folder = to_fixture(&project, "r_1", &out).unwrap();
+        assert_eq!(folder.file_name().unwrap(), "verify-said-missing-note");
+        assert!(folder.join("project/app/Note.php").is_file());
+        let case: Value =
+            serde_json::from_str(&std::fs::read_to_string(folder.join("case.json")).unwrap())
+                .unwrap();
+        assert_eq!(case["expect"], example["expect"]);
+        // Paths cannot leave the case folder.
+        r.id = "r_2".into();
+        r.item = "Other".into();
+        r.example = Some(json!({ "files": { "../escape.php": "x" }, "call": {}, "expect": {} }));
+        save_all(&project, &[r]).unwrap();
+        assert!(
+            to_fixture(&project, "r_2", &out)
+                .unwrap_err()
+                .contains("unsafe")
+        );
     }
 
     #[test]

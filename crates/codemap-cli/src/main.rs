@@ -150,6 +150,13 @@ enum Command {
         /// Send one report (with a reproducing made-up example) to the codemap repository, after asking.
         #[arg(long)]
         send: Option<String>,
+        /// Turn one report's made-up example into a test case folder
+        /// (`case.json` and `project/`) that codemap's own tests run.
+        #[arg(long, value_name = "ID")]
+        to_fixture: Option<String>,
+        /// Where `--to-fixture` writes (default: fixtures/report-cases).
+        #[arg(long, default_value = "fixtures/report-cases")]
+        fixture_dir: PathBuf,
         /// Empty the log.
         #[arg(long)]
         clear: bool,
@@ -306,6 +313,25 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Map { project, out } => cmd_map(&cli, project, out),
         Command::Reports {
+            to_fixture: Some(id),
+            fixture_dir,
+            project,
+            ..
+        } => {
+            let projects = Project::resolve(&cli, project)?;
+            let mut last = None;
+            for p in &projects {
+                match codemap_mcp::reports::to_fixture(&p.mcp(), id, fixture_dir) {
+                    Ok(folder) => {
+                        println!("wrote {}", folder.display());
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    Err(e) => last = Some(e),
+                }
+            }
+            anyhow::bail!("{}", last.unwrap_or_else(|| format!("no report {id}")))
+        }
+        Command::Reports {
             project,
             json,
             all,
@@ -313,6 +339,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             close,
             send,
             clear,
+            ..
         } => cmd_reports(
             &cli,
             project,

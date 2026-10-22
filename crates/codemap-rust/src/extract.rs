@@ -31,7 +31,9 @@ pub struct Command {
     pub line: u32,
 }
 
-/// A reference to a name: kind is `rust_type`, `rust_call` or `rust_member`.
+/// A reference to a name: kind is `rust_type`, `rust_call` or `rust_member`,
+/// or `rust_path`: the path a name was written with, through the file's `use`
+/// lines (`views::replace` → `my_crate::views::replace`), on the same line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Ref {
     pub kind: &'static str,
@@ -82,10 +84,12 @@ pub fn extract_file(module: &str, src: &str) -> Extracted {
         crate_name: module.split("::").next().unwrap_or(module).to_owned(),
         types: HashMap::new(),
         uses: HashMap::new(),
+        lets: Default::default(),
     };
     cx.out.facts.errors = count_errors(root);
     cx.collect_types(root, module);
     cx.collect_uses(root, module);
+    cx.collect_lets(root);
     cx.items(root, module, false);
     cx.refs(root);
     let mut seen = std::collections::HashSet::new();
@@ -113,6 +117,8 @@ struct Cx<'a> {
     types: HashMap<String, String>,
     /// `use` imports: name → path.
     uses: HashMap<String, String>,
+    /// Names bound by `let` somewhere in the file (closures, mostly).
+    lets: std::collections::HashSet<String>,
 }
 
 fn line(n: Node) -> u32 {
@@ -314,6 +320,18 @@ impl Cx<'_> {
         out.join("::")
     }
 
+    fn collect_lets(&mut self, n: Node) {
+        if n.kind() == "let_declaration"
+            && let Some(p) = n.child_by_field_name("pattern")
+            && p.kind() == "identifier"
+        {
+            self.lets.insert(self.text(p).to_owned());
+        }
+        for c in named_children(n) {
+            self.collect_lets(c);
+        }
+    }
+
     fn collect_uses(&mut self, n: Node, module: &str) {
         for c in named_children(n) {
             if c.kind() == "use_declaration"
@@ -337,6 +355,9 @@ impl Cx<'_> {
                 let path = join(prefix, self.text(n));
                 let name = path.rsplit("::").next().unwrap_or(&path).to_owned();
                 let full = self.absolute(&path, module);
+                if full.contains("::") {
+                    self.push_ref("rust_path", &full, n);
+                }
                 self.uses.insert(name, full);
             }
             "use_as_clause" => {
@@ -794,6 +815,40 @@ impl Cx<'_> {
         });
     }
 
+    /// `rust_path` for a name written as `path`: through the file's `use`
+    /// lines, its own items, or `crate::` / `self::` / `super::`. A bare name
+    /// that none of these explain gets none (a glob import, the prelude).
+    fn push_path(&mut self, path: &str, n: Node) {
+        if path.contains(['<', ' ', '\n']) {
+            return;
+        }
+        let (first, rest) = path
+            .split_once("::")
+            .map_or((path, None), |(a, b)| (a, Some(b)));
+        let full = match self.uses.get(first).or_else(|| self.types.get(first)) {
+            Some(full) => match rest {
+                Some(r) => format!("{full}::{r}"),
+                None => full.clone(),
+            },
+            // `load()` in a file with its own `fn load`.
+            None if rest.is_none() => match self
+                .out
+                .symbols
+                .iter()
+                .find(|s| s.parent_fqn.is_none() && s.name == path)
+            {
+                Some(s) => s.fqn.clone(),
+                // `let names = |t| ..; names(t)`: not any function's path.
+                None if self.lets.contains(path) => format!("(local)::{path}"),
+                None => return,
+            },
+            None => self.absolute(path, &self.out.facts.module.clone()),
+        };
+        if full.contains("::") {
+            self.push_ref("rust_path", &full, n);
+        }
+    }
+
     /// Segments of `a::B::c` before the last: capitalised ones are types.
     fn path_types(&mut self, path: Node) {
         let mut cur = Some(path);
@@ -806,6 +861,8 @@ impl Cx<'_> {
                         let t = self.text(name).to_owned();
                         if is_capitalised(&t) {
                             self.push_ref("rust_type", &t, name);
+                            let path = self.text(p).to_owned();
+                            self.push_path(&path, name);
                         }
                     }
                     cur = p.child_by_field_name("path");
@@ -814,6 +871,7 @@ impl Cx<'_> {
                     let t = self.text(p).to_owned();
                     if p != path && is_capitalised(&t) {
                         self.push_ref("rust_type", &t, p);
+                        self.push_path(&t, p);
                     }
                     cur = None;
                 }
@@ -836,6 +894,16 @@ impl Cx<'_> {
                 });
                 if !declares {
                     self.push_ref("rust_type", &t, n);
+                    match n.parent() {
+                        Some(p)
+                            if p.kind() == "scoped_type_identifier"
+                                && p.child_by_field_name("name") == Some(n) =>
+                        {
+                            let path = self.text(p).to_owned();
+                            self.push_path(&path, n);
+                        }
+                        _ => self.push_path(&t, n),
+                    }
                 }
             }
             "call_expression" => {
@@ -857,6 +925,7 @@ impl Cx<'_> {
                                 &t,
                                 f,
                             );
+                            self.push_path(&t, f);
                         }
                         "scoped_identifier" => {
                             if let Some(name) = f.child_by_field_name("name") {
@@ -870,6 +939,8 @@ impl Cx<'_> {
                                     &t,
                                     name,
                                 );
+                                let path = self.text(f).to_owned();
+                                self.push_path(&path, name);
                             }
                             self.path_types(f);
                         }
@@ -924,6 +995,7 @@ impl Cx<'_> {
                     .is_some_and(|p| p.child_by_field_name("name") == Some(n));
                 if is_constant(&t) && !declares {
                     self.push_ref("rust_call", &t, n);
+                    self.push_path(&t, n);
                 }
             }
             "macro_invocation" => {
@@ -962,7 +1034,35 @@ impl Cx<'_> {
             match c.kind() {
                 "identifier" => {
                     let t = self.text(c).to_owned();
-                    self.push_ref(name_kind(&t), &t, c);
+                    // `format!("{}", s.replace(..))`: a method, not a function.
+                    let kind = if c.prev_sibling().is_some_and(|p| p.kind() == ".") {
+                        "rust_member"
+                    } else {
+                        name_kind(&t)
+                    };
+                    // `names.join(..)`, `views::x`: a variable or a path
+                    // segment. Only `name(..)` calls a function.
+                    let called = c
+                        .next_sibling()
+                        .is_some_and(|n| n.kind() == "token_tree" && self.text(n).starts_with('('));
+                    if kind == "rust_call" && !called && !is_constant(&t) {
+                        continue;
+                    }
+                    self.push_ref(kind, &t, c);
+                    if kind != "rust_member" {
+                        // `fancy::label(x)` as tokens: the path back to its start.
+                        let mut path = t.clone();
+                        let mut p = c.prev_sibling();
+                        while let Some(sep) = p.filter(|p| p.kind() == "::") {
+                            let Some(seg) = sep.prev_sibling().filter(|s| s.kind() == "identifier")
+                            else {
+                                break;
+                            };
+                            path = format!("{}::{path}", self.text(seg));
+                            p = seg.prev_sibling();
+                        }
+                        self.push_path(&path, c);
+                    }
                 }
                 "token_tree" => self.token_names(c),
                 _ => {}
@@ -1045,6 +1145,36 @@ fn main() { let k = Kind::A; println!("{}", MAX); x.items.len(); }
 #[cfg(test)]
 mod tests { #[test] fn t() { super::main(); } }
 "#;
+
+    #[test]
+    fn calls_keep_the_path_they_were_written_with() {
+        let x = extract_file(
+            "demo::app",
+            "use crate::store::{open, Store};\nuse codemap::views;\n\nfn f(s: &str) {\n    open();\n    views::replace();\n    let i: precise::Index = Store::new();\n    format!(\"{}\", s.trim());\n    local();\n    f(s);\n    format!(\"{} {}\", names.len(), fancy::label(s));\n    let g = |x| x;\n    g(1);\n}\n",
+        );
+        let has = |kind: &str, target: &str, line: u32| {
+            x.refs
+                .iter()
+                .any(|r| r.kind == kind && r.target == target && r.line == line)
+        };
+        assert!(has("rust_path", "demo::store::open", 1), "{:?}", x.refs);
+        assert!(has("rust_path", "demo::store::open", 5), "{:?}", x.refs);
+        assert!(
+            has("rust_path", "codemap::views::replace", 6),
+            "{:?}",
+            x.refs
+        );
+        assert!(has("rust_path", "precise::Index", 7), "{:?}", x.refs);
+        assert!(has("rust_path", "demo::store::Store", 7), "{:?}", x.refs);
+        assert!(has("rust_member", "trim", 8), "{:?}", x.refs);
+        assert!(!has("rust_call", "trim", 8), "{:?}", x.refs);
+        assert!(has("rust_path", "demo::app::f", 10), "{:?}", x.refs);
+        assert!(!has("rust_call", "names", 11), "{:?}", x.refs);
+        assert!(has("rust_path", "fancy::label", 11), "{:?}", x.refs);
+        assert!(has("rust_path", "(local)::g", 13), "{:?}", x.refs);
+        // Not explained by a `use`: no path, the name alone.
+        assert!(!x.refs.iter().any(|r| r.kind == "rust_path" && r.line == 9));
+    }
 
     #[test]
     fn rust_file() {

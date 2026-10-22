@@ -18,7 +18,7 @@ use crate::extract::{self, Extracted, RustFacts};
 pub const EXTRACTOR: &str = "rust";
 
 /// Bump when per-file output changes; every Rust file is then re-parsed.
-pub const RUST_EXTRACTOR_VERSION: i64 = 1;
+pub const RUST_EXTRACTOR_VERSION: i64 = 2;
 
 /// `pages.source` for Rust entry points.
 pub const SOURCE: &str = "rust";

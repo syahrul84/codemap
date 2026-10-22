@@ -10,6 +10,17 @@
 
 The same tools work across Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust. Nothing leaves your machine: your code is never sent anywhere, and the index stays local.
 
+## Five-minute start
+
+```bash
+curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-aarch64-apple-darwin.tar.gz | tar xz   # pick your file: see Install
+mkdir -p ~/.local/bin && mv codemap ~/.local/bin/
+codemap setup        # Claude Code: register the server for every project, add the rule block and the search hook
+cd ~/code/my-app && codemap scan && codemap doctor
+```
+
+Then start a new Claude Code session in the project. Claude asks codemap before grep, and `codemap usage` shows what it asked. Windows: see [Windows](#windows); other AI apps: see [Other AI tools](#other-ai-tools).
+
 ## What it reads
 
 `codemap` reads a Laravel, Vue 2, Vue 3, Nuxt (2/3/4), Next.js, Swift (iOS / macOS), Android (Kotlin / Java) or Rust project and serves facts about it to Claude over MCP, so Claude checks what exists instead of guessing:
@@ -156,7 +167,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.7 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.8 codemap-cli
 ```
 
 ### Docker
@@ -636,12 +647,31 @@ Routes built at runtime (from `.map()`, loops, or helpers that aren't simple) ar
 - Database columns (`orders.collected_at`) are found by name: in the table's models (`$fillable`, `$casts`, …), in files that use those models or name the table, in factories and in frontend code; other mentions are listed as possible.
 
 **Swift, Kotlin, Java, Rust:** parsed with tree-sitter.
-- There is no type checker: a member call (`model.refresh()`) is matched by name, and uses outside the member's own file are listed as possible.
+- There is no type checker: a member call (`model.refresh()`) is matched by name, and uses outside the member's own file are listed as possible. With an `index.scip` in the project root (see [Exact references](#exact-references-indexscip)) these are settled exactly.
 - The Apple and Android SDKs, Swift packages and Rust dependencies are not indexed, so `verify` says a name like `URLSession` is not declared in the project.
 - A few valid forms the Swift and Kotlin grammars misread (`@_silgen_name`, regex literals; Kotlin `var x by …; private set`, a modifier word used as a name) are skipped or rewritten before parsing, never reported as errors.
 - API calls from mobile and Rust code are not linked to backend routes.
 
 **Not yet:** embeddings and semantic search.
+
+## Exact references (`index.scip`)
+
+codemap matches member calls by name, because it reads code without a type checker. Compilers and type checkers can write exact references in the SCIP format; when the project root has an `index.scip`, `find_usages` uses it for the symbol it resolved: "possible" uses the index confirms are listed, the others dropped, and references only the index knows are added. The answer says when files changed after the index was written.
+
+Generate it with the project's own indexer, for example:
+
+```bash
+rust-analyzer scip .                       # Rust
+npx @sourcegraph/scip-typescript index     # TypeScript / JavaScript
+scip-php                                   # PHP (composer require --dev davidrjenni/scip-php)
+scip-java index                            # Java / Kotlin (Gradle, Maven)
+```
+
+Add `index.scip` to `.gitignore`. Regenerating it (in CI, or a git hook) keeps answers exact; without it codemap works as before.
+
+## Report cases
+
+`fixtures/report-cases/` holds wrong answers codemap once gave, each as a made-up example (`project/`) and the check of the right answer (`case.json`). The test suite indexes every one and runs its check, so a fixed bug cannot come back. Turn a reproducing report into a case with `codemap reports --to-fixture <id>`.
 
 ## Troubleshooting
 

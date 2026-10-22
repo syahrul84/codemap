@@ -993,10 +993,10 @@ pub struct ApiUsageParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// A backend endpoint: `GET api/v1/malls/{mall}`, `api/v1/malls`, or part of a URI (`malls`).
-    #[serde(default)]
+    #[serde(default, alias = "route", alias = "uri", alias = "url", alias = "path")]
     pub endpoint: Option<String>,
     /// A frontend file (or part of its path): its calls with their routes and fields.
-    #[serde(default)]
+    #[serde(default, alias = "component")]
     pub file: Option<String>,
     /// `missing` (calls with no route), `fields` (fields read but not returned),
     /// `payload` (required fields not sent, sent body fields the action does not
@@ -1008,17 +1008,17 @@ pub struct ApiUsageParams {
     /// Only what this branch touches: calls in files changed since it left the
     /// default branch (plus uncommitted changes), and calls anywhere to backend
     /// routes whose route file or controller changed.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::tools::lenient_bool")]
     pub git_changes: bool,
     /// Like `git_changes`, for these files of this project (backend changes
     /// still come from git).
-    #[serde(default)]
+    #[serde(default, alias = "files", alias = "changed")]
     pub changed_files: Option<Vec<String>>,
     /// The branch `git_changes` compares with (default: origin/HEAD, main, master, develop).
     #[serde(default)]
     pub base: Option<String>,
     /// Hide findings saved by `codemap baseline`: report only new ones.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::tools::lenient_bool")]
     pub new_only: bool,
     #[serde(default)]
     pub limit: Option<usize>,

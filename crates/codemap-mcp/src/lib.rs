@@ -11,6 +11,7 @@ pub mod leftovers;
 pub mod livedata;
 pub mod map;
 pub mod misses;
+pub mod precise;
 pub mod refresh;
 pub mod release;
 pub mod reports;

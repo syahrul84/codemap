@@ -405,6 +405,47 @@ fn rebuild(conn: &mut Connection) -> Result<(usize, usize)> {
             }
         }
     }
+    // The shared view model.
+    {
+        let mut vs = Vec::new();
+        let mut uses = Vec::new();
+        for f in &files {
+            for c in &f.facts.composables {
+                vs.push(codemap_core::views::View {
+                    file_id: f.file_id,
+                    name: c.name.clone(),
+                    path: f.path.clone(),
+                    line: c.line,
+                    kind: "composable".into(),
+                });
+                for call in c.calls.iter().filter(|x| x.name != c.name) {
+                    if let Some((_, to_path)) = comps.get(call.name.as_str()) {
+                        uses.push(codemap_core::views::Use {
+                            from_path: f.path.clone(),
+                            from_name: Some(c.name.clone()),
+                            to_name: call.name.clone(),
+                            to_path: Some((*to_path).to_owned()),
+                            line: call.line,
+                        });
+                    }
+                }
+            }
+            for s in f.facts.screens.iter().filter(|s| s.kind == "content") {
+                for name in &s.candidates {
+                    if let Some((_, to_path)) = comps.get(name.as_str()) {
+                        uses.push(codemap_core::views::Use {
+                            from_path: f.path.clone(),
+                            from_name: s.owner.clone(),
+                            to_name: name.clone(),
+                            to_path: Some((*to_path).to_owned()),
+                            line: s.line,
+                        });
+                    }
+                }
+            }
+        }
+        codemap_core::views::replace(&tx, "compose", &vs, &uses)?;
+    }
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('android_screens', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

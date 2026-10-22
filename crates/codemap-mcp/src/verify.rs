@@ -23,36 +23,43 @@ use crate::tools::{DetailParam, Project, ToolError};
 #[serde(deny_unknown_fields)]
 pub struct Claims {
     /// FQNs or short names, e.g. `App\Models\Order`.
-    #[serde(default)]
+    #[serde(default, alias = "class", alias = "models", alias = "model")]
     pub classes: Vec<String>,
     /// `Class::method`.
-    #[serde(default)]
+    #[serde(default, alias = "method")]
     pub methods: Vec<String>,
     /// Global or namespaced functions, e.g. `money`.
-    #[serde(default)]
+    #[serde(default, alias = "function", alias = "helpers")]
     pub functions: Vec<String>,
     /// Route names (`orders.store`) or `METHOD uri` (`POST api/orders`).
-    #[serde(default)]
+    #[serde(default, alias = "route")]
     pub routes: Vec<String>,
     /// Table names.
-    #[serde(default)]
+    #[serde(default, alias = "table")]
     pub tables: Vec<String>,
     /// `table.column`.
-    #[serde(default)]
+    #[serde(default, alias = "column", alias = "fields")]
     pub columns: Vec<String>,
     /// `Model::relation`.
-    #[serde(default)]
+    #[serde(default, alias = "relation", alias = "relationships")]
     pub relations: Vec<String>,
     /// Vue components by name or tag: `OrderCard`, `order-card`, `UButton`.
-    #[serde(default)]
+    #[serde(default, alias = "component", alias = "views", alias = "composables")]
     pub components: Vec<String>,
     /// Backend endpoints a frontend call relies on: `GET /orders/{id}` (the API
     /// base is inferred) or `POST api/v1/carts`. Checked against linked backends.
-    #[serde(default)]
+    #[serde(default, alias = "endpoint", alias = "api", alias = "urls")]
     pub endpoints: Vec<String>,
     /// Translation keys: `orders.title` (vue-i18n or Laravel). A trailing `.`
     /// or `*` checks a group. Reports locales the key is missing in.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "i18n",
+        alias = "i18n_key",
+        alias = "translations",
+        alias = "translation_keys",
+        alias = "keys"
+    )]
     pub i18n_keys: Vec<String>,
     /// From code: columns used on a model's query (model FQN or short name, column).
     #[serde(skip)]
@@ -96,12 +103,12 @@ pub struct VerifyParams {
     #[serde(default)]
     pub claims: Option<Claims>,
     /// PHP code to scan for class, method, route and table references.
-    #[serde(default)]
+    #[serde(default, alias = "snippet", alias = "code", alias = "php")]
     pub php_snippet: Option<String>,
     /// Pre-release check instead of claims: only problems (missing endpoints,
     /// fields not returned, translation gaps, unused code added on the branch,
     /// migrations not run, config / env keys, settings without defaults, copy rules).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::tools::lenient_bool")]
     pub release_check: bool,
     /// With `release_check`: the branch to compare with (default: origin/HEAD,
     /// main, master or develop).
@@ -114,7 +121,7 @@ pub struct VerifyParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_errors: Option<String>,
     /// With `type_errors`: save this output as the new starting point.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::tools::lenient_bool")]
     pub type_errors_save: bool,
     #[serde(default)]
     pub detail: DetailParam,
@@ -1042,6 +1049,22 @@ impl Verifier<'_> {
     fn component(&self, name: &str) -> Result<Check, ToolError> {
         use codemap_vue::component::ComponentCheck;
         let name = name.trim();
+        // Any framework's view: a Vue component, a SwiftUI view, a Compose function.
+        let conn = self.store.conn();
+        if let Some(v) = codemap_core::views::find(conn, name)?.into_iter().next() {
+            let mut c = Check::new("component", name, Status::Exists)
+                .file(Some(format!("{}:{}", v.path, v.line)));
+            if v.framework != "vue" {
+                c = c.detail(match v.framework.as_str() {
+                    "swiftui" => "SwiftUI view",
+                    "compose" => "Compose function",
+                    _ => "view",
+                });
+            }
+            return Ok(c);
+        }
+        let has_native = codemap_core::views::any(conn, Some("swiftui"))?
+            || codemap_core::views::any(conn, Some("compose"))?;
         Ok(
             match codemap_vue::component::check(self.store, self.root, name)? {
                 ComponentCheck::Exists(path) => {
@@ -1059,6 +1082,12 @@ impl Verifier<'_> {
                     "no project component, registration or known library component has this name",
                 )
                 .suggest(suggestions),
+                ComponentCheck::NoFrontend if has_native => {
+                    let names = codemap_core::views::names(conn)?;
+                    Check::new("component", name, Status::NotFound)
+                        .detail("no SwiftUI view or Compose function has this name")
+                        .suggest(closest(name, &names))
+                }
                 ComponentCheck::NoFrontend => Check::new("component", name, Status::Unresolved)
                     .detail("no Vue / Nuxt app detected in this project"),
             },

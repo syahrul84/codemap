@@ -366,6 +366,26 @@ pub struct OverviewParams {
     pub detail: DetailParam,
 }
 
+/// A flag given as `true`, `"true"`, `1` or `"yes"`: AI apps sometimes send
+/// booleans as strings.
+pub fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    use serde::de::Error as _;
+    let v = serde_json::Value::deserialize(d)?;
+    match &v {
+        serde_json::Value::Bool(b) => Ok(*b),
+        serde_json::Value::Null => Ok(false),
+        serde_json::Value::Number(n) => Ok(n.as_f64().is_some_and(|x| x != 0.0)),
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" | "on" => Ok(true),
+            "false" | "no" | "0" | "off" | "" => Ok(false),
+            other => Err(D::Error::custom(format!(
+                "expected true or false, got `{other}`"
+            ))),
+        },
+        _ => Err(D::Error::custom("expected true or false")),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
@@ -373,13 +393,20 @@ pub struct SearchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Short name, FQN, `Class::method`, or part of a name.
+    #[serde(
+        alias = "name",
+        alias = "q",
+        alias = "search",
+        alias = "target",
+        alias = "symbol"
+    )]
     pub query: String,
     /// Only this kind: class, interface, trait, enum, method, function, property, const, enum_case,
     /// component, composable, store.
     #[serde(default)]
     pub kind: Option<String>,
     /// Only symbols under this namespace, e.g. `App\Services`.
-    #[serde(default)]
+    #[serde(default, alias = "namespace")]
     pub namespace_prefix: Option<String>,
     /// Max results (default 20, max 100).
     #[serde(default)]
@@ -411,9 +438,16 @@ pub struct GetSymbolParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Short name, FQN, or `Class::method` / `Class::$property` / `Class::CONST`.
+    #[serde(
+        alias = "symbol",
+        alias = "fqn",
+        alias = "query",
+        alias = "target",
+        alias = "class"
+    )]
     pub name: String,
     /// Include the source lines (default false).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub include_source: bool,
     /// Max source lines when `include_source` (default 80).
     #[serde(default)]
@@ -429,6 +463,13 @@ pub struct GetComponentParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Component name (`OrderCard`), tag (`order-card`), or file path (`src/components/OrderCard.vue`).
+    #[serde(
+        alias = "component",
+        alias = "file",
+        alias = "path",
+        alias = "query",
+        alias = "target"
+    )]
     pub name: String,
     #[serde(default)]
     pub detail: DetailParam,
@@ -441,17 +482,23 @@ pub struct ListPagesParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Substring of the page URL, e.g. `orders` or `:id`.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "path",
+        alias = "uri",
+        alias = "uri_contains",
+        alias = "url"
+    )]
     pub path_contains: Option<String>,
     /// Route name prefix, e.g. `admin.`.
     #[serde(default)]
     pub name_prefix: Option<String>,
     /// Component file (or part of it) rendered by the page.
-    #[serde(default)]
+    #[serde(default, alias = "component")]
     pub file: Option<String>,
     /// Admin (Filament) pages: who may open them (the model's policy
     /// methods, canAccess / canViewAny overrides).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub permissions: bool,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -481,13 +528,19 @@ pub struct ListRoutesParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Substring of the URI, e.g. `orders`.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "uri",
+        alias = "path",
+        alias = "path_contains",
+        alias = "url"
+    )]
     pub uri_contains: Option<String>,
     /// Route name prefix, e.g. `orders.`.
     #[serde(default)]
     pub name_prefix: Option<String>,
     /// HTTP method, e.g. `POST`.
-    #[serde(default)]
+    #[serde(default, alias = "verb")]
     pub method: Option<String>,
     /// Controller FQN or short name.
     #[serde(default)]
@@ -498,7 +551,7 @@ pub struct ListRoutesParams {
     /// Who may call each route: access middleware, checks in the action
     /// (`authorize`, `Gate`, `can`), the Form Request's `authorize()`, and the
     /// policy method; routes with none are marked public.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub permissions: bool,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -530,12 +583,12 @@ pub struct SchemaParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Table name. Omit to list all tables.
-    #[serde(default)]
+    #[serde(default, alias = "name", alias = "table_name")]
     pub table: Option<String>,
     /// Settings instead of tables: key/value settings read and written in code
     /// (with defaults and the admin page that edits them) and config keys
     /// backed by env() (with their defaults). `.env` values are never read.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub settings: bool,
     /// With `settings`: only keys starting with this, e.g. `popularity.` or `app.`.
     #[serde(default)]
@@ -543,16 +596,16 @@ pub struct SchemaParams {
     /// Migrations not yet applied to the configured databases (local, staging):
     /// the migration files compared with each database's `migrations` table,
     /// read-only. Databases come from `.codemap.toml` `[[databases]]` / `CODEMAP_DB_*`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub migrations: bool,
     /// The cache map: every cache key (or pattern) with where it is written
     /// and its TTL, where it is read and where it is cleared. Narrow with `key_prefix`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub cache: bool,
     /// Background work: the schedule, queued jobs and who dispatches them,
     /// events with their listeners and who fires them, notifications and mails
     /// and who sends them. `key_prefix` filters by name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub background: bool,
     #[serde(default)]
     pub detail: DetailParam,

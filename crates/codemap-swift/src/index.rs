@@ -350,6 +350,51 @@ fn rebuild_screens(conn: &mut Connection) -> Result<(usize, usize)> {
             }
         }
     }
+    // The shared view model.
+    {
+        let file_ids: HashMap<&str, i64> =
+            files.iter().map(|f| (f.path.as_str(), f.file_id)).collect();
+        let mut vs = Vec::new();
+        let mut uses = Vec::new();
+        for (name, (path, line)) in &views {
+            if let Some(&id) = file_ids.get(path.as_str()) {
+                vs.push(codemap_core::views::View {
+                    file_id: id,
+                    name: name.clone(),
+                    path: path.clone(),
+                    line: *line,
+                    kind: "view".into(),
+                });
+            }
+        }
+        for f in &files {
+            for t in f.facts.types.iter().filter(|t| {
+                views.contains_key(&t.name)
+                    || t.kind == "extension"
+                    || t.conforms.iter().any(|c| c == "App")
+            }) {
+                for c in &t.calls {
+                    let target = views.get_key_value(c.name.as_str()).or_else(|| {
+                        by_short
+                            .get(c.name.as_str())
+                            .and_then(|n| views.get_key_value(*n))
+                    });
+                    if let Some((to, (to_path, _))) = target
+                        && *to != t.name
+                    {
+                        uses.push(codemap_core::views::Use {
+                            from_path: f.path.clone(),
+                            from_name: Some(t.name.clone()),
+                            to_name: to.clone(),
+                            to_path: Some(to_path.clone()),
+                            line: c.line,
+                        });
+                    }
+                }
+            }
+        }
+        codemap_core::views::replace(&tx, "swiftui", &vs, &uses)?;
+    }
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('swift_screens', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
