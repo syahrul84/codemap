@@ -485,8 +485,11 @@ name = "shop-api"            # display name (default: composer.json name, then g
 # Default: Laravel dirs plus Vue/Nuxt source dirs (missing ones are skipped):
 include = ["app", "routes", "database", "config", "bootstrap", "lang", "src", "resources/js",
            "components", "pages", "layouts", "composables", "stores", "store", "plugins",
-           "middleware", "utils", "mixins", "i18n", "locales", "tests", "test",
-           "resources/lang", "resources/views"]
+           "middleware", "server", "utils", "mixins", "i18n", "locales", "tests", "test",
+           "resources/lang", "resources/views",
+           # React / Next.js and Supabase:
+           "lib", "hooks", "context", "contexts", "providers", "actions", "features",
+           "services", "types", "supabase", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js"]
 exclude = ["/vendor", "node_modules", "/storage", "/public", "/bootstrap/cache", "/dist", "/.output", "/coverage"]
 
 [laravel]

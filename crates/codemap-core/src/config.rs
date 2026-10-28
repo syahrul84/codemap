@@ -203,6 +203,8 @@ impl Default for ScanConfig {
                 "store",
                 "plugins",
                 "middleware",
+                // Nuxt server routes and server utils.
+                "server",
                 "utils",
                 "mixins",
                 "i18n",

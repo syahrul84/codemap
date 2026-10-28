@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - `found: false` and `not_found` answers list `not_scanned`: top-level folders holding code that the scan does not read (outside `[scan] include`), so the AI does not take "not found" as "does not exist" and write a duplicate.
+- Nuxt's `server/` folder (server routes and utils) is read by default.
 - `search_symbol` ranks the app's own code above test, fixture and stub copies with the same name.
 - `codemap setup --dry-run` shows what would change and changes nothing; setup keeps the old `CLAUDE.md` / `settings.json` as `<name>.codemap-backup` before changing them; `--no-hook` installs without the search hook.
 - Workspaces: beside a Laravel or web app, Swift, Android and Rust folders are found as apps too (a `backend/` + `ios/` folder no longer leaves the iOS app out). A folder of mobile apps alone stays one project.

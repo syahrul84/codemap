@@ -68,6 +68,11 @@ const FILES: &[(&str, &str)] = &[
         "<?php\nnamespace Modules\\Billing;\n\nclass Invoice {}\n",
     ),
     ("docs/notes.json", "{}"),
+    ("package.json", r#"{"dependencies": {"nuxt": "^3.0.0"}}"#),
+    (
+        "server/utils/price.ts",
+        "export function formatPrice(cents: number) { return cents / 100 }\n",
+    ),
 ];
 
 #[test]
@@ -87,6 +92,9 @@ fn not_found_names_the_folders_the_scan_skips() {
     // Found: nothing to explain.
     let c = call(&store, &p, "search_symbol", json!({"query": "Cart"}));
     assert!(c.get("not_scanned").is_none(), "{c}");
+    // Nuxt's `server/` is read by default.
+    let f = call(&store, &p, "search_symbol", json!({"query": "formatPrice"}));
+    assert_eq!(f["found"], true, "{f}");
 }
 
 #[test]
