@@ -228,6 +228,13 @@ enum Command {
         /// Undo it: rule block, hook and MCP server entry.
         #[arg(long)]
         remove: bool,
+        /// Show what would change and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Install without the hook that refuses code searches until a
+        /// codemap tool has run (removes it if installed before).
+        #[arg(long)]
+        no_hook: bool,
     },
     /// Called by the hooks `codemap setup` installs (`check` before a search,
     /// `used` after a codemap tool); reads the tool call as JSON on stdin.
@@ -298,13 +305,23 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             scope,
             check,
             remove,
+            dry_run,
+            no_hook,
         } => {
             let scope = match scope.as_str() {
                 "user" => setup::Scope::User,
                 "project" => setup::Scope::Project,
                 other => anyhow::bail!("--scope is `user` or `project`, not `{other}`"),
             };
-            setup::run(scope, *check, *remove)?;
+            setup::run(
+                scope,
+                setup::Options {
+                    check: *check,
+                    remove: *remove,
+                    dry_run: *dry_run,
+                    no_hook: *no_hook,
+                },
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Hook { action } => {

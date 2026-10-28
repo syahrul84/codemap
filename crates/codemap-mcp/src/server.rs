@@ -26,13 +26,15 @@ pub const REFRESH_BUDGET: Duration = Duration::from_secs(1);
 
 pub const INSTRUCTIONS: &str = "Use these tools instead of grep, find or reading whole files \
 for any question about this project's code; load them first if your client defers them. \
-Facts about this project's code, routes, models and database \
-schema, read from the source. Call project_overview at the start of a task. Call search_symbol \
+Facts about this project's code, routes, models, database \
+schema, components and screens, read from the source with file:line: answers are a fraction of the \
+size of the files they replace, so never guess a class, route or column. Call project_overview at the start of a task. Call search_symbol \
 before creating any class, method or helper and reuse what exists. Call get_schema before writing \
 queries, migrations or model code; never assume column names. Prefer get_symbol over reading whole \
-files. For Vue/Nuxt code, call get_component before using or changing a component and search_symbol \
-for composables and stores. Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true, re-check files directly. found: false means it does not exist \
-in the project. If an answer turns out wrong after you checked the files, report it once with \
+files. For Vue, Nuxt, React, SwiftUI or Compose code, call get_component before using or changing a \
+component, list_pages for screens, api_usage for HTTP calls, and search_symbol for composables and \
+stores; Swift, Kotlin and Rust types and members go through the same tools. Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true, re-check files directly. found: false means it does not exist \
+in the project, unless the answer lists not_scanned folders (code that is not indexed). If an answer turns out wrong after you checked the files, report it once with \
 report_wrong_answer (pass its meta.call_id), then carry on.";
 
 /// One indexed project (the root, or one app of a workspace).
@@ -536,7 +538,7 @@ fn stale(warning: String) -> Freshness {
 impl CodemapServer {
     #[tool(
         name = "project_overview",
-        description = "Use first in every session to understand the project before reading files: framework version and layout, PHP constraint, PSR-4 roots, counts, route files, key directories, main namespaces, models, index health."
+        description = "Use first in every session to understand the project before reading files (about 1-2k tokens instead of opening a dozen): framework and version (Laravel, Vue / Nuxt, Next.js / React, Swift, Android, Rust), layout, counts, route files, key directories, main namespaces, models, screens, crates or modules, names AI assistants often got wrong here (`often_mistaken`), index health."
     )]
     pub async fn project_overview(
         &self,
@@ -547,7 +549,7 @@ impl CodemapServer {
 
     #[tool(
         name = "search_symbol",
-        description = "Use before writing any new class, method or helper, to find existing code to reuse, or to locate code. Matches short names, FQNs, Class::method and partial names. Returns found:false with suggestions when nothing exists."
+        description = "Use before writing any new class, method or helper, to find existing code to reuse, or to locate code. Matches short names, FQNs, Class::method and partial names. Reuse what it finds instead of writing a duplicate or inventing a name; the app's own code ranks above test and fixture copies. Returns found:false with suggestions when nothing exists."
     )]
     pub async fn search_symbol(
         &self,
@@ -558,7 +560,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_symbol",
-        description = "Use instead of reading a whole file when you need one class or method: signature, location, members, parents. Models include table, fillable, casts, relations, accessors, scopes; controllers their routes and Form Requests; Form Requests their rules. Ambiguous short names return candidates."
+        description = "Use instead of reading a whole file (a few hundred tokens instead of the file) when you need one class or method: signature, location, members, parents. Models include table, fillable, casts, relations, accessors, scopes; controllers their routes and Form Requests; Form Requests their rules. Ambiguous short names return candidates."
     )]
     pub async fn get_symbol(
         &self,
@@ -569,7 +571,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_component",
-        description = "Use before using, changing or creating a Vue component, Nuxt page, SwiftUI view or Jetpack Compose function: props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. Accepts a name (OrderCard), tag (order-card) or file path."
+        description = "Use before using, changing or creating a Vue component, Nuxt page, React function component, SwiftUI view or Jetpack Compose function: props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. Accepts a name (OrderCard), tag (order-card) or file path."
     )]
     pub async fn get_component(
         &self,
@@ -580,7 +582,7 @@ impl CodemapServer {
 
     #[tool(
         name = "list_pages",
-        description = "Use to find a screen and the code behind it: Nuxt pages (file-based, incl. layout and middleware), vue-router routes, SwiftUI screens (windows, tabs, navigation pushes, sheets, covers, popovers), Android screens (manifest activities, Navigation Compose destinations, dialogs, sheets, `when`-based screen switches), each with the view shown and where it is opened, Rust binaries and their command-line subcommands, and Filament admin pages (admin URL → page class, resource, model, form fields, table columns), each with its URL, route name, the component file it renders, and where it is defined. Filters: path_contains, name_prefix, file. For backend endpoints use list_routes. Pass `permissions: true` for who may open admin pages (policy methods, canAccess)."
+        description = "Use to find a screen and the code behind it: Nuxt pages (file-based, incl. layout and middleware), vue-router routes, Next.js app / pages router screens (route groups, [param], nearest layout), SwiftUI screens (windows, tabs, navigation pushes, sheets, covers, popovers), Android screens (manifest activities, Navigation Compose destinations, dialogs, sheets, `when`-based screen switches), each with the view shown and where it is opened, Rust binaries and their command-line subcommands, and Filament admin pages (admin URL → page class, resource, model, form fields, table columns), each with its URL, route name, the component file it renders, and where it is defined. Filters: path_contains, name_prefix, file. For backend endpoints use list_routes. Pass `permissions: true` for who may open admin pages (policy methods, canAccess)."
     )]
     pub async fn list_pages(
         &self,
@@ -602,7 +604,7 @@ impl CodemapServer {
 
     #[tool(
         name = "api_usage",
-        description = "Use to link the Vue / Nuxt frontend to the Laravel backend: which route each HTTP call hits, calls to endpoints that do not exist (or use the wrong method), and fields the frontend reads that the endpoint does not return. Pass `endpoint` (e.g. `GET api/v1/malls`) for its callers and response fields, `file` for one screen's calls, or `status: missing|fields|unresolved`. Calls whose URL could not be tied to one route are listed with file:line and why. After a change, pass `git_changes: true` (or `changed_files`) for only the calls the change touches, and `new_only: true` to hide findings saved by `codemap baseline`. Separate backend repos are linked with --link / .codemap.toml [[links]]."
+        description = "Use to link frontend HTTP calls (Vue, Nuxt, Next.js / React) to the backend routes that serve them (Laravel, Next.js route handlers): which route each call hits, calls to endpoints that do not exist (or use the wrong method), fields the frontend reads that the endpoint does not return, and request bodies the endpoint would reject (`missing_required`, `unknown_field`). Pass `endpoint` (e.g. `GET api/v1/malls`) for its callers and response fields, `file` for one screen's calls, or `status: missing|fields|payload|payload_all|unresolved|all`. Calls whose URL could not be tied to one route are listed with file:line and why. After a change, pass `git_changes: true` (or `changed_files`) for only the calls the change touches, and `new_only: true` to hide findings saved by `codemap baseline`. Separate backend repos are linked with --link / .codemap.toml [[links]]."
     )]
     pub async fn api_usage(
         &self,
@@ -613,7 +615,7 @@ impl CodemapServer {
 
     #[tool(
         name = "find_usages",
-        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Swift / Kotlin / Java / Rust types and Type.member (or Type::method), Vue components, composables, stores, translation keys, database columns ('orders.collected_at': model $fillable / $casts, queries, resources, factories, frontend reads), endpoints ('GET api/v1/orders') and files."
+        description = "Two uses. (1) Change impact: pass `git_changes: true` (uncommitted changes) or `changed_files` and no target, for one summary of what the change affects (screens, routes, other code) and the exact commands to run only the affected tests. (2) Use before changing, renaming or removing anything: every place it is used, with file:line, and the tests that touch it listed separately (so you know which tests to run). Works for classes, Class::method, functions, route names, Swift / Kotlin / Java / Rust types and Type.member (or Type::method), Vue components, composables, stores, translation keys, database columns ('orders.collected_at': model $fillable / $casts, queries, resources, factories, frontend reads), Supabase tables, endpoints ('GET api/v1/orders') and files. Code nothing uses comes back with `unused: true`."
     )]
     pub async fn find_usages(
         &self,
@@ -624,7 +626,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_schema",
-        description = "Use before writing any query, migration or model change; never assume column names. Without `table`: all tables with column counts and models. With `table`: columns (type, nullable, default, keys, foreign keys), mapped models, and the migration that created/changed them; with a live database or dump configured, each column's `source` and any `drift` from the migrations. With `settings: true`: app settings and their defaults (key/value settings read in code with the admin page that edits them, and config keys backed by env()). With `migrations: true`: migrations not yet applied to the configured databases (local, staging), read-only. With `cache: true`: every cache key with where it is written (TTL), read and cleared. With `background: true`: the schedule, queued jobs, events → listeners, and who sends each notification and mail."
+        description = "Use before writing any query, migration or model change; never assume column names (guessed columns are the most common bug in AI-written queries). The schema is rebuilt from Laravel migrations, `schema:dump` or Supabase migrations. Without `table`: all tables with column counts and models. With `table`: columns (type, nullable, default, keys, foreign keys), mapped models, and the migration that created/changed them; with a live database or dump configured, each column's `source` and any `drift` from the migrations. With `settings: true`: app settings and their defaults (key/value settings read in code with the admin page that edits them, and config keys backed by env()). With `migrations: true`: migrations not yet applied to the configured databases (local, staging), read-only. With `cache: true`: every cache key with where it is written (TTL), read and cleared. With `background: true`: the schedule, queued jobs, events → listeners, and who sends each notification and mail."
     )]
     pub async fn get_schema(
         &self,
@@ -635,7 +637,7 @@ impl CodemapServer {
 
     #[tool(
         name = "verify",
-        description = "Use before finalising code to check that everything it relies on exists. Pass `claims` (classes, methods as Class::method, functions, routes by name or 'METHOD uri', tables, columns as table.column, relations as Model::relation, Vue components by name or tag, endpoints the frontend calls as 'METHOD /path', translation keys as i18n_keys; `i18n_keys: ['*']` lists every problem text) and/or a `php_snippet` to scan. Each item is exists, not_found (with suggestions), external (vendor/PHP built-in) or unresolved. Fix every not_found. Before a release, pass `release_check: true` (no claims) for one list of problems: missing endpoints, fields not returned, translation gaps, unused code added on the branch, migrations not run, config / env keys, settings without defaults, copy rules; `clean: true` when there are none. A problem that is on purpose is silenced with a `codemap-ignore` comment on (or above) its line, or `[release] ignore` in .codemap.toml. The release check also lists `release_steps` (what the server needs: migrate, composer install, caches, queue restart, rebuilds, new env variables) and the project's file `rules` the change touches. After running the project's type check (vue-tsc, nuxi typecheck, tsc, PHPStan --error-format=raw), pass its output as `type_errors` (with `app` in a workspace): only errors that are new since the saved starting point come back."
+        description = "Use before finalising code to check that everything it relies on exists; it catches invented names before they reach review. Pass `claims` (classes, methods as Class::method, functions, routes by name or 'METHOD uri', tables, columns as table.column, relations as Model::relation, Vue components by name or tag, endpoints the frontend calls as 'METHOD /path', translation keys as i18n_keys; `i18n_keys: ['*']` lists every problem text) and/or a `php_snippet` to scan. Each item is exists, not_found (with suggestions), external (vendor/PHP built-in) or unresolved. Fix every not_found. Before a release, pass `release_check: true` (no claims) for one list of problems: missing endpoints, fields not returned, translation gaps, unused code added on the branch, leftover mentions of deleted or renamed names, migrations not run, config / env keys, settings without defaults, copy rules; `clean: true` when there are none. A problem that is on purpose is silenced with a `codemap-ignore` comment on (or above) its line, or `[release] ignore` in .codemap.toml. The release check also lists `release_steps` (what the server needs: migrate, composer install, caches, queue restart, rebuilds, new env variables) and the project's file `rules` the change touches. After running the project's type check (vue-tsc, nuxi typecheck, tsc, PHPStan --error-format=raw), pass its output as `type_errors` (with `app` in a workspace): only errors that are new since the saved starting point come back."
     )]
     pub async fn verify(
         &self,

@@ -482,3 +482,63 @@ fn setup_installs_and_removes() {
             .unwrap();
     assert_eq!(settings, serde_json::json!({"model": "x"}));
 }
+
+/// `--dry-run` changes nothing, a real run keeps the old files as backups,
+/// and `--no-hook` installs the rules without the search hook.
+#[test]
+fn setup_previews_backs_up_and_can_skip_the_hook() {
+    let home = tempfile::tempdir().unwrap();
+    let claude_dir = home.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let rules = claude_dir.join("CLAUDE.md");
+    let settings = claude_dir.join("settings.json");
+    std::fs::write(&rules, "# Mine\n").unwrap();
+    std::fs::write(&settings, r#"{"model":"x"}"#).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(args)
+            .env("CLAUDE_CONFIG_DIR", &claude_dir)
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let preview = run(&["setup", "--dry-run"]);
+    assert!(
+        preview.contains("rule block: would update") && preview.contains("Nothing was changed"),
+        "{preview}"
+    );
+    assert_eq!(std::fs::read_to_string(&rules).unwrap(), "# Mine\n");
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        r#"{"model":"x"}"#
+    );
+    assert!(!claude_dir.join("CLAUDE.md.codemap-backup").exists());
+
+    let out = run(&["setup", "--no-hook"]);
+    assert!(out.contains("CLAUDE.md.codemap-backup"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(claude_dir.join("CLAUDE.md.codemap-backup")).unwrap(),
+        "# Mine\n"
+    );
+    assert!(
+        std::fs::read_to_string(&rules)
+            .unwrap()
+            .contains("<!-- codemap:begin -->")
+    );
+    let s: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert!(
+        s.get("hooks")
+            .is_none_or(|h| h["PreToolUse"].as_array().is_none_or(|a| a.is_empty())),
+        "{s}"
+    );
+    // Run twice: nothing new to write, so no new backup.
+    let again = run(&["setup", "--no-hook"]);
+    assert!(again.contains("rule block: already in"), "{again}");
+}

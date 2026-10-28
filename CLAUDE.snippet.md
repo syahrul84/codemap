@@ -7,6 +7,8 @@
 - To check whether the local or staging database has run every migration, call `get_schema` with `migrations: true`.
 - Before changing, renaming or removing a class, method, route, component, composable, store, translation key or endpoint, call `find_usages` and update every use; run the tests it lists.
 - Vue / Nuxt: before using, changing or creating a component, call `get_component` (props, emits, v-model, slots, who renders it); search composables and stores with `search_symbol`; find screens and their URLs with `list_pages`; before calling or changing an API endpoint, check `api_usage` (route, callers, fields it returns).
+- Swift, Android, Rust, Next.js / React: the same tools apply. `get_component` for SwiftUI views, composables and React components, `list_pages` for screens, binaries and subcommands, `verify` for type and member names.
+- A `found: false` answer that lists `not_scanned` folders may be wrong for names defined there: check those folders directly.
 - Before finishing, call `verify` with every class, method, route, table, column, component, endpoint and translation key your change relies on. Fix all `not_found` items.
 - Before finishing a change, call `find_usages` with `git_changes: true`: it summarises what the change affects (including frontend calls to changed backend routes) and gives the test commands to run instead of the whole suite.
 - Before a release (or a merge to production), call `verify` with `release_check: true` and fix or report every problem it lists.

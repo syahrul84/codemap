@@ -44,6 +44,14 @@ pub fn is_project(dir: &Path) -> bool {
     is_laravel(dir) || is_frontend(dir)
 }
 
+/// A Swift, Android (Gradle) or Rust app has its build file here.
+fn is_native(dir: &Path) -> bool {
+    codemap_core::scan::is_apple_project(dir)
+        || ["settings.gradle", "settings.gradle.kts", "Cargo.toml"]
+            .iter()
+            .any(|f| dir.join(f).is_file())
+}
+
 /// The apps of a workspace root, or `None` when the root is a single project.
 pub fn discover(root: &Path, config: &Config) -> Option<Vec<(String, PathBuf)>> {
     if !config.workspace.apps.is_empty() {
@@ -71,6 +79,22 @@ pub fn discover(root: &Path, config: &Config) -> Option<Vec<(String, PathBuf)>> 
                 .then(|| (name, e.path()))
         })
         .collect();
+    // Beside a backend or a web app, an `ios/`, `android/` or Rust folder is
+    // an app too. A folder of mobile apps alone stays one project.
+    if !apps.is_empty() {
+        for e in std::fs::read_dir(root).ok()?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let p = e.path();
+            if p.is_dir()
+                && !name.starts_with('.')
+                && !SKIP_DIRS.contains(&name.as_str())
+                && !apps.iter().any(|(n, _)| *n == name)
+                && is_native(&p)
+            {
+                apps.push((name, p));
+            }
+        }
+    }
     apps.sort();
     (!apps.is_empty()).then_some(apps)
 }

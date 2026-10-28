@@ -1,11 +1,13 @@
 # codemap — project index MCP server for Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust
 
+codemap gives your AI assistant the facts about your project (classes, routes, columns, components, screens, endpoints), so it looks them up instead of guessing. You get fewer made-up names in the code it writes, fewer tokens spent reading whole files, and a correct picture of the project from the first message.
+
 ## Why use codemap
 
-1. **It catches the AI's wrong guesses before they ship.** Columns, methods, endpoints and fields that don't exist come back from `verify` as `not_found`, with the closest real name. These bugs look correct in review and only fail in production.
+1. **It catches made-up names before they ship.** When the AI invents a column, method, route, component or endpoint (a "hallucination"), `verify` returns `not_found` with the closest real name, and `codemap misses` shows which names it keeps getting wrong. These bugs look correct in review and only fail in production.
 2. **It knows what a change will break.** Before something is renamed or removed, `find_usages` lists every place it's used, with `file:line`. After a change, it names the tests that cover it and gives the exact commands to run only those, not the whole suite.
 3. **It checks the frontend against the backend.** `api_usage` matches every API call in Vue, Nuxt or Next.js code to the Laravel route that serves it, and flags calls to routes that don't exist, the wrong method, and fields the frontend reads that the backend never returns. Grep can't find these.
-4. **The AI works faster and cheaper.** It asks for one class, one component or one table instead of reading whole files. Most answers take well under a second and are a few kilobytes, so sessions use fewer tokens.
+4. **The AI knows your project from the first message, and spends fewer tokens.** One `project_overview` call (about 1,200 tokens on a 1,200-file app) gives the framework and version, layout, models, screens, crates or modules, and the names the AI got wrong in earlier sessions. After that it asks for one class, component or table instead of reading whole files. In a real Laravel app, `get_symbol` on the `Order` model answers in 5.3 KB instead of the 19.3 KB model file, and `get_schema` for `orders` in 8.9 KB instead of the 61.8 KB of the 26 migrations that build the table. `codemap usage` shows the answer sizes for your own project.
 5. **It catches problems before a release.** `verify` with `release_check: true` gives one list: missing endpoints, fields not returned, missing translations, unused code added on the branch, migrations not yet run, new environment variables, and what the server needs (migrate, cache clear, restart).
 
 The same tools work across Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust. Nothing leaves your machine: your code is never sent anywhere, and the index stays local.
@@ -13,13 +15,18 @@ The same tools work across Laravel, Vue, Nuxt, Next.js, Swift, Android and Rust.
 ## Five-minute start
 
 ```bash
-curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-aarch64-apple-darwin.tar.gz | tar xz   # pick your file: see Install
+# macOS Apple Silicon: aarch64-apple-darwin · Intel Mac: x86_64-apple-darwin
+# Linux: x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu · Windows: see below
+curl -fsSL https://github.com/syahrul84/codemap/releases/latest/download/codemap-aarch64-apple-darwin.tar.gz | tar xz
 mkdir -p ~/.local/bin && mv codemap ~/.local/bin/
-codemap setup        # Claude Code: register the server for every project, add the rule block and the search hook
-cd ~/code/my-app && codemap scan && codemap doctor
+codemap setup --dry-run   # see what setup would change
+codemap setup             # Claude Code: register the server, add the rule block and the search hook
+cd ~/code/my-app && codemap doctor   # optional: what was detected
 ```
 
-Then start a new Claude Code session in the project. Claude asks codemap before grep, and `codemap usage` shows what it asked. Windows: see [Windows](#windows); other AI apps: see [Other AI tools](#other-ai-tools).
+`codemap setup` needs Claude Code's `claude` command (check with `claude --version`). It keeps a `.codemap-backup` copy of each file it changes; `--no-hook` leaves the search hook out. `codemap scan` is optional: the server builds the index on first use.
+
+Then start a new Claude Code session in the project and ask: "What does project_overview say about this project?" `/mcp` shows codemap connected, and `codemap usage` afterwards shows the calls Claude made. Windows: see [Windows](#windows); other AI apps: see [Other AI tools](#other-ai-tools).
 
 ## What it reads
 
@@ -188,7 +195,7 @@ Claude Code picks up the new version in its next session. Indexes update themsel
 
 Once a day, `codemap serve` and `codemap doctor` ask GitHub whether a newer release exists (a plain request for the public release list; nothing about your project is sent). When there is one, `codemap doctor` and `project_overview` say so, so Claude can tell you. To turn this off, set `CODEMAP_NO_UPDATE_CHECK=1` (in your shell profile, or in the `env` of the MCP server entry).
 
-## Quick start
+## Indexing and checking a project
 
 Inside a project folder:
 
@@ -216,7 +223,7 @@ It does three things for Claude Code:
 
 Without the hook, AI apps often keep using grep even with codemap connected. `codemap usage` shows how many searches the hook refused or allowed.
 
-`--scope project` writes into this folder instead (`CLAUDE.md`, `.claude/settings.json`). With `CLAUDE_CONFIG_DIR` set, the user scope writes there, as Claude Code does. `codemap setup --check` shows what is installed; `codemap setup --remove` undoes it. In `.codemap.toml`, `[agent] search_window_minutes = 30` and `allow_search = ["docs/", "*.md"]` change the window and add searches that are always allowed.
+`--scope project` writes into this folder instead (`CLAUDE.md`, `.claude/settings.json`). With `CLAUDE_CONFIG_DIR` set, the user scope writes there, as Claude Code does. `codemap setup --dry-run` shows what would change and changes nothing. Before changing a file that exists, setup keeps the old one next to it as `<name>.codemap-backup`. `--no-hook` installs the server and the rule block without the search hook (and takes out a hook installed before). `codemap setup --check` shows what is installed; `codemap setup --remove` undoes it. In `.codemap.toml`, `[agent] search_window_minutes = 30` and `allow_search = ["docs/", "*.md"]` change the window and add searches that are always allowed.
 
 To register it by hand instead:
 
@@ -266,7 +273,7 @@ Notes:
 - **`-i`, never `-t`:** a TTY corrupts the MCP stdio stream. All logs go to stderr.
 - **Read-only:** the project is mounted read-only and codemap never writes to it. The index lives in the `codemap-data` volume. Commands that write a file (`codemap map`) need a writable folder mounted for it (see [Code map page](#code-map-page)).
 
-Then add [CLAUDE.snippet.md](CLAUDE.snippet.md) to the project's `CLAUDE.md`, so Claude uses the tools at the right moments.
+If you ran `codemap setup`, the rule block is already in place. With Docker or manual registration only, add [CLAUDE.snippet.md](CLAUDE.snippet.md) to the project's `CLAUDE.md` yourself, so Claude uses the tools at the right moments (setup's search hook needs the `codemap` program on the host).
 
 ### Other AI tools
 
@@ -276,8 +283,8 @@ codemap is an MCP server, and MCP is an open standard: Cursor, Windsurf, VS Code
 
 | Tool | When Claude should use it |
 |---|---|
-| `project_overview` | First, in every session: Laravel version and layout, counts, key directories, main namespaces, models, index health. About 1,200 tokens on an 1,200-file app. Swift, Android and Rust projects get their own section: app entry points, modules or crates, counts of types, views / composables and screens. |
-| `search_symbol` | Before writing a class, method or helper, to reuse existing code. Matches short names, FQNs, `Class::method` and partial names. A `kind` filter that matches nothing falls back to other kinds (`useCart` as a composable finds the `useCartStore` store); typos and reworded names (`StatusOfOrder`) give `found: false` + suggestions. |
+| `project_overview` | First, in every session: framework version and layout, counts, key directories, main namespaces, models, index health. About 1,200 tokens on an 1,200-file app. Swift, Android and Rust projects get their own section: app entry points, modules or crates, counts of types, views / composables and screens. |
+| `search_symbol` | Before writing a class, method or helper, to reuse existing code. Matches short names, FQNs, `Class::method` and partial names. A `kind` filter that matches nothing falls back to other kinds (`useCart` as a composable finds the `useCartStore` store); typos and reworded names (`StatusOfOrder`) give `found: false` + suggestions. The app's own code ranks above test and fixture copies of the same name. |
 | `get_symbol` | Instead of reading a whole file. Models include table/fillable/casts/relations; controllers their routes and Form Requests; Form Requests their rules. `include_source` adds the code. |
 | `get_component` | Before using, changing or creating a Vue component, Nuxt page, SwiftUI view or Compose function: props / inputs / parameters, emits, `v-model`, slots, state, what it renders (resolved to files or libraries), who renders it, how it is opened, stores and composables it uses. Takes a name (`OrderCard`), tag (`order-card`) or path. |
 | `list_pages` | To find a screen and its code (frontend pages, Filament admin pages with their form fields, SwiftUI and Android screens, Rust binaries and subcommands): URL or kind, route name, the component file it renders, layout, middleware, and where it is defined or opened. Filters: `path_contains`, `name_prefix`, `file`. |
@@ -286,6 +293,9 @@ codemap is an MCP server, and MCP is an open standard: Cursor, Windsurf, VS Code
 | `find_usages` | Before changing, renaming or removing anything: every use with `file:line`, the routes involved, and the tests that touch it. Method calls on objects whose class is unknown are listed separately as `possible`. With `changed_files` (or `git_changes: true`) it summarises a whole change instead: what each file affects, the related tests, and the exact commands to run only those (`php artisan test …`, `npx vitest run …`, `npx playwright test …`). It also names the browser tests (Playwright, Cypress) that open the screens the change is close to, or look for test ids the changed code sets; tests that reach the change only through shared building blocks are listed separately for a run before release. The five browser tests that use the change most directly come first (`browser_tests_top`, `run_top`). A backend change is followed through its callers to the controllers, routes and the PHP tests that hit them (`routes_via_callers`, `tests_via_route`). Commands use the project's package manager (`pnpm exec`, `yarn`, `bunx`, `npx`), or the commands set in `[tests]`. In a workspace it also lists the frontend calls (in every app) to the backend routes the change touches, and the browser tests for those screens. Code that exists but that nothing uses comes back as `found: true, unused: true`. For Swift, Kotlin, Java and Rust, type uses are exact; members are matched by name, so uses outside their own file are `possible`. Rust uses in `#[cfg(test)]` / `#[test]` code are listed as tests. |
 | `get_schema` | Before writing queries, migrations or model code (or, with `settings: true`, to see app settings and config defaults; with `migrations: true`, migrations not yet applied to your local / staging databases): tables, columns, keys, foreign keys, mapped models, where each column was created and changed. |
 | `verify` | Before finishing: checks classes, `Class::method`, functions, routes (name or `METHOD uri`), tables, `table.column`, `Model::relation`, Vue components, endpoints the frontend calls, translation keys (with the locales they are missing in), or a PHP snippet. Swift, Kotlin and Rust names work as classes and `Type::method` (or `Type.method`). Each item is `exists`, `not_found` (with suggestions), `external` (vendor / PHP built-in) or `unresolved`. With `release_check: true`: one list of problems before a release (see below). |
+| `report_wrong_answer` | When a codemap answer turned out wrong after checking the files: reports it once with the answer's `meta.call_id` (see [Wrong-answer reports](#wrong-answer-reports)). |
+
+A `found: false` (or `not_found`) answer lists `not_scanned` folders when the project has code outside `[scan] include`: a name defined there is not in the index, so "not found" does not mean it does not exist. Add those folders to `[scan] include` if they belong to the app.
 
 Every tool takes `detail: "brief" | "full"` (default `brief`). List tools take `limit` (default 20, max 100) and `cursor`. Every response has the same envelope:
 
@@ -317,7 +327,9 @@ codemap stats  [--project <path>] [--json]            # counts, timings, index s
 codemap doctor [--project <path>] [--json]            # detection reasons, warnings, unresolved routes, broken routes
 codemap map    [--project <path>] --out <file.html>   # the code map: one page to open in a browser
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
-codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear]
+codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear] [--to-fixture <id>]
+codemap setup  [--scope user|project] [--dry-run] [--no-hook] [--check] [--remove]   # register with Claude Code (see above)
+codemap hook   check|used                             # called by the hooks setup installs
 codemap update [--check] [--force]                    # install the latest release
 codemap usage  [--project <path>] [--json] [--days N] [--clear]  # how codemap is used here (see below)
 codemap baseline [--project <path>] [--out <file>]    # save today's API findings; later runs show only new ones
@@ -416,7 +428,7 @@ Mount the folder that holds the apps (e.g. `shop/` with `api/`, `storefront/` an
          "codemap:latest", "serve", "--project", "/workspace", "--name", "shop"]
 ```
 
-When the folder is not itself a project, codemap looks one level down for Laravel apps (`artisan` + `composer.json`) and frontend apps (`package.json` with vue, nuxt, next or react). To choose the apps yourself, list them in the workspace's `.codemap.toml`: `[workspace] apps = ["api", "storefront", "admin-app"]`.
+When the folder is not itself a project, codemap looks one level down for Laravel apps (`artisan` + `composer.json`) and frontend apps (`package.json` with vue, nuxt, next or react). Beside those, Swift (`Package.swift`, `.xcodeproj`), Android (`settings.gradle`) and Rust (`Cargo.toml`) folders are apps too; a folder holding only mobile apps stays one project. To choose the apps yourself, list them in the workspace's `.codemap.toml`: `[workspace] apps = ["api", "storefront", "admin-app"]`.
 
 How a workspace works:
 - Each app keeps its own index.
@@ -652,7 +664,7 @@ Routes built at runtime (from `.map()`, loops, or helpers that aren't simple) ar
 - A few valid forms the Swift and Kotlin grammars misread (`@_silgen_name`, regex literals; Kotlin `var x by …; private set`, a modifier word used as a name) are skipped or rewritten before parsing, never reported as errors.
 - API calls from mobile and Rust code are not linked to backend routes.
 
-**Not yet:** embeddings and semantic search.
+**Not yet:** embeddings and semantic search; linking API calls in Swift, Android and Rust code to backend routes.
 
 ## Exact references (`index.scip`)
 
@@ -710,7 +722,9 @@ crates/codemap-android  Kotlin / Java / Compose: symbols, composables, manifest,
 crates/codemap-rust     Rust: symbols by Rust path, impls, binaries and clap subcommands
 crates/codemap-mcp      MCP server (rmcp, stdio) and the tool implementations shared with `codemap query`
 crates/codemap-cli      the `codemap` binary
-fixtures/            hand-written Laravel, Vue 2, Vue 3, Nuxt 2 and Nuxt 3 projects used by the tests
+fixtures/            hand-written projects used by the tests: Laravel, Vue 2, Vue 3, Nuxt 2, Nuxt 3, Next.js,
+                     Swift, Android, Rust, API linking and payloads, schema dumps, route edge cases,
+                     and report-cases/ (wrong answers codemap once gave)
 ```
 
 Extractor versions (`PHP_EXTRACTOR_VERSION`, `ROUTES_EXTRACTOR_VERSION`, `DATA_EXTRACTOR_VERSION`, `DETECTION_VERSION`, `JS_EXTRACTOR_VERSION`, `REGISTRY_VERSION`, `VUE_DETECTION_VERSION`, `SWIFT_EXTRACTOR_VERSION`, `ANDROID_EXTRACTOR_VERSION`, `RUST_EXTRACTOR_VERSION`) make existing indexes re-extract after an upgrade. Bump the relevant one whenever extraction output changes.

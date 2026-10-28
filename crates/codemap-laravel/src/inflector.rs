@@ -110,7 +110,8 @@ pub fn plural(s: &str) -> String {
 }
 
 pub fn singular(s: &str) -> String {
-    on_last_word(s, singular_word)
+    let (start, _) = last_word(s);
+    on_last_word(s, |w| singular_word(w, start == 0))
 }
 
 fn plural_word(word: &str) -> String {
@@ -158,7 +159,8 @@ fn ends_with_vowel_y(lower: &str) -> bool {
         || lower.ends_with("quy")
 }
 
-fn singular_word(word: &str) -> String {
+/// `whole`: `word` is the entire input, not the tail of `knowledge_bases`.
+fn singular_word(word: &str, whole: bool) -> String {
     let lower = word.to_lowercase();
     if lower.is_empty() || UNCOUNTABLE.contains(&lower.as_str()) {
         return word.to_owned();
@@ -191,7 +193,7 @@ fn singular_word(word: &str) -> String {
         stem(2).to_owned()
     } else if lower.ends_with("ies") && lower.len() > 4 {
         format!("{}y", stem(3))
-    } else if ends(&["hives", "tives"])
+    } else if ends(&["hives", "tives", "drives", "dives", "olives", "oves"])
         || (lower.ends_with('s') && !ends(&["ss", "us", "is", "ves", "ses", "ia", "ta"]))
     {
         stem(1).to_owned()
@@ -199,7 +201,8 @@ fn singular_word(word: &str) -> String {
         format!("{}f", stem(3))
     } else if lower.ends_with("ves") {
         format!("{}fe", stem(3))
-    } else if ends(&["analyses", "theses", "diagnoses", "bases", "crises"]) {
+    } else if ends(&["analyses", "theses", "diagnoses", "crises"]) || (whole && lower == "bases") {
+        // doctrine anchors this one (`^ba`), so `databases` → `database`.
         format!("{}is", stem(2))
     } else if lower.ends_with("ses") {
         stem(1).to_owned()
@@ -246,6 +249,10 @@ mod tests {
         ("comment", "comments"),
         ("customer", "customers"),
         ("Order", "Orders"),
+        ("database", "databases"),
+        ("knowledge_base", "knowledge_bases"),
+        ("basis", "bases"),
+        ("hypothesis", "hypotheses"),
     ];
 
     #[test]
@@ -260,5 +267,21 @@ mod tests {
     fn kebab_segments_keep_their_prefix() {
         assert_eq!(singular("order-items"), "order-item");
         assert_eq!(singular("blog-posts"), "blog-post");
+        assert_eq!(singular("knowledge-bases"), "knowledge-base");
+        assert_eq!(singular("Databases"), "Database");
+    }
+
+    /// doctrine's `ves` rules, including the odd results Laravel really gives.
+    #[test]
+    fn singular_ves_matches_laravel() {
+        assert_eq!(singular("reserves"), "reserf");
+        assert_eq!(singular("nerves"), "nerf");
+        assert_eq!(singular("drives"), "drive");
+        assert_eq!(singular("dives"), "dive");
+        assert_eq!(singular("olives"), "olive");
+        assert_eq!(singular("gloves"), "glove");
+        assert_eq!(singular("archives"), "archive");
+        assert_eq!(singular("wolves"), "wolf");
+        assert_eq!(singular("knives"), "knife");
     }
 }

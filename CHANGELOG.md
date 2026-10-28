@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- `found: false` and `not_found` answers list `not_scanned`: top-level folders holding code that the scan does not read (outside `[scan] include`), so the AI does not take "not found" as "does not exist" and write a duplicate.
+- `search_symbol` ranks the app's own code above test, fixture and stub copies with the same name.
+- `codemap setup --dry-run` shows what would change and changes nothing; setup keeps the old `CLAUDE.md` / `settings.json` as `<name>.codemap-backup` before changing them; `--no-hook` installs without the search hook.
+- Workspaces: beside a Laravel or web app, Swift, Android and Rust folders are found as apps too (a `backend/` + `ios/` folder no longer leaves the iOS app out). A folder of mobile apps alone stays one project.
+- Laravel names: `databases` → `database` and `knowledge_bases` → `knowledge_base` (`bases` → `basis` only for the whole word); `drives`, `dives`, `olives` and `gloves` keep their `e`. Checked against Laravel's own `Str::singular`, including its `reserves` → `reserf`.
+- Tool descriptions and server instructions cover Next.js / React, Swift, Android, Rust and Supabase, the payload checks, `unused: true` and why each tool beats reading files. README: a one-line summary, measured answer sizes, a quick start for every platform with a "see it working" step, the `setup` / `hook` commands and `report_wrong_answer`.
+
 ## [0.1.8] - 2026-10-22
 
 - Exact references from an `index.scip` file: when the project root has one (written by rust-analyzer, scip-typescript, scip-php, scip-java, scip-python and other SCIP indexers), `find_usages` uses it for the symbol it resolved. Uses matched by name ("possible") that the index confirms are listed; the others are dropped; references only the index knows are added. The answer says how many were confirmed, and when files changed after the index was written. Without the file, nothing changes.

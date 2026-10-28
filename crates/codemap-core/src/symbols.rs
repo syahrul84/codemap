@@ -594,8 +594,17 @@ pub fn search(conn: &Connection, input: &SearchInput) -> Result<SearchResult> {
         };
         return Ok(not_found(&input.query, suggestions, &hint));
     }
+    // The app's own code first: a test or fixture copy with the same name
+    // ranks just below it, so the AI reuses the real one.
+    let rank = |s: f64, r: &SymbolRecord| {
+        let secondary = crate::scan::is_test_path(&r.file)
+            || crate::scan::is_fixture_path(&r.file)
+            || r.fqn.contains("::tests::");
+        if secondary { s - 0.1 } else { s }
+    };
     scored.sort_by(|(sa, a), (sb, b)| {
-        sb.total_cmp(sa)
+        rank(*sb, b)
+            .total_cmp(&rank(*sa, a))
             .then(a.kind.rank().cmp(&b.kind.rank()))
             .then(a.fqn.len().cmp(&b.fqn.len()))
             .then_with(|| a.fqn.cmp(&b.fqn))

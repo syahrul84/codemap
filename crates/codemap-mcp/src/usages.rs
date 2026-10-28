@@ -56,25 +56,7 @@ pub struct FindUsagesParams {
     pub detail: DetailParam,
 }
 
-/// Tests by convention: `tests/`, `__tests__`, `*.spec.*`, `*.test.*`, `*Test.php`.
-pub fn is_test_path(p: &str) -> bool {
-    p.starts_with("tests/")
-        || p.starts_with("test/")
-        || p.contains("/tests/")
-        || p.contains("/__tests__/")
-        || p.contains(".spec.")
-        || p.contains(".test.")
-        || p.ends_with("Test.php")
-        || p.starts_with("Tests/")
-        || p.contains("/Tests/")
-        || p.ends_with("Tests.swift")
-        || p.ends_with("Test.swift")
-        || p.contains("/src/test/")
-        || p.contains("/src/androidTest/")
-        || p.ends_with("Test.kt")
-        || p.ends_with("Test.java")
-        || p.contains("/e2e/")
-}
+pub use codemap_core::scan::is_test_path;
 
 #[derive(Default)]
 struct Found {

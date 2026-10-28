@@ -326,12 +326,35 @@ pub fn call(
         "verify" => crate::verify::verify(store, project, parse(args)?)?.into(),
         other => return Err(ToolError::UnknownTool(other.to_owned())),
     };
+    let mut out = out;
+    not_scanned(project, &mut out.data);
     let mut meta = Meta::from_store(store, &project.name(store), fresh.reindexed_files)?;
     meta.stale = fresh.stale;
     meta.warnings = fresh.warnings;
     meta.next_cursor = out.next_cursor;
     meta.truncated = out.truncated;
     Ok(Envelope::new(out.data, meta))
+}
+
+/// "Not found" is only as good as what was read: name the folders with code
+/// that the scan skips, so a miss there is not taken as "does not exist".
+fn not_scanned(project: &Project, data: &mut Value) {
+    let missed = data["found"] == json!(false)
+        || data["results"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|x| x["status"] == json!("not_found")));
+    if !missed {
+        return;
+    }
+    let folders = codemap_core::scan::unscanned_folders(&project.root, &project.config);
+    if folders.is_empty() {
+        return;
+    }
+    data["not_scanned"] = json!(folders);
+    data["not_scanned_note"] = json!(format!(
+        "These folders hold code that is not indexed (outside [scan] include), so a name defined there would show as not found. If they belong to the app, add them to [scan] include in {}.",
+        codemap_core::config::CONFIG_FILE
+    ));
 }
 
 // ---------------------------------------------------------------- params

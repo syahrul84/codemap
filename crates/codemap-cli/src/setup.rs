@@ -197,6 +197,35 @@ fn write(path: &Path, text: &str) -> anyhow::Result<()> {
     std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// Puts `text` in `path` the careful way: nothing when it is already there;
+/// with `dry_run` only says what would change; otherwise keeps the old file
+/// as `<name>.codemap-backup` before writing.
+fn apply(path: &Path, text: &str, dry_run: bool, what: &str) -> anyhow::Result<()> {
+    let old = std::fs::read_to_string(path).ok();
+    if old.as_deref() == Some(text) {
+        println!("{what}: already in {}", path.display());
+        return Ok(());
+    }
+    if dry_run {
+        let verb = if old.is_some() { "update" } else { "create" };
+        println!("{what}: would {verb} {}", path.display());
+        return Ok(());
+    }
+    if old.is_some() {
+        let backup = backup_path(path);
+        std::fs::copy(path, &backup)
+            .with_context(|| format!("cannot back up {}; nothing was changed", path.display()))?;
+        println!("{what}: the old file is kept as {}", backup.display());
+    }
+    write(path, text)
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".codemap-backup");
+    path.with_file_name(name)
+}
+
 fn claude(args: &[&str]) -> Option<std::process::Output> {
     Command::new("claude").args(args).output().ok()
 }
@@ -210,7 +239,26 @@ fn registered(scope: Scope) -> Option<bool> {
     )
 }
 
-pub fn run(scope: Scope, check: bool, remove: bool) -> anyhow::Result<()> {
+/// What `codemap setup` was asked to do.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Only report what is installed.
+    pub check: bool,
+    /// Undo it.
+    pub remove: bool,
+    /// Say what would change, change nothing.
+    pub dry_run: bool,
+    /// Leave the search hook out.
+    pub no_hook: bool,
+}
+
+pub fn run(scope: Scope, opts: Options) -> anyhow::Result<()> {
+    let Options {
+        check,
+        remove,
+        dry_run,
+        no_hook,
+    } = opts;
     let p = paths(scope)?;
     let scope_name = if scope == Scope::User {
         "user"
@@ -267,17 +315,28 @@ pub fn run(scope: Scope, check: bool, remove: bool) -> anyhow::Result<()> {
         if p.rules.is_file() {
             let text = std::fs::read_to_string(&p.rules)?;
             if text.contains(BEGIN) {
-                write(&p.rules, &with_block(&text, None))?;
-                println!("removed the rule block from {}", p.rules.display());
+                apply(
+                    &p.rules,
+                    &with_block(&text, None),
+                    dry_run,
+                    "rule block removed",
+                )?;
             }
         }
         if p.settings.is_file() {
             let settings = read_json(&p.settings)?;
-            write(
+            apply(
                 &p.settings,
                 &(serde_json::to_string_pretty(&with_hooks(settings, None))? + "\n"),
+                dry_run,
+                "search hook removed",
             )?;
-            println!("removed the search hook from {}", p.settings.display());
+        }
+        if dry_run {
+            println!(
+                "MCP server: would run `claude mcp remove codemap --scope {scope_name}`\nNothing was changed (--dry-run)."
+            );
+            return Ok(());
         }
         match claude(&["mcp", "remove", "codemap", "--scope", scope_name]) {
             Some(o) if o.status.success() => {
@@ -294,6 +353,9 @@ pub fn run(scope: Scope, check: bool, remove: bool) -> anyhow::Result<()> {
     // 1. The MCP server.
     match registered(scope) {
         Some(true) => println!("MCP server: already registered"),
+        Some(false) if dry_run => println!(
+            "MCP server: would run `claude mcp add --scope {scope_name} codemap -- \"{exe}\" serve --project .`"
+        ),
         Some(false) => {
             let out = claude(&[
                 "mcp",
@@ -322,15 +384,34 @@ pub fn run(scope: Scope, check: bool, remove: bool) -> anyhow::Result<()> {
     }
     // 2. The rule block (the program the hook runs exists already: it is this one).
     let text = std::fs::read_to_string(&p.rules).unwrap_or_default();
-    write(&p.rules, &with_block(&text, Some(RULES)))?;
-    println!("rule block: written to {}", p.rules.display());
-    // 3. The hooks, last, so they never point at something missing.
-    let settings = read_json(&p.settings)?;
-    write(
-        &p.settings,
-        &(serde_json::to_string_pretty(&with_hooks(settings, Some(&exe)))? + "\n"),
+    apply(
+        &p.rules,
+        &with_block(&text, Some(RULES)),
+        dry_run,
+        "rule block",
     )?;
-    println!("search hook: added to {}", p.settings.display());
+    // 3. The hooks, last, so they never point at something missing. Without
+    // the hook, one installed earlier is taken out.
+    let settings = read_json(&p.settings)?;
+    let hook_exe = (!no_hook).then_some(exe.as_str());
+    let had = p.settings.is_file();
+    let updated = with_hooks(settings.clone(), hook_exe);
+    if had || hook_exe.is_some() {
+        apply(
+            &p.settings,
+            &(serde_json::to_string_pretty(&updated)? + "\n"),
+            dry_run,
+            if no_hook {
+                "search hook (left out)"
+            } else {
+                "search hook"
+            },
+        )?;
+    }
+    if dry_run {
+        println!("Nothing was changed (--dry-run). Run it again without --dry-run to apply.");
+        return Ok(());
+    }
     println!(
         "Done. Start a new Claude Code session; `codemap setup --check` shows what is installed, `codemap setup --remove` undoes it."
     );

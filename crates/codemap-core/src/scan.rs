@@ -503,6 +503,90 @@ fn relative(root: &Path, abs: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// Tests by convention: `tests/`, `__tests__`, `*.spec.*`, `*.test.*`, `*Test.php`.
+pub fn is_test_path(p: &str) -> bool {
+    p.starts_with("tests/")
+        || p.starts_with("test/")
+        || p.contains("/tests/")
+        || p.contains("/__tests__/")
+        || p.contains(".spec.")
+        || p.contains(".test.")
+        || p.ends_with("Test.php")
+        || p.starts_with("Tests/")
+        || p.contains("/Tests/")
+        || p.ends_with("Tests.swift")
+        || p.ends_with("Test.swift")
+        || p.contains("/src/test/")
+        || p.contains("/src/androidTest/")
+        || p.ends_with("Test.kt")
+        || p.ends_with("Test.java")
+        || p.contains("/e2e/")
+}
+
+/// Test doubles, fixtures and stubs: code that copies or fakes the app's.
+pub fn is_fixture_path(p: &str) -> bool {
+    ["fixtures/", "Fixtures/", "stubs/", "__mocks__/", "mocks/"]
+        .iter()
+        .any(|d| p.starts_with(d) || p.contains(&format!("/{d}")))
+}
+
+/// Top-level folders holding code that the scan does not read: not in
+/// `[scan] include`, not excluded, not ignored by git. A name defined there
+/// is missing from the index, so "not found" does not mean it does not exist.
+/// Empty for Swift, Gradle and Cargo projects, where every folder is read.
+pub fn unscanned_folders(root: &Path, config: &Config) -> Vec<String> {
+    if is_apple_project(root) || is_gradle_project(root) || root.join("Cargo.toml").is_file() {
+        return Vec::new();
+    }
+    let covered = |name: &str| {
+        config.scan.include.iter().any(|inc| {
+            let inc = inc.trim_matches('/');
+            inc == name || inc.starts_with(&format!("{name}/"))
+        }) || ALWAYS_EXCLUDED
+            .iter()
+            .copied()
+            .chain(config.scan.exclude.iter().map(String::as_str))
+            .any(|p| p.trim_matches('/') == name)
+    };
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter(|p| {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            !name.starts_with('.') && !covered(&name)
+        })
+        .collect();
+    dirs.sort();
+    let mut out = Vec::new();
+    for dir in dirs {
+        // Source code only: JSON and SQL alone are data, not definitions.
+        let code = WalkBuilder::new(&dir)
+            .max_depth(Some(4))
+            .hidden(true)
+            .git_ignore(true)
+            .require_git(false)
+            .parents(true)
+            .filter_entry(|e| e.file_name() != "node_modules" && e.file_name() != "vendor")
+            .build()
+            .flatten()
+            .take(2000)
+            .any(|e| {
+                e.file_type().is_some_and(|t| t.is_file())
+                    && matches!(lang_for(e.path()), Some("php" | "vue" | "js" | "ts"))
+            });
+        if code && let Some(name) = relative(root, &dir) {
+            out.push(format!("{name}/"));
+        }
+    }
+    out
+}
+
 fn lang_for(path: &Path) -> Option<&'static str> {
     let name = path.file_name()?.to_str()?;
     match name {
