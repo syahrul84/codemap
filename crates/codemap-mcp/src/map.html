@@ -84,6 +84,20 @@ svg .col-title { fill: var(--muted); font-size: 11px; text-transform: uppercase;
 .node .sub { fill: var(--muted); font-size: 10.5px; }
 .edge { fill: none; stroke: var(--line); stroke-width: 1.4; }
 .edge.hot { stroke: var(--accent); stroke-width: 2; }
+/* Request flow: lines march the way requests go; play lights them column by column. */
+.edge.flow { stroke-dasharray: 4 6; animation: march 1.1s linear infinite; }
+@keyframes march { to { stroke-dashoffset: -20; } }
+.edge.lit { stroke: var(--accent); stroke-opacity: .55; }
+.edge.hot.lit { stroke-opacity: 1; }
+.node { transition: opacity .3s; }
+.node.wait { opacity: .3; }
+.node .pulse { fill: none; stroke: var(--bad); stroke-width: 2; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.node.broken.reached .pulse { animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse { 0% { opacity: .9; transform: scale(1); } 100% { opacity: 0; transform: scale(1.06, 1.6); } }
+.flowbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; left: 0; z-index: 2; }
+.flowbar label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+#dots circle { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .edge.flow, .node.broken.reached .pulse { animation: none; } .node.broken .pulse { opacity: 1; } }
 #detail h2 { font-size: 16px; margin: 4px 0 2px; word-break: break-word; }
 #detail .kind { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
 #detail .path { color: var(--muted); font-size: 12px; word-break: break-all; margin-bottom: 10px; }
@@ -292,6 +306,68 @@ function neighbourhood(id) {
 }
 
 const W = 210, H = 40, GAPX = 90, GAPY = 10, TOP = 44, LEFT = 20, CAP = 40;
+// Past this many lines, marching dashes cost more than they show.
+const FLOW_LINES = 400, MAX_DOTS = 120, STEP_MS = 700;
+const REDUCE = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let moving = load("moving") !== "off", played = null, flowTimers = [], dots = [], dotFrame = 0;
+
+const broken = n => (n.problems || []).length > 0 || (n.info?.calls_to_missing_endpoints || []).length > 0;
+
+function stopFlow() {
+  flowTimers.forEach(clearTimeout);
+  flowTimers = [];
+  cancelAnimationFrame(dotFrame);
+  dotFrame = 0;
+  dots = [];
+}
+/* Plays the requests left to right: each column lights up after the one
+   before it, with a dot travelling along every line between them. */
+function playFlow() {
+  stopFlow();
+  const svg = $("#canvas");
+  if (!svg) return;
+  $("#dots").innerHTML = "";
+  const gs = [...svg.querySelectorAll(".node")], ps = [...svg.querySelectorAll(".edge")];
+  const last = Math.max(0, ...gs.map(g => +g.dataset.c));
+  const step = REDUCE ? 0 : STEP_MS;
+  const reach = c => gs.forEach(g => { if (+g.dataset.c === c) { g.classList.remove("wait"); g.classList.add("reached"); } });
+  gs.forEach(g => { g.classList.remove("reached"); g.classList.toggle("wait", +g.dataset.c > 0); });
+  ps.forEach(p => p.classList.remove("lit"));
+  reach(0);
+  for (let c = 0; c < last; c++) {
+    flowTimers.push(setTimeout(() => {
+      const lines = ps.filter(p => p.dataset.c === String(c) && !p.dataset.same);
+      lines.forEach(p => p.classList.add("lit"));
+      if (!REDUCE) launch(lines.slice(0, MAX_DOTS));
+    }, c * step));
+    flowTimers.push(setTimeout(() => reach(c + 1), c * step + step * 0.8));
+  }
+  flowTimers.push(setTimeout(() => ps.filter(p => p.dataset.same).forEach(p => p.classList.add("lit")), last * step));
+}
+function launch(paths) {
+  const g = $("#dots"), now = performance.now();
+  for (const p of paths) {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("r", 4);
+    c.style.fill = color(p.dataset.k);
+    g.append(c);
+    dots.push({ c, p, len: p.getTotalLength(), t0: now });
+  }
+  if (!dotFrame) dotFrame = requestAnimationFrame(moveDots);
+}
+function moveDots(now) {
+  dots = dots.filter(d => {
+    const t = Math.min(1, (now - d.t0) / (STEP_MS * 0.9));
+    const e = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const pt = d.p.getPointAtLength(d.len * e);
+    d.c.setAttribute("cx", pt.x);
+    d.c.setAttribute("cy", pt.y);
+    if (t < 1) return true;
+    d.c.remove();
+    return false;
+  });
+  dotFrame = dots.length ? requestAnimationFrame(moveDots) : 0;
+}
 
 function renderMap() {
   if (!selected || !nodes.has(selected)) return renderOverview();
@@ -313,7 +389,7 @@ function renderMap() {
     if (list.length > CAP) hidden[ci] = list.length - CAP;
     shown.forEach((n, i) => {
       const x = LEFT + ci * (W + GAPX), y = TOP + i * (H + GAPY);
-      pos.set(n.id, { x, y });
+      pos.set(n.id, { x, y, c: ci });
       maxY = Math.max(maxY, y + H);
     });
   });
@@ -324,37 +400,51 @@ function renderMap() {
     const x = LEFT + ci * (W + GAPX);
     parts.push(`<text class="col-title" x="${x}" y="24">${esc(KINDS[c][1])}${hidden[ci] ? ` (+${hidden[ci]} not shown)` : ""}</text>`);
   });
-  for (const e of edges) {
+  const drawn = edges.filter(e => pos.has(e.from) && pos.has(e.to));
+  const flow = moving && !REDUCE && drawn.length <= FLOW_LINES;
+  for (const e of drawn) {
     const a = pos.get(e.from), b = pos.get(e.to);
-    if (!a || !b) continue;
     const hot = e.from === selected || e.to === selected;
-    let d;
+    let d, s = a, t = b;
     if (a.x === b.x) {
       const x = a.x + W, bend = x + 40;
       d = `M${x},${a.y + H / 2} C${bend},${a.y + H / 2} ${bend},${b.y + H / 2} ${x},${b.y + H / 2}`;
     } else {
-      const [s, t] = a.x < b.x ? [a, b] : [b, a];
+      // Always drawn left to right, the way the request goes.
+      if (a.x > b.x) [s, t] = [b, a];
       const x1 = s.x + W, x2 = t.x, mx = (x1 + x2) / 2;
       d = `M${x1},${s.y + H / 2} C${mx},${s.y + H / 2} ${mx},${t.y + H / 2} ${x2},${t.y + H / 2}`;
     }
-    parts.push(`<path class="edge${hot ? " hot" : ""}" d="${d}"><title>${esc(edgeText(e))}</title></path>`);
+    const right = nodes.get(t === a ? e.from : e.to);
+    parts.push(`<path class="edge${hot ? " hot" : ""}${flow ? " flow" : ""}" d="${d}" data-c="${s.c}" data-k="${right.kind}"${a.x === b.x ? ` data-same="1"` : ""}><title>${esc(edgeText(e))}</title></path>`);
   }
   for (const [id, p] of pos) {
     const n = nodes.get(id);
-    const cls = ["node", id === selected ? "focus" : "", n.problems ? "has-problem" : ""].join(" ");
+    const bad = broken(n);
+    const cls = ["node", id === selected ? "focus" : "", bad ? "has-problem broken" : ""].join(" ");
     const how = side.get(id);
     const label = clip(n.label, 30), sub = clip(typeof how === "string" ? how : subline(n), 34);
-    parts.push(`<g class="${cls}" data-id="${esc(id)}" transform="translate(${p.x},${p.y})">
-      <title>${esc(n.sub || n.label)}</title>
+    const missing = (n.info?.calls_to_missing_endpoints || []).length;
+    parts.push(`<g class="${cls}" data-id="${esc(id)}" data-c="${p.c}" transform="translate(${p.x},${p.y})">
+      <title>${esc(n.sub || n.label)}${missing ? ` — ${missing} call${missing > 1 ? "s" : ""} to endpoints that don't exist` : ""}</title>
+      ${bad ? `<rect class="pulse" width="${W}" height="${H}" rx="7"></rect>` : ""}
       <rect width="${W}" height="${H}" rx="7"></rect>
       <rect width="4" height="${H}" rx="2" style="fill:${color(n.kind)};stroke:none"></rect>
       <text x="12" y="17">${esc(label)}</text>
       <text class="sub" x="12" y="31">${esc(sub)}</text>
       ${n.mistaken_for ? `<circle class="ai" cx="${W - 10}" cy="10" r="4"><title>The AI got this name wrong ${esc(n.mistaken_for.join("; "))}</title></circle>` : ""}</g>`);
   }
-  parts.push("</svg>");
-  $("#view").innerHTML = parts.join("");
+  parts.push(`<g id="dots"></g></svg>`);
+  const bar = `<div class="flowbar">
+    <button class="icon-btn" id="play">▶ Play the requests</button>
+    <label><input type="checkbox" id="moving"${moving ? " checked" : ""}${REDUCE ? " disabled" : ""}> Moving lines</label>
+    <span class="hint">Requests go left to right, from the screen to the table.${moving && !flow && !REDUCE ? ` Too many lines to animate (${drawn.length}).` : ""}</span></div>`;
+  $("#view").innerHTML = bar + parts.join("");
   $("#view").querySelectorAll(".node").forEach(g => g.onclick = () => select(g.dataset.id));
+  $("#play").onclick = playFlow;
+  $("#moving").onchange = e => { moving = e.target.checked; store("moving", moving ? "on" : "off"); render(); };
+  // Play once when something new is picked; a re-draw (app filter, theme) does not replay.
+  if (played !== selected) { played = selected; if (!REDUCE) playFlow(); }
 }
 function subline(n) {
   if (n.kind === "frontend" || n.kind === "screen") return (multiApp ? n.app + " · " : "") + (n.file || "");
@@ -384,7 +474,7 @@ function renderOverview() {
   }).join("");
   $("#view").innerHTML = `<div class="empty">
     <h2>Pick something on the left</h2>
-    <p>The map then shows everything connected to it, from the screen a user opens, through the API call and the endpoint, to the controller, the models it uses and the tables they are stored in.</p>
+    <p>The map then shows everything connected to it, from the screen a user opens, through the API call and the endpoint, to the controller, the models it uses and the tables they are stored in. The lines move the way requests go, and the requests play through once from left to right; press play to watch again. Anything that pulses red has a problem, such as a call to an endpoint that doesn't exist.</p>
     <div class="legend">${KINDS.filter(([k]) => counts[k]).map(([k, t]) => `<span><span class="dot" style="background:${color(k)}"></span>${t} (${counts[k]})</span>`).join("")}</div>
     <div class="cards">${appCards}</div>
     <p class="hint">Built from the code index only. Nothing on this page is sent anywhere.</p></div>`;
@@ -492,6 +582,7 @@ function select(id) {
   if (el) el.scrollIntoView({ block: "nearest" });
 }
 function render() {
+  stopFlow();
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   renderApps();
   renderLists();
