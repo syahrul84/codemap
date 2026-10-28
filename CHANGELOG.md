@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-28
+
 - Code map: the requests now play out. Picking anything lights its map up column by column, from the screen to the table, with a dot moving along each line. Lines keep moving slowly the way requests go (turn this off with "Moving lines"), and a frontend file that calls an endpoint that doesn't exist pulses red. "Play the requests" plays it again. With reduced motion turned on, nothing moves.
 
 ## [0.1.9] - 2026-10-28

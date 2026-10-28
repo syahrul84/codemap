@@ -174,7 +174,7 @@ The `.mcp.json` in [With Docker](#with-docker) works on Windows too.
 ### Cargo
 
 ```bash
-cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.9 codemap-cli
+cargo install --locked --git https://github.com/syahrul84/codemap --tag v0.1.10 codemap-cli
 ```
 
 ### Docker
