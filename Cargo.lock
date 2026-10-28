@@ -326,7 +326,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "codemap-android"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "codemap-core",
  "rayon",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "blake3",
  "dirs",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-js"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "insta",
  "oxc_allocator",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-laravel"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "blake3",
  "codemap-core",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-mcp"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "blake3",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-php"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "codemap-core",
  "filetime",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-rust"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "codemap-core",
  "rayon",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-swift"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "codemap-core",
  "rayon",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "codemap-vue"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "codemap-core",
  "codemap-js",

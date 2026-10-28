@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-28
+
 - `found: false` and `not_found` answers list `not_scanned`: top-level folders holding code that the scan does not read (outside `[scan] include`), so the AI does not take "not found" as "does not exist" and write a duplicate.
 - Nuxt's `server/` folder (server routes and utils) is read by default.
 - `search_symbol` ranks the app's own code above test, fixture and stub copies with the same name.
