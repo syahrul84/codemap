@@ -57,7 +57,7 @@ fn frontend_calls_are_linked_to_backend_routes() {
     assert_eq!(all["backends"][0]["api_base"], "/api/v1");
     assert_eq!(
         all["summary"],
-        json!({ "fields_not_returned": 4, "matched": 10, "method_mismatch": 1, "missing": 2, "typed_not_returned": 1 })
+        json!({ "fields_not_returned": 4, "ignored": 1, "matched": 10, "method_mismatch": 1, "missing": 2, "typed_not_returned": 1, "unresolved": 1 })
     );
     let calls = all["calls"].as_array().unwrap();
     let by_at = |at: &str| {
@@ -67,6 +67,34 @@ fn frontend_calls_are_linked_to_backend_routes() {
             .cloned()
             .unwrap_or(Value::Null)
     };
+
+    // A URL that starts with a variable and shares no word with any route is
+    // not pinned on a route that merely has as many segments.
+    let passed_in = by_at("composables/api/approvals.ts:3");
+    assert_eq!(passed_in["status"], "unresolved", "{passed_in}");
+    // A call marked `codemap-ignore` is counted, not listed.
+    assert_eq!(by_at("composables/api/approvals.ts:8"), Value::Null);
+
+    // Part of a path that many routes share: one line per route, not every
+    // route's callers and fields.
+    let many = call(&store, &project, "api_usage", json!({ "endpoint": "v1" }));
+    assert_eq!(many["total"], 8, "{many}");
+    let line = many["endpoints"][0].as_str().unwrap();
+    assert!(
+        line.starts_with("GET api/v1/malls  → ") && line.ends_with(" caller(s)"),
+        "{line}"
+    );
+    assert!(
+        many["note"].as_str().unwrap().contains("one full route"),
+        "{many}"
+    );
+    let one = call(
+        &store,
+        &project,
+        "api_usage",
+        json!({ "endpoint": "GET api/v1/malls" }),
+    );
+    assert!(one["endpoints"][0]["callers"].is_array(), "{one}");
 
     // Mall cards: the list reads `name`, the resource sends `title`.
     let list = by_at("pages/malls/index.vue:3");

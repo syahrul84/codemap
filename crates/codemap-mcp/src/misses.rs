@@ -9,7 +9,7 @@
 //! before creating it). So when the log is read, every entry is asked again:
 //! anything that exists now is left out.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -337,8 +337,24 @@ pub fn often_mistaken(store: &Store, project: &Project) -> Vec<String> {
     if misses.is_empty() {
         return Vec::new();
     }
+    // Only names missed more than once are shown, so only those are
+    // re-checked: each re-check runs the tool again.
+    let mut times: HashMap<(&str, String), usize> = HashMap::new();
+    for m in &misses {
+        *times
+            .entry((m.kind.as_str(), m.item.to_lowercase()))
+            .or_default() += 1;
+    }
+    let repeated: Vec<Miss> = misses
+        .iter()
+        .filter(|m| times[&(m.kind.as_str(), m.item.to_lowercase())] >= 2)
+        .cloned()
+        .collect();
+    if repeated.is_empty() {
+        return Vec::new();
+    }
     let apps = [(store, project)];
-    ranked(&misses, &|m| still_missing(&apps, m), 10)
+    ranked(&repeated, &|m| still_missing(&apps, m), 10)
         .into_iter()
         .filter(|g| g["times"].as_u64().unwrap_or(0) >= 2)
         .map(|g| {

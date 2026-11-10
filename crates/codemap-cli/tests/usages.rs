@@ -219,11 +219,9 @@ fn change_impact_in_a_vue_app() {
         r["changed"][0]["used_in"],
         json!(["src/router/account.ts", "src/views/OrdersView.vue"])
     );
-    assert_eq!(
-        r["changed"][1]["is"],
-        "not indexed (deleted, or not a code file codemap reads)"
-    );
-    assert_eq!(r["changed"][2]["is"], "a test");
+    // Files codemap does not read are one short list, not an entry each.
+    assert_eq!(r["changed_not_indexed"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["changed"][1]["is"], "a test");
 }
 
 #[test]

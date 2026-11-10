@@ -534,7 +534,36 @@ pub fn is_fixture_path(p: &str) -> bool {
 /// `[scan] include`, not excluded, not ignored by git. A name defined there
 /// is missing from the index, so "not found" does not mean it does not exist.
 /// Empty for Swift, Gradle and Cargo projects, where every folder is read.
+///
+/// The answer is kept for a few seconds: every "not found" asks, and looking
+/// means walking folders the index knows nothing about.
 pub fn unscanned_folders(root: &Path, config: &Config) -> Vec<String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    type Key = (PathBuf, Vec<String>, Vec<String>);
+    static SEEN: Mutex<Vec<(Key, Instant, Vec<String>)>> = Mutex::new(Vec::new());
+    const KEPT: Duration = Duration::from_secs(10);
+    let key: Key = (
+        root.to_path_buf(),
+        config.scan.include.clone(),
+        config.scan.exclude.clone(),
+    );
+    if let Ok(seen) = SEEN.lock()
+        && let Some((_, _, folders)) = seen
+            .iter()
+            .find(|(k, at, _)| *k == key && at.elapsed() < KEPT)
+    {
+        return folders.clone();
+    }
+    let folders = find_unscanned_folders(root, config);
+    if let Ok(mut seen) = SEEN.lock() {
+        seen.retain(|(k, at, _)| *k != key && at.elapsed() < KEPT);
+        seen.push((key, Instant::now(), folders.clone()));
+    }
+    folders
+}
+
+fn find_unscanned_folders(root: &Path, config: &Config) -> Vec<String> {
     if is_apple_project(root) || is_gradle_project(root) || root.join("Cargo.toml").is_file() {
         return Vec::new();
     }

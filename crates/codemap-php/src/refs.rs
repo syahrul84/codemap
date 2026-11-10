@@ -46,7 +46,8 @@ struct Collector<'s> {
     /// settings read: name → (key parameter, default parameter).
     /// Same-class methods wrapping a setting read: key parameter, default
     /// parameter, and how the default is built from it (`$this->configValue({})`).
-    wrappers: HashMap<String, (usize, Option<usize>, Option<String>)>,
+    /// The last field is true for a method that saves the setting instead.
+    wrappers: HashMap<String, (usize, Option<usize>, Option<String>, bool)>,
     out: Vec<Ref>,
 }
 
@@ -132,6 +133,18 @@ fn url_lit(n: Node<'_>, src: &[u8]) -> Option<String> {
     Some(out)
 }
 
+/// The string literals under `n`, a few levels down (the arms of a ternary
+/// or `match`).
+fn string_nodes<'t>(n: Node<'t>, depth: u8, out: &mut Vec<Node<'t>>) {
+    if matches!(n.kind(), "string" | "encapsed_string") {
+        out.push(n);
+    } else if depth < 4 && !n.kind().ends_with("call_expression") {
+        for c in named_children(n) {
+            string_nodes(c, depth + 1, out);
+        }
+    }
+}
+
 /// The `i`-th argument node of a call.
 fn nth_arg(n: Node<'_>, i: usize) -> Option<Node<'_>> {
     n.child_by_field_name("arguments")
@@ -204,10 +217,7 @@ impl Collector<'_> {
     /// `Setting::get(self::KEY, self::DEFAULT)` / `Setting::put('key', $v)` /
     /// `setting('key', 5)`: key and default as literals or `const:Class::NAME`.
     fn setting(&mut self, n: Node<'_>, method: &str) {
-        const WRITE: &[&str] = &[
-            "put", "set", "forget", "update", "store", "save", "remember", "delete",
-        ];
-        let write = WRITE.contains(&method);
+        let write = SETTING_WRITES.contains(&method);
         if !write && !SETTING_READS.contains(&method) {
             return; // `ListSettings::route('/')`, `Setting::query()`: not a setting
         }
@@ -317,10 +327,247 @@ impl Collector<'_> {
                             tpl = Some(format!("={f}"));
                         }
                     }
-                    self.wrappers.insert(name.clone(), (k, default, tpl));
+                    self.wrappers.insert(name.clone(), (k, default, tpl, false));
                 }
             }
+            // A method that saves a setting under its own parameter:
+            // `Setting::put($key, $v)`, `Setting::query()->create(['key' => $key, …])`.
+            if let Some(b) = m.child_by_field_name("body")
+                && let Some(k) = self.written_key_param(b, &params)
+            {
+                self.wrappers.insert(name, (k, None, None, true));
+            }
         }
+    }
+
+    /// The parameter a method body saves a setting under, if it does.
+    fn written_key_param(&self, n: Node<'_>, params: &[String]) -> Option<usize> {
+        /// Eloquent / query builder calls that write a row.
+        const ROW_WRITES: &[&str] = &[
+            "create",
+            "updateOrCreate",
+            "firstOrCreate",
+            "updateOrInsert",
+            "upsert",
+            "insert",
+            "update",
+        ];
+        /// Columns a settings table keeps the key in.
+        const KEYISH: &[&str] = &["key", "name", "code", "slug"];
+        for c in named_children(n) {
+            if matches!(
+                c.kind(),
+                "scoped_call_expression" | "member_call_expression"
+            ) {
+                let mut root = c;
+                while root.kind() == "member_call_expression" {
+                    match root.child_by_field_name("object") {
+                        Some(o) => root = o,
+                        None => break,
+                    }
+                }
+                let on_settings = root.kind() == "scoped_call_expression"
+                    && root
+                        .child_by_field_name("scope")
+                        .and_then(|s| self.class_name(text(s, self.src)))
+                        .is_some_and(|f| f.rsplit('\\').next().unwrap_or("").contains("Setting"));
+                let method = c
+                    .child_by_field_name("name")
+                    .map(|x| text(x, self.src))
+                    .unwrap_or("");
+                if on_settings
+                    && c.kind() == "scoped_call_expression"
+                    && SETTING_WRITES.contains(&method)
+                {
+                    let first = first_arg(c).map(|a| text(a, self.src));
+                    if let Some(i) = params.iter().position(|p| Some(p.as_str()) == first) {
+                        return Some(i);
+                    }
+                }
+                if on_settings && ROW_WRITES.contains(&method) {
+                    let t: String = text(c, self.src).split_whitespace().collect();
+                    for (i, p) in params.iter().enumerate() {
+                        let named = KEYISH.iter().any(|k| {
+                            ["'", "\""].iter().any(|q| {
+                                [format!("{q}{k}{q}=>{p}"), format!("{q}{k}{q},{p}")]
+                                    .iter()
+                                    .any(|pat| {
+                                        t.match_indices(pat.as_str()).any(|(at, _)| {
+                                            !t[at + pat.len()..].starts_with(|ch: char| {
+                                                ch.is_alphanumeric() || ch == '_'
+                                            })
+                                        })
+                                    })
+                            })
+                        });
+                        if named {
+                            return Some(i);
+                        }
+                    }
+                }
+            }
+            if let Some(i) = self.written_key_param(c, params) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The literal values a loop variable takes: `foreach (self::KEYS as $key)`,
+    /// `foreach (['a', 'b'] as $key)`, `collect(self::KEYS)->each(fn ($key) => …)`,
+    /// `array_map(fn ($key) => …, self::KEYS)`. Only lists written in this class.
+    fn listed_values(&self, var: Node<'_>, at: Node<'_>) -> Vec<String> {
+        let name = text(var, self.src);
+        let mut cur = at;
+        while let Some(p) = cur.parent() {
+            match p.kind() {
+                "foreach_statement" => {
+                    let kids = named_children(p);
+                    if let (Some(list), Some(bind)) = (kids.first(), kids.get(1))
+                        && list.id() != cur.id()
+                    {
+                        let (as_key, hit) = match bind.kind() {
+                            "pair" => {
+                                let b = named_children(*bind);
+                                if b.first().is_some_and(|k| text(*k, self.src) == name) {
+                                    (true, true)
+                                } else {
+                                    (false, b.last().is_some_and(|v| text(*v, self.src) == name))
+                                }
+                            }
+                            _ => (false, text(*bind, self.src) == name),
+                        };
+                        if hit {
+                            return self.list_literals(*list, as_key);
+                        }
+                    }
+                }
+                "arrow_function"
+                | "anonymous_function"
+                | "anonymous_function_creation_expression" => {
+                    let params: Vec<&str> = p
+                        .child_by_field_name("parameters")
+                        .map(named_children)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|x| x.child_by_field_name("name"))
+                        .map(|x| text(x, self.src))
+                        .collect();
+                    if params.first() == Some(&name) {
+                        return self
+                            .closure_list(p)
+                            .map(|l| self.list_literals(l, false))
+                            .unwrap_or_default();
+                    }
+                    if params.contains(&name) {
+                        return Vec::new();
+                    }
+                }
+                "method_declaration" | "function_definition" => return Vec::new(),
+                _ => {}
+            }
+            cur = p;
+        }
+        Vec::new()
+    }
+
+    /// The list a closure is run over: `collect(X)->…(fn)`, `array_map(fn, X)`.
+    fn closure_list<'t>(&self, closure: Node<'t>) -> Option<Node<'t>> {
+        let call = closure.parent()?.parent()?.parent()?;
+        match call.kind() {
+            "member_call_expression" => {
+                let mut root = call;
+                while root.kind() == "member_call_expression" {
+                    root = root.child_by_field_name("object")?;
+                }
+                (root.kind() == "function_call_expression"
+                    && root
+                        .child_by_field_name("function")
+                        .map(|f| text(f, self.src))
+                        == Some("collect"))
+                .then(|| first_arg(root))
+                .flatten()
+            }
+            "function_call_expression" => {
+                match call
+                    .child_by_field_name("function")
+                    .map(|f| text(f, self.src))
+                {
+                    Some("array_map") => nth_arg(call, 1),
+                    Some("array_walk" | "array_filter") => first_arg(call),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The strings of an array written in place or in a constant of this class
+    /// (its keys when `keys`).
+    fn list_literals(&self, list: Node<'_>, keys: bool) -> Vec<String> {
+        let list = match list.kind() {
+            "argument" => named_children(list).into_iter().last().unwrap_or(list),
+            _ => list,
+        };
+        let arr = match list.kind() {
+            "array_creation_expression" => Some(list),
+            "class_constant_access_expression" => {
+                let parts = named_children(list);
+                let own = self.class.is_some()
+                    && parts
+                        .first()
+                        .and_then(|c| self.class_name(text(*c, self.src)))
+                        == self.class;
+                let name = parts.get(1).map(|c| text(*c, self.src));
+                let mut class = Some(list);
+                while let Some(c) = class {
+                    if c.kind().ends_with("_declaration")
+                        && c.child_by_field_name("body").is_some()
+                        && c.kind() != "method_declaration"
+                    {
+                        break;
+                    }
+                    class = c.parent();
+                }
+                fn find<'t>(n: Node<'t>, name: &str, src: &[u8]) -> Option<Node<'t>> {
+                    for c in named_children(n) {
+                        if c.kind() == "const_element" {
+                            let k = named_children(c);
+                            if k.first().is_some_and(|x| text(*x, src) == name) {
+                                return k.last().copied();
+                            }
+                        } else if matches!(c.kind(), "declaration_list" | "const_declaration")
+                            && let Some(v) = find(c, name, src)
+                        {
+                            return Some(v);
+                        }
+                    }
+                    None
+                }
+                match (own, name, class) {
+                    (true, Some(n), Some(c)) => {
+                        find(c, n, self.src).filter(|v| v.kind() == "array_creation_expression")
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(arr) = arr else {
+            return Vec::new();
+        };
+        named_children(arr)
+            .into_iter()
+            .filter(|e| e.kind() == "array_element_initializer")
+            .filter_map(|e| {
+                let k = named_children(e);
+                match (keys, k.len()) {
+                    (true, 2) => string_lit(k[0], self.src),
+                    (true, _) => None,
+                    (false, _) => k.last().and_then(|v| string_lit(*v, self.src)),
+                }
+            })
+            .collect()
     }
 
     fn setting_at(&mut self, n: Node<'_>, key_idx: usize, default_idx: Option<usize>, write: bool) {
@@ -362,10 +609,19 @@ impl Collector<'_> {
                 )),
             }
         };
-        let Some(key) = args.get(key_idx).and_then(|a| value(*a)) else {
+        let Some(key_arg) = args.get(key_idx) else {
             return;
         };
-        if key.starts_with("expr:") {
+        // `foreach (self::KEYS as $key) { Setting::put($key, …) }`: one per listed key.
+        let keys: Vec<String> = if key_arg.kind() == "variable_name" {
+            self.listed_values(*key_arg, n)
+        } else {
+            value(*key_arg)
+                .into_iter()
+                .filter(|k| !k.starts_with("expr:"))
+                .collect()
+        };
+        if keys.is_empty() {
             return;
         }
         // A wrapper with a fixed default (`=…`): the same for every caller.
@@ -396,19 +652,21 @@ impl Collector<'_> {
                         .or_else(|| unset_means_false(n, self.src).then(|| "false".to_owned()))
                 }
             });
-        let target = match default {
-            Some(d) => format!("{key}\t{d}"),
-            None => key,
-        };
-        self.push(
-            if write {
-                "setting_write"
-            } else {
-                "setting_read"
-            },
-            target,
-            n,
-        );
+        for key in keys {
+            let target = match &default {
+                Some(d) => format!("{key}\t{d}"),
+                None => key,
+            };
+            self.push(
+                if write {
+                    "setting_write"
+                } else {
+                    "setting_read"
+                },
+                target,
+                n,
+            );
+        }
     }
 
     /// A cache key: a literal, `const:Class::NAME`, or a pattern with `{}`
@@ -629,7 +887,129 @@ impl Collector<'_> {
         }
     }
 
+    /// A Blade view rendered from PHP: `view('orders.index', …)`,
+    /// `View::make('x')`, `response()->view('x')`, a mailable's
+    /// `->view('emails.x')` / `->markdown('emails.x')`, `Route::view('/about',
+    /// 'pages.about')`, `new Content(view: 'emails.x')`. A name built at run
+    /// time keeps its fixed start (`pages.*`).
+    fn view_ref(&mut self, n: Node<'_>) {
+        let arg_text = |a: Option<Node<'_>>| -> Option<String> {
+            let a = a?;
+            let v = named_children(a).into_iter().last()?;
+            crate::blade::view_literal(text(v, self.src))
+        };
+        let name = match n.kind() {
+            "function_call_expression" => n
+                .child_by_field_name("function")
+                .map(|f| text(f, self.src).trim_start_matches('\\'))
+                .filter(|f| *f == "view")
+                .and_then(|_| arg_text(first_arg(n))),
+            "scoped_call_expression" => {
+                let scope = n
+                    .child_by_field_name("scope")
+                    .map(|s| text(s, self.src).rsplit('\\').next().unwrap_or_default())
+                    .unwrap_or_default();
+                let method = n
+                    .child_by_field_name("name")
+                    .map(|m| text(m, self.src))
+                    .unwrap_or_default();
+                match (scope, method) {
+                    ("View", "make" | "first" | "exists" | "composer" | "creator") => {
+                        arg_text(first_arg(n))
+                    }
+                    ("Route", "view") => arg_text(nth_arg(n, 1)),
+                    ("Mail", "send" | "queue" | "later") | (_, "loadView") => {
+                        arg_text(first_arg(n))
+                    }
+                    _ => None,
+                }
+            }
+            "member_call_expression" | "nullsafe_member_call_expression" => {
+                let method = n
+                    .child_by_field_name("name")
+                    .map(|m| text(m, self.src))
+                    .unwrap_or_default();
+                match method {
+                    "view" | "markdown" => arg_text(first_arg(n))
+                        // `Route::prefix(…)->view('/about', 'pages.about')`.
+                        .filter(|v| !v.starts_with('.') && !v.contains(':') || v.contains("::"))
+                        .or_else(|| {
+                            (method == "view")
+                                .then(|| arg_text(nth_arg(n, 1)))
+                                .flatten()
+                        }),
+                    "loadView" => arg_text(first_arg(n)),
+                    // `$markdown->render('emails.orders.paid')`, a Livewire
+                    // component's `->layout('layouts.app')`: a dotted name only,
+                    // these method names mean other things too.
+                    "render" | "layout" | "extends" => {
+                        arg_text(first_arg(n)).filter(|v| v.contains('.') && !v.ends_with('*'))
+                    }
+                    _ => None,
+                }
+            }
+            // `protected string $view = 'filament.pages.reports';` and
+            // `$template = $paid ? 'emails.paid' : 'emails.due';`: a view named
+            // in a variable or property called view / template / layout.
+            "property_element" | "assignment_expression" => {
+                let kids = named_children(n);
+                let holder = kids
+                    .first()
+                    .map(|k| text(*k, self.src).to_lowercase())
+                    .unwrap_or_default();
+                let holds_view = holder.starts_with('$')
+                    && !holder.contains("->")
+                    && ["view", "template", "layout", "markdown"]
+                        .iter()
+                        .any(|w| holder.contains(w));
+                // `$view = 'pdf.statement' . $suffix;`: the start of the name.
+                let built = kids
+                    .last()
+                    .filter(|_| holds_view && kids.len() > 1)
+                    .and_then(|v| crate::blade::view_literal(text(*v, self.src)))
+                    .filter(|v| v.ends_with('*') && v.contains('.'));
+                if let Some(name) = built {
+                    self.push("view", name, n);
+                } else if holds_view && kids.len() > 1 {
+                    let mut found = Vec::new();
+                    for k in &kids[1..] {
+                        string_nodes(*k, 0, &mut found);
+                    }
+                    for s in found {
+                        if let Some(name) = crate::blade::view_literal(text(s, self.src))
+                            .filter(|v| (holder == "$view" || v.contains('.')) && !v.ends_with('*'))
+                        {
+                            self.push("view", name, s);
+                        }
+                    }
+                }
+                None
+            }
+            "object_creation_expression" => {
+                let args = n.child_by_field_name("arguments").or_else(|| {
+                    named_children(n)
+                        .into_iter()
+                        .find(|c| c.kind() == "arguments")
+                });
+                args.map(named_children)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|a| a.kind() == "argument")
+                    .find(|a| {
+                        a.child_by_field_name("name")
+                            .is_some_and(|k| matches!(text(k, self.src), "view" | "markdown"))
+                    })
+                    .and_then(|a| arg_text(Some(a)))
+            }
+            _ => None,
+        };
+        if let Some(name) = name {
+            self.push("view", name, n);
+        }
+    }
+
     fn node(&mut self, n: Node<'_>) {
+        self.view_ref(n);
         match n.kind() {
             "namespace_definition" => {
                 let name = n
@@ -793,9 +1173,9 @@ impl Collector<'_> {
                         if short.contains("Setting") {
                             self.setting(n, &method);
                         } else if self.class.as_deref() == Some(fqn.as_str())
-                            && let Some((k, d, tpl)) = self.wrappers.get(&method).cloned()
+                            && let Some((k, d, tpl, write)) = self.wrappers.get(&method).cloned()
                         {
-                            self.setting_at_with(n, k, d, false, tpl.as_deref());
+                            self.setting_at_with(n, k, d, write, tpl.as_deref());
                         }
                     }
                     self.push("class", fqn, n);
@@ -857,9 +1237,9 @@ impl Collector<'_> {
                     }
                 }
                 if obj_text == "$this"
-                    && let Some((k, d, tpl)) = self.wrappers.get(&name).cloned()
+                    && let Some((k, d, tpl, write)) = self.wrappers.get(&name).cloned()
                 {
-                    self.setting_at_with(n, k, d, false, tpl.as_deref());
+                    self.setting_at_with(n, k, d, write, tpl.as_deref());
                 }
                 let receiver = match obj_text.as_str() {
                     "$this" => self.class.clone(),
@@ -1136,6 +1516,11 @@ fn cache_tags(member_call_object: Node<'_>, src: &[u8]) -> String {
         out.join(",")
     }
 }
+
+/// Methods of a settings class that save or remove a value.
+const SETTING_WRITES: &[&str] = &[
+    "put", "set", "forget", "update", "store", "save", "remember", "delete",
+];
 
 /// Methods of a settings class that read a value.
 const SETTING_READS: &[&str] = &[
@@ -1472,6 +1857,48 @@ class Popularity {
                 "setting_read const:App\\Brands\\Popularity::KEY | 14 :9",
                 "setting_read commission.type | const:App\\Brands\\Popularity::TYPE_FLAT :10",
                 "setting_read commission.rate | expr:(float) config('x.rate') :11",
+            ]
+        );
+    }
+
+    #[test]
+    fn settings_saved_through_a_method_and_a_list() {
+        let src = br#"<?php
+namespace App\Pages;
+use App\Models\Setting;
+class SiteSettings {
+    public const FOOTER = ['site_address', 'site_email'];
+    public function mount() { return collect(self::FOOTER)->map(fn (string $key) => Setting::getValue($key, '')); }
+    public function save($data) {
+        foreach (self::FOOTER as $key) { $this->put($key, $data[$key]); }
+        foreach (['a' => 1, 'b' => 2] as $k => $v) { Setting::put($k, $v); }
+        $this->put('listings.days', '2');
+        $this->put($data['x'], '2');
+    }
+    private function put(string $key, string $value): void {
+        Setting::query()->create(['key' => $key, 'value' => $value]);
+    }
+    private function label(string $keyName, string $value): void {
+        Setting::query()->create(['key' => 'fixed', 'value' => $value]);
+    }
+}
+"#;
+        let tree = crate::parse::parse(src).unwrap();
+        let refs: Vec<String> = collect(tree.root_node(), src)
+            .into_iter()
+            .filter(|r| r.kind.starts_with("setting"))
+            .map(|r| format!("{} {} :{}", r.kind, r.target.replace('\t', " | "), r.line))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                "setting_read site_address |  :6",
+                "setting_read site_email |  :6",
+                "setting_write site_address :8",
+                "setting_write site_email :8",
+                "setting_write a :9",
+                "setting_write b :9",
+                "setting_write listings.days :10",
             ]
         );
     }

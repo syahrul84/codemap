@@ -17,7 +17,7 @@ use crate::extract::{ParsedFile, extract};
 pub const EXTRACTOR: &str = "php";
 
 /// Bump when extraction output changes; every PHP file is then re-parsed.
-pub const PHP_EXTRACTOR_VERSION: i64 = 21;
+pub const PHP_EXTRACTOR_VERSION: i64 = 22;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpReport {
@@ -78,11 +78,19 @@ pub fn index_pending(store: &mut Store, root: &Path) -> Result<PhpReport> {
     let parsed: Vec<(i64, String, std::io::Result<ParsedFile>)> = pending
         .into_par_iter()
         .map(|(id, path)| {
-            // Blade templates are not PHP classes: only their `route()` references.
+            // Blade templates are not PHP classes: their `route()` references
+            // and what the template says about itself.
             let result = if path.ends_with(".blade.php") {
-                std::fs::read_to_string(root.join(&path)).map(|src| ParsedFile {
-                    refs: crate::refs::blade_refs(&src),
-                    ..ParsedFile::default()
+                std::fs::read(root.join(&path)).map(|bytes| {
+                    let src = String::from_utf8_lossy(&bytes);
+                    // A bug in one template's analysis must not stop the index.
+                    let blade =
+                        std::panic::catch_unwind(|| crate::blade::facts(&src)).unwrap_or_default();
+                    ParsedFile {
+                        refs: crate::refs::blade_refs(&src),
+                        blade: Some(blade),
+                        ..ParsedFile::default()
+                    }
                 })
             } else {
                 std::fs::read(root.join(&path)).map(|src| extract(&src))
@@ -142,6 +150,12 @@ pub fn index_pending(store: &mut Store, root: &Path) -> Result<PhpReport> {
             for r in &parsed.refs {
                 ins.execute(params![file_id, r.kind, r.target, r.line])?;
             }
+        }
+        if let Some(blade) = &parsed.blade {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO blade_files (file_id, path, facts_json) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![file_id, path, serde_json::to_string(blade)?])?;
         }
         tx.prepare_cached("DELETE FROM warnings WHERE file_id = ?1 AND adapter = ?2")?
             .execute(params![file_id, EXTRACTOR])?;

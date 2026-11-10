@@ -41,6 +41,8 @@ pub struct ParsedFile {
     pub warnings: Vec<ParseWarning>,
     /// References to classes, methods, functions and routes (find usages).
     pub refs: Vec<crate::refs::Ref>,
+    /// A Blade template's facts (`.blade.php` files only).
+    pub blade: Option<crate::blade::BladeFacts>,
 }
 
 /// Extracts every named declaration in `src`. Syntax errors produce one
@@ -54,6 +56,7 @@ pub fn extract(src: &[u8]) -> ParsedFile {
                 message: "PHP parser gave up on this file".into(),
             }],
             refs: Vec::new(),
+            blade: None,
         };
     };
     let root = tree.root_node();
@@ -81,6 +84,7 @@ pub fn extract(src: &[u8]) -> ParsedFile {
         symbols: x.out,
         warnings,
         refs: crate::refs::collect(root, src),
+        blade: None,
     }
 }
 

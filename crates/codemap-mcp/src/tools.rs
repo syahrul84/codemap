@@ -183,7 +183,11 @@ pub fn call(
         "project_overview" => project_overview(store, project, parse(args)?)?.into(),
         "search_symbol" => {
             let p: SearchParams = parse(args)?;
-            let r = symbols::search(store.conn(), &p.into())?;
+            let brief = !matches!(p.detail, DetailParam::Full);
+            let mut r = symbols::search(store.conn(), &p.into())?;
+            if brief {
+                match_lines(&mut r.data);
+            }
             Output {
                 data: r.data,
                 next_cursor: r.next_cursor,
@@ -197,6 +201,13 @@ pub fn call(
                 v.into()
             } else if let Some(v) = codemap_android::view::get_composable(store, &p.name)? {
                 v.into()
+            } else if let Some(v) = codemap_laravel::blade::get_view(
+                store,
+                &project.root,
+                &p.name,
+                matches!(p.detail, DetailParam::Full),
+            )? {
+                v.into()
             } else {
                 let major = codemap_vue::stored_detection(store)?.and_then(|d| d.vue_major);
                 let mut v =
@@ -206,6 +217,23 @@ pub fn call(
                         crate::i18n::file_keys(store.conn(), &project.config.i18n.locales, &file)?;
                     if !keys.is_null() {
                         v["i18n"] = keys;
+                    }
+                }
+                // A Blade project: the closest view names, not Vue's advice.
+                if v["found"] == json!(false)
+                    && codemap_core::views::any(store.conn(), Some("blade"))?
+                {
+                    let near = codemap_laravel::blade::suggestions(store.conn(), &p.name)?;
+                    if major.is_some() {
+                        if !near.is_empty() {
+                            v["blade_views"] = json!(near);
+                        }
+                    } else {
+                        v = json!({
+                            "found": false,
+                            "hint": "no Blade view or component has this name; pass a view name (`orders.index`), a tag (`x-alert`) or a file",
+                            "suggestions": near,
+                        });
                     }
                 }
                 v.into()
@@ -245,10 +273,15 @@ pub fn call(
                         codemap_laravel::permissions::summary(&perms)
                     );
                     *v = json!(line);
-                } else {
+                } else if full {
                     v["permissions"] = perms;
+                } else {
+                    v["permissions"] = json!(codemap_laravel::permissions::summary(&perms));
                 }
             })?;
+            if !full {
+                route_lines(&mut r.data);
+            }
             if full && let Some(list) = r.data["routes"].as_array_mut() {
                 for route in list {
                     if let (Some(c), Some(m)) = (
@@ -338,6 +371,134 @@ pub fn call(
 
 /// "Not found" is only as good as what was read: name the folders with code
 /// that the scan skips, so a miss there is not taken as "does not exist".
+/// Brief `search_symbol`: one line per match, `fqn  kind  file:line  signature — doc`.
+fn match_lines(data: &mut Value) {
+    use codemap_php::ast::{compact, truncate};
+    let Some(list) = data["matches"].as_array_mut() else {
+        return;
+    };
+    for m in list.iter_mut() {
+        let line = {
+            let s = |k: &str| m[k].as_str().unwrap_or_default();
+            let mut line = format!("{}  {}  {}:{}", s("fqn"), s("kind"), s("file"), m["line"]);
+            let sig = compact(s("signature"));
+            if !sig.is_empty() {
+                line.push_str("  ");
+                line.push_str(&truncate(&sig, 100));
+            }
+            if let Some(d) = m["doc_summary"].as_str() {
+                line.push_str("  — ");
+                line.push_str(&truncate(d, 80));
+            }
+            line
+        };
+        *m = json!(line);
+    }
+}
+
+/// The namespace every controller action in a list shares, with its trailing
+/// `\\` (`App\\Http\\Controllers\\`); empty when there is none.
+pub(crate) fn shared_namespace<'a>(actions: impl Iterator<Item = &'a str>) -> String {
+    let mut actions = actions.filter(|a| a.contains('@') && a.contains('\\'));
+    let Some(first) = actions.next() else {
+        return String::new();
+    };
+    let mut namespace = first[..first.rfind('\\').map_or(0, |i| i + 1)].to_owned();
+    for a in actions {
+        while !namespace.is_empty() && !a.starts_with(namespace.as_str()) {
+            let cut = namespace[..namespace.len() - 1]
+                .rfind('\\')
+                .map_or(0, |i| i + 1);
+            namespace.truncate(cut);
+        }
+    }
+    namespace
+}
+
+/// Brief `list_routes`: one line per route, `METHOD uri  → action  file:line`,
+/// then its name, middleware and permissions. The middleware most of the
+/// listed routes have and the controller namespace they share are said once.
+fn route_lines(data: &mut Value) {
+    let Some(list) = data["routes"].as_array() else {
+        return;
+    };
+    let middleware = |r: &Value| -> Vec<String> {
+        r["middleware"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // The middleware most of the listed routes have: said once, and only the
+    // routes that differ name their own.
+    let mut usual: Vec<String> = Vec::new();
+    let mut namespace = String::new();
+    if list.len() > 1 {
+        let mut sets: Vec<(Vec<String>, usize)> = Vec::new();
+        for r in list {
+            let m = middleware(r);
+            match sets.iter_mut().find(|(s, _)| *s == m) {
+                Some((_, n)) => *n += 1,
+                None => sets.push((m, 1)),
+            }
+        }
+        if let Some((m, n)) = sets.into_iter().max_by_key(|(_, n)| *n)
+            && n > 1
+        {
+            usual = m;
+        }
+        namespace = shared_namespace(list.iter().filter_map(|r| r["action"].as_str()));
+    }
+    let lines: Vec<Value> = list
+        .iter()
+        .map(|r| {
+            let s = |k: &str| r[k].as_str().unwrap_or_default();
+            let action = s("action");
+            let action = match action.contains('@') {
+                true => action.strip_prefix(namespace.as_str()).unwrap_or(action),
+                false => action,
+            };
+            let mut line = format!(
+                "{} {}  → {}  {}",
+                s("methods").replace("GET|HEAD", "GET"),
+                s("uri"),
+                action,
+                s("file")
+            );
+            if !s("name").is_empty() {
+                line.push_str(&format!("  name:{}", s("name")));
+            }
+            let own = middleware(r);
+            if own != usual {
+                line.push_str(&match own.is_empty() {
+                    true => "  mw:none".to_owned(),
+                    false => format!("  mw:{}", own.join(",")),
+                });
+            }
+            if !matches!(s("source"), "" | "static") {
+                line.push_str(&format!("  ({})", s("source")));
+            }
+            if !s("unresolved_reason").is_empty() {
+                line.push_str(&format!("  unresolved: {}", s("unresolved_reason")));
+            }
+            if !s("permissions").is_empty() {
+                line.push_str(&format!("  · {}", s("permissions")));
+            }
+            json!(line)
+        })
+        .collect();
+    data["routes"] = json!(lines);
+    if !usual.is_empty() {
+        data["middleware_unless_noted"] = json!(usual);
+    }
+    if !namespace.is_empty() {
+        data["controllers_in"] = json!(namespace.trim_end_matches('\\'));
+    }
+}
+
 fn not_scanned(project: &Project, data: &mut Value) {
     let missed = data["found"] == json!(false)
         || data["results"]
@@ -510,7 +671,11 @@ pub struct ListPagesParams {
         alias = "path",
         alias = "uri",
         alias = "uri_contains",
-        alias = "url"
+        alias = "url",
+        alias = "filter",
+        alias = "query",
+        alias = "q",
+        alias = "search"
     )]
     pub path_contains: Option<String>,
     /// Route name prefix, e.g. `admin.`.
@@ -556,7 +721,12 @@ pub struct ListRoutesParams {
         alias = "uri",
         alias = "path",
         alias = "path_contains",
-        alias = "url"
+        alias = "path_prefix",
+        alias = "url",
+        alias = "filter",
+        alias = "query",
+        alias = "q",
+        alias = "search"
     )]
     pub uri_contains: Option<String>,
     /// Route name prefix, e.g. `orders.`.
@@ -824,6 +994,7 @@ fn project_overview(store: &Store, project: &Project, p: OverviewParams) -> Tool
         "android": codemap_android::view::overview(store)?,
         "rust": codemap_rust::overview(store, &project.root)?,
         "i18n": crate::i18n::overview(store.conn(), &project.config.i18n.locales)?,
+        "blade": codemap_laravel::blade::overview(store.conn())?,
         "health": {
             "warnings": stats.warnings,
             "unresolved_routes": unresolved_routes,

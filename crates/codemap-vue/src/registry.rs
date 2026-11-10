@@ -713,19 +713,42 @@ fn vuex_namespaces(
 }
 
 /// Writes the registry: module kinds/names, component and Vuex symbols, uses.
+/// Everything here is derived from the whole project,
+/// but one edited file changes the rows of a few files only: each part is
+/// compared with what is stored and only the files that differ are written.
 pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<usize> {
+    use codemap_core::store::sync_rows;
     let ids: HashMap<&str, i64> = modules
         .iter()
         .map(|m| (m.path.as_str(), m.file_id))
         .collect();
+    let t = std::time::Instant::now();
+    let lap = |what: &str| {
+        tracing::trace!(ms = t.elapsed().as_millis() as u64, "vue store: {what}");
+    };
     let tx = store.conn_mut().transaction()?;
-    tx.execute("UPDATE js_modules SET kind = 'module', name = NULL", [])?;
-    tx.execute(
-        "DELETE FROM symbols WHERE kind = 'component' OR (kind = 'store' AND meta_json LIKE '%\"type\":\"vuex\"%')",
-        [],
-    )?;
-    tx.execute("DELETE FROM component_uses", [])?;
+
+    // What each module is: a component (with its name) or a plain module.
+    {
+        let current: Vec<(String, Option<String>, Option<String>)> = {
+            let mut stmt = tx.prepare("SELECT path, kind, name FROM js_modules")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut upd = tx.prepare("UPDATE js_modules SET kind = ?2, name = ?3 WHERE path = ?1")?;
+        for (path, kind, name) in current {
+            let (want_kind, want_name) = match reg.components.get(&path) {
+                Some((k, n, _)) => (k.as_str(), Some(n.as_str())),
+                None => ("module", None),
+            };
+            if kind.as_deref() != Some(want_kind) || name.as_deref() != want_name {
+                upd.execute(params![path, want_kind, want_name])?;
+            }
+        }
+    }
+    lap("module kinds");
     crate::pages::store(&tx, &reg.pages)?;
+    lap("pages");
     tx.execute("DELETE FROM routes WHERE source = 'next'", [])?;
     {
         let mut ins = tx.prepare(
@@ -744,30 +767,92 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
         }
     }
     crate::api::store(&tx, &reg.api_calls)?;
-    tx.execute(
-        "DELETE FROM refs WHERE file_id IN (SELECT file_id FROM js_modules)",
-        [],
-    )?;
+    lap("api calls");
+
+    // References, per file.
     {
-        let mut ins =
-            tx.prepare("INSERT INTO refs (file_id, kind, target, line) VALUES (?1, ?2, ?3, ?4)")?;
-        for (id, kind, target, line) in &reg.refs {
-            ins.execute(params![id, kind, target, line])?;
+        type Row = (String, String, u32);
+        let mut have: HashMap<i64, Vec<Row>> = HashMap::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT file_id, kind, target, line FROM refs
+                 WHERE file_id IN (SELECT file_id FROM js_modules)",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
+            })?;
+            for row in rows {
+                let (id, r) = row?;
+                have.entry(id).or_default().push(r);
+            }
         }
+        let mut want: HashMap<i64, Vec<Row>> = HashMap::new();
+        for (id, kind, target, line) in &reg.refs {
+            want.entry(*id)
+                .or_default()
+                .push(((*kind).to_owned(), target.clone(), *line));
+        }
+        sync_rows(
+            have,
+            want,
+            |id| {
+                tx.prepare_cached("DELETE FROM refs WHERE file_id = ?1")?
+                    .execute([id])?;
+                Ok(())
+            },
+            |id, (kind, target, line)| {
+                tx.prepare_cached(
+                    "INSERT INTO refs (file_id, kind, target, line) VALUES (?1, ?2, ?3, ?4)",
+                )?
+                .execute(params![id, kind, target, line])?;
+                Ok(())
+            },
+        )?;
     }
-    tx.execute("DELETE FROM i18n_keys WHERE source = 'vue'", [])?;
-    tx.execute("DELETE FROM i18n_uses WHERE source = 'vue'", [])?;
+    lap("refs");
+
+    // Translation keys and their uses, per file.
     {
-        let mut key = tx.prepare(
-            "INSERT INTO i18n_keys (file_id, source, locale, key) VALUES (?1, 'vue', ?2, ?3)",
-        )?;
-        let mut used = tx.prepare(
-            "INSERT INTO i18n_uses (file_id, source, key, line, dynamic, guarded) VALUES (?1, 'vue', ?2, ?3, ?4, ?5)",
-        )?;
+        type Key = (String, String);
+        type Used = (String, u32, bool, bool);
+        let mut have_keys: HashMap<i64, Vec<Key>> = HashMap::new();
+        let mut have_uses: HashMap<i64, Vec<Used>> = HashMap::new();
+        {
+            let mut stmt =
+                tx.prepare("SELECT file_id, locale, key FROM i18n_keys WHERE source = 'vue'")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))?;
+            for row in rows {
+                let (id, k) = row?;
+                have_keys.entry(id).or_default().push(k);
+            }
+            let mut stmt = tx.prepare(
+                "SELECT file_id, key, line, dynamic, guarded FROM i18n_uses WHERE source = 'vue'",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    (
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                        r.get::<_, Option<bool>>(4)?.unwrap_or(false),
+                    ),
+                ))
+            })?;
+            for row in rows {
+                let (id, u) = row?;
+                have_uses.entry(id).or_default().push(u);
+            }
+        }
+        let mut want_keys: HashMap<i64, Vec<Key>> = HashMap::new();
+        let mut want_uses: HashMap<i64, Vec<Used>> = HashMap::new();
         for m in modules {
             for l in m.facts.locale.iter().chain(&m.facts.inverted_locales) {
                 for k in &l.keys {
-                    key.execute(params![m.file_id, l.locale, k])?;
+                    want_keys
+                        .entry(m.file_id)
+                        .or_default()
+                        .push((l.locale.clone(), k.clone()));
                 }
             }
             for u in m
@@ -777,19 +862,66 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
                 .iter()
                 .chain(&m.facts.template_i18n)
             {
-                used.execute(params![m.file_id, u.key, u.line, u.dynamic, u.guarded])?;
+                want_uses.entry(m.file_id).or_default().push((
+                    u.key.clone(),
+                    u.line,
+                    u.dynamic,
+                    u.guarded,
+                ));
             }
         }
+        sync_rows(
+            have_keys,
+            want_keys,
+            |id| {
+                tx.prepare_cached("DELETE FROM i18n_keys WHERE source = 'vue' AND file_id = ?1")?
+                    .execute([id])?;
+                Ok(())
+            },
+            |id, (locale, key)| {
+                tx.prepare_cached(
+                    "INSERT INTO i18n_keys (file_id, source, locale, key) VALUES (?1, 'vue', ?2, ?3)",
+                )?
+                .execute(params![id, locale, key])?;
+                Ok(())
+            },
+        )?;
+        sync_rows(
+            have_uses,
+            want_uses,
+            |id| {
+                tx.prepare_cached("DELETE FROM i18n_uses WHERE source = 'vue' AND file_id = ?1")?
+                    .execute([id])?;
+                Ok(())
+            },
+            |id, (key, line, dynamic, guarded)| {
+                tx.prepare_cached(
+                    "INSERT INTO i18n_uses (file_id, source, key, line, dynamic, guarded) VALUES (?1, 'vue', ?2, ?3, ?4, ?5)",
+                )?
+                .execute(params![id, key, line, dynamic, guarded])?;
+                Ok(())
+            },
+        )?;
     }
-    let bulk = reg.components.len() >= symbols::BULK_FTS_THRESHOLD;
-    if bulk {
-        symbols::bulk_insert_begin(&tx)?;
-    }
+    lap("i18n");
+
+    // Component and Vuex store symbols, per file.
     let by_path: HashMap<&str, &Module> = modules.iter().map(|m| (m.path.as_str(), m)).collect();
     {
-        let mut upd = tx.prepare("UPDATE js_modules SET kind = ?2, name = ?3 WHERE path = ?1")?;
+        const OURS: &str =
+            "(kind = 'component' OR (kind = 'store' AND meta_json LIKE '%\"type\":\"vuex\"%'))";
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            u32,
+            u32,
+            Option<String>,
+            Option<String>,
+        );
+        let mut wanted: HashMap<i64, Vec<NewSymbol>> = HashMap::new();
         for (path, (kind, name, others)) in &reg.components {
-            upd.execute(params![path, kind, name])?;
             let Some(m) = by_path.get(path.as_str()) else {
                 continue;
             };
@@ -821,28 +953,24 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
                 (None, false) => Some(format!("also registered as {}", others.join(", "))),
                 (Some(d), false) => Some(format!("{d}; also registered as {}", others.join(", "))),
             };
-            symbols::insert(
-                &tx,
-                file_id,
-                &NewSymbol {
-                    kind: SymbolKind::Component,
-                    name: name.clone(),
-                    fqn: path.clone(),
-                    parent_fqn: None,
-                    signature: sig,
-                    visibility: None,
-                    is_static: false,
-                    is_abstract: false,
-                    is_final: false,
-                    start_line: 1,
-                    end_line: m.facts.lines.max(1),
-                    doc_summary: doc,
-                    meta: SymbolMeta {
-                        r#type: Some(kind.clone()),
-                        ..SymbolMeta::default()
-                    },
+            wanted.entry(file_id).or_default().push(NewSymbol {
+                kind: SymbolKind::Component,
+                name: name.clone(),
+                fqn: path.clone(),
+                parent_fqn: None,
+                signature: sig,
+                visibility: None,
+                is_static: false,
+                is_abstract: false,
+                is_final: false,
+                start_line: 1,
+                end_line: m.facts.lines.max(1),
+                doc_summary: doc,
+                meta: SymbolMeta {
+                    r#type: Some(kind.clone()),
+                    ..SymbolMeta::default()
                 },
-            )?;
+            });
         }
         for (path, (ns, label)) in &reg.vuex_namespaces {
             let Some(m) = by_path.get(path.as_str()) else {
@@ -875,43 +1003,159 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
                     parts.push(format!("{l}: {}", list.join(", ")));
                 }
             }
-            symbols::insert(
-                &tx,
-                file_id,
-                &NewSymbol {
-                    kind: SymbolKind::Store,
-                    name: label.clone(),
-                    fqn: path.clone(),
-                    parent_fqn: None,
-                    signature: format!("Vuex module '{label}'{scope}"),
-                    visibility: None,
-                    is_static: false,
-                    is_abstract: false,
-                    is_final: false,
-                    start_line: v.line,
-                    end_line: m.facts.lines.max(v.line),
-                    doc_summary: (!parts.is_empty()).then(|| parts.join(" · ")),
-                    meta: SymbolMeta {
-                        value: Some(label),
-                        r#type: Some("vuex".into()),
-                        ..SymbolMeta::default()
-                    },
+            wanted.entry(file_id).or_default().push(NewSymbol {
+                kind: SymbolKind::Store,
+                name: label.clone(),
+                fqn: path.clone(),
+                parent_fqn: None,
+                signature: format!("Vuex module '{label}'{scope}"),
+                visibility: None,
+                is_static: false,
+                is_abstract: false,
+                is_final: false,
+                start_line: v.line,
+                end_line: m.facts.lines.max(v.line),
+                doc_summary: (!parts.is_empty()).then(|| parts.join(" · ")),
+                meta: SymbolMeta {
+                    value: Some(label),
+                    r#type: Some("vuex".into()),
+                    ..SymbolMeta::default()
                 },
-            )?;
+            });
         }
-        let mut ins = tx.prepare(
-            "INSERT INTO component_uses (from_path, tag, line, to_path, via, package) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        let row_of = |s: &NewSymbol| -> Result<Row> {
+            Ok((
+                s.kind.as_str().to_owned(),
+                s.name.clone(),
+                s.fqn.clone(),
+                s.signature.clone(),
+                s.start_line,
+                s.end_line,
+                s.doc_summary.clone(),
+                if s.meta.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&s.meta)?)
+                },
+            ))
+        };
+        let mut have: HashMap<i64, Vec<Row>> = HashMap::new();
+        {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT file_id, kind, name, fqn, signature, start_line, end_line, doc_summary, meta_json
+                 FROM symbols WHERE {OURS}"
+            ))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    (
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                    ),
+                ))
+            })?;
+            for row in rows {
+                let (id, s) = row?;
+                have.entry(id).or_default().push(s);
+            }
+        }
+        let mut want: HashMap<i64, Vec<Row>> = HashMap::new();
+        for (id, list) in &wanted {
+            for s in list {
+                want.entry(*id).or_default().push(row_of(s)?);
+            }
+        }
+        let had: Vec<i64> = have.keys().copied().collect();
+        // Files whose symbols differ: dropped, then written again.
+        let mut differs: Vec<i64> = Vec::new();
+        sync_rows(
+            have,
+            want,
+            |id| {
+                tx.prepare_cached(&format!(
+                    "DELETE FROM symbols WHERE file_id = ?1 AND {OURS}"
+                ))?
+                .execute([id])?;
+                differs.push(*id);
+                Ok(())
+            },
+            |_, _| Ok(()),
         )?;
-        for u in &reg.uses {
-            ins.execute(params![
-                u.from_path,
-                u.tag,
-                u.line,
-                u.to_path,
-                u.via,
-                u.package
-            ])?;
+        let mut fresh: Vec<i64> = wanted.keys().copied().collect();
+        fresh.sort_unstable();
+        let mut to_write: Vec<i64> = Vec::new();
+        for id in fresh {
+            if differs.contains(&id) || !had.contains(&id) {
+                to_write.push(id);
+            }
         }
+        let total: usize = to_write.iter().map(|id| wanted[id].len()).sum();
+        let bulk = total >= symbols::BULK_FTS_THRESHOLD;
+        if bulk {
+            symbols::bulk_insert_begin(&tx)?;
+        }
+        for id in &to_write {
+            for s in &wanted[id] {
+                symbols::insert(&tx, *id, s)?;
+            }
+        }
+        if bulk {
+            symbols::bulk_insert_end(&tx)?;
+        }
+    }
+    lap("symbols");
+
+    // Which component renders which, per file.
+    {
+        type Row = (String, u32, Option<String>, String, Option<String>);
+        let mut have: HashMap<String, Vec<Row>> = HashMap::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT from_path, tag, line, to_path, via, package FROM component_uses",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?),
+                ))
+            })?;
+            for row in rows {
+                let (path, u) = row?;
+                have.entry(path).or_default().push(u);
+            }
+        }
+        let mut want: HashMap<String, Vec<Row>> = HashMap::new();
+        for u in &reg.uses {
+            want.entry(u.from_path.clone()).or_default().push((
+                u.tag.clone(),
+                u.line,
+                u.to_path.clone(),
+                u.via.clone(),
+                u.package.clone(),
+            ));
+        }
+        sync_rows(
+            have,
+            want,
+            |path| {
+                tx.prepare_cached("DELETE FROM component_uses WHERE from_path = ?1")?
+                    .execute([path])?;
+                Ok(())
+            },
+            |path, (tag, line, to_path, via, package)| {
+                tx.prepare_cached(
+                    "INSERT INTO component_uses (from_path, tag, line, to_path, via, package) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )?
+                .execute(params![path, tag, line, to_path, via, package])?;
+                Ok(())
+            },
+        )?;
         // The shared view model: components and who renders them.
         let views: Vec<codemap_core::views::View> = reg
             .components
@@ -943,9 +1187,8 @@ pub fn store(store: &mut Store, modules: &[Module], reg: &Registry) -> Result<us
             .collect();
         codemap_core::views::replace(&tx, "vue", &views, &uses)?;
     }
-    if bulk {
-        symbols::bulk_insert_end(&tx)?;
-    }
+    lap("uses, views");
     tx.commit()?;
+    lap("committed");
     Ok(reg.components.len())
 }

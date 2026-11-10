@@ -94,9 +94,12 @@ async fn all_tools_over_stdio() {
     assert!(overview["data"].to_string().len() < 6000);
 
     let found = call(&client, "search_symbol", json!({ "query": "OrderStatus" })).await;
-    assert_eq!(
-        found["data"]["matches"][0]["fqn"],
-        "App\\Enums\\OrderStatus"
+    assert!(
+        found["data"]["matches"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("App\\Enums\\OrderStatus  enum  "),
+        "{found}"
     );
     let missing = call(&client, "search_symbol", json!({ "query": "OrderStatsu" })).await;
     assert_eq!(missing["data"]["found"], false);
@@ -109,9 +112,12 @@ async fn all_tools_over_stdio() {
     )
     .await;
     assert_eq!(other_kind["data"]["found"], true);
-    assert_eq!(
-        other_kind["data"]["matches"][0]["fqn"],
-        "App\\Enums\\OrderStatus"
+    assert!(
+        other_kind["data"]["matches"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("App\\Enums\\OrderStatus  enum  "),
+        "{other_kind}"
     );
     assert_eq!(
         other_kind["data"]["note"],
@@ -381,7 +387,13 @@ async fn vue_tools_over_stdio() {
         json!({ "query": "cart", "kind": "store" }),
     )
     .await;
-    assert_eq!(s["data"]["matches"][0]["name"], "useCartStore");
+    assert!(
+        s["data"]["matches"][0]
+            .as_str()
+            .unwrap()
+            .contains("useCartStore  store  "),
+        "{s}"
+    );
 
     let g = call(&client, "get_symbol", json!({ "name": "useCart" })).await;
     assert_eq!(g["data"]["kind"], "composable");

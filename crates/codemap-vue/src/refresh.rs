@@ -126,10 +126,20 @@ pub fn refresh(store: &mut Store, root: &Path, scan: &ScanReport, full: bool) ->
         || get_meta(store.conn(), meta_keys::VUE_REGISTRY_STATE)?.as_deref()
             != Some(state.as_str());
     if needed {
+        let t = Instant::now();
         let modules = registry::load_modules(store)?;
         let files: HashSet<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
+        let loaded = t.elapsed().as_millis() as u64;
         let reg = registry::build(root, &detection, &modules, &files);
+        let built = t.elapsed().as_millis() as u64;
         report.components = registry::store(store, &modules, &reg)?;
+        tracing::debug!(
+            load_ms = loaded,
+            build_ms = built - loaded,
+            store_ms = t.elapsed().as_millis() as u64 - built,
+            modules = modules.len(),
+            "vue registry rebuilt"
+        );
         report.registry_ran = true;
         let conn = store.conn();
         conn.execute("DELETE FROM warnings WHERE adapter = ?1", [ADAPTER])?;

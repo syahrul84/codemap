@@ -636,6 +636,8 @@ impl<'b> Matcher<'b> {
                 return Outcome::NotFound(closest);
             }
         }
+        let unknown_start = c.base_var || c.url.starts_with("/{}");
+        let names_something = c.url.split('/').any(is_word);
         let mut matched = Vec::new();
         let mut wrong_method = Vec::new();
         for bi in 0..self.backends.len() {
@@ -644,7 +646,13 @@ impl<'b> Matcher<'b> {
                 prefixes.push(Vec::new());
             }
             for p in prefixes {
-                let hits = self.raw_matches(bi, &p, c);
+                let mut hits = self.raw_matches(bi, &p, c);
+                // A URL that starts with a variable and shares no word with the
+                // route is no fit: `${endpoint}/${id}/approve` would land on any
+                // `a/b/{param}`. Its known tail decides below.
+                if unknown_start && names_something {
+                    hits.retain(|(_, score)| score.0 > 0);
+                }
                 if hits.is_empty() {
                     continue;
                 }
@@ -701,7 +709,6 @@ impl<'b> Matcher<'b> {
             .filter(|s| !s.is_empty())
             .skip_while(|s| *s == "{}")
             .collect();
-        let unknown_start = c.base_var || c.url.starts_with("/{}");
         if unknown_start && !tail.is_empty() {
             // Routes ending in the known tail, ranked by how many of its words
             // they match (`api/selfcare/contacts` before `invoice/{hashId}`).
@@ -1189,19 +1196,23 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
     let t_backends = t0.elapsed().as_millis();
     let matcher = Matcher::new(&backends, &calls);
     let t_matcher = t0.elapsed().as_millis();
-    // The controllers behind the routes, parsed on all cores now rather than
-    // one at a time while the calls are checked.
-    for b in &backends {
-        let mut ctrls: Vec<&str> = b
-            .routes
-            .iter()
-            .filter_map(|r| r.controller_fqn.as_deref())
-            .collect();
-        ctrls.sort_unstable();
-        ctrls.dedup();
-        responses::prefetch(b.conn(store), &b.root, &ctrls);
-    }
-    let t_prefetch = t0.elapsed().as_millis();
+    // The controllers behind the routes an answer reads, parsed on all cores
+    // rather than one at a time while the calls are checked. Only those: a
+    // backend has hundreds of controllers and one endpoint needs one.
+    let warm = |hits: &HashSet<(usize, usize)>| {
+        for (bi, b) in backends.iter().enumerate() {
+            let mut ctrls: Vec<&str> = hits
+                .iter()
+                .filter(|h| h.0 == bi)
+                .filter_map(|h| b.routes[h.1].controller_fqn.as_deref())
+                .collect();
+            ctrls.sort_unstable();
+            ctrls.dedup();
+            if ctrls.len() > 1 {
+                responses::prefetch(b.conn(store), &b.root, &ctrls);
+            }
+        }
+    };
     let mut shapes = Shapes::new(store);
     let limit = p.limit.unwrap_or(20).clamp(1, 100);
     let offset = p
@@ -1359,16 +1370,67 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
             targets = exact;
         }
         let total = targets.len();
+        // Every call is matched once, not once per route.
+        let wanted: HashSet<(usize, usize)> = targets.iter().copied().collect();
+        let mut callers_of: HashMap<(usize, usize), Vec<&CallRow>> = HashMap::new();
+        for c in &calls {
+            if let Outcome::Matched(v) = matcher.outcome(c) {
+                for t in v.into_iter().filter(|t| wanted.contains(t)) {
+                    callers_of.entry(t).or_default().push(c);
+                }
+            }
+        }
+        // Part of a path that many routes share: one line per route. The
+        // callers and fields of one route come with its full path.
+        const DETAILED: usize = 5;
+        if total > DETAILED && detail != Detail::Full {
+            let page: Vec<(usize, usize)> =
+                targets.iter().copied().skip(offset).take(limit).collect();
+            let actions: Vec<String> = page
+                .iter()
+                .map(|t| backends[t.0].routes[t.1].action_label())
+                .collect();
+            let namespace = crate::tools::shared_namespace(actions.iter().map(String::as_str));
+            let lines: Vec<String> = page
+                .iter()
+                .zip(&actions)
+                .map(|(t, action)| {
+                    let r = &backends[t.0].routes[t.1];
+                    format!(
+                        "{}  → {}  {}  · {} caller(s)",
+                        matcher.route_label(*t).replace("GET|HEAD", "GET"),
+                        action.strip_prefix(namespace.as_str()).unwrap_or(action),
+                        r.location().unwrap_or_default(),
+                        callers_of.get(t).map_or(0, Vec::len)
+                    )
+                })
+                .collect();
+            if !namespace.is_empty() {
+                data["controllers_in"] = json!(namespace.trim_end_matches('\\'));
+            }
+            data["found"] = json!(true);
+            data["total"] = json!(total);
+            data["endpoints"] = json!(lines);
+            data["note"] = json!(format!(
+                "{total} routes contain `{ep}`: one line each. Pass one full route (e.g. `{}`) for its callers and the fields it returns.",
+                matcher.route_label(targets[0]).replace("GET|HEAD", "GET")
+            ));
+            let next = (offset + limit < total).then(|| format!("o{}", offset + limit));
+            return Ok(ApiOutput {
+                data,
+                truncated: next.is_some(),
+                next_cursor: next,
+            });
+        }
+        warm(&targets.iter().skip(offset).take(limit).copied().collect());
         let mut list = Vec::new();
         for t in targets.into_iter().skip(offset).take(limit) {
             let r = &backends[t.0].routes[t.1];
             let shape = shapes.get(&matcher, t);
-            let callers: Vec<Value> = calls
-                .iter()
-                .filter(|c| match matcher.outcome(c) {
-                    Outcome::Matched(v) => v.contains(&t),
-                    _ => false,
-                })
+            let callers: Vec<Value> = callers_of
+                .get(&t)
+                .into_iter()
+                .flatten()
                 .map(|c| {
                     let missing = shape.as_ref().map(|s| not_returned(c, s)).unwrap_or_default();
                     let mut v = json!({ "at": format!("{}:{}", c.file, c.line), "call": format!("{} {}", c.via, c.raw) });
@@ -1409,11 +1471,29 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
     let status = p.status.as_deref().unwrap_or("all");
     let mut summary: BTreeMap<&str, usize> = BTreeMap::new();
     let mut rows = Vec::new();
-    for c in calls.iter().filter(|c| {
+    let in_file = |c: &&CallRow| {
         p.file
             .as_deref()
             .is_none_or(|f| c.file == f || c.file.contains(f))
-    }) {
+    };
+    {
+        let mut needed: HashSet<(usize, usize)> = HashSet::new();
+        for c in calls.iter().filter(in_file) {
+            let hits = match matcher.outcome(c) {
+                Outcome::Matched(v) => v,
+                _ => continue,
+            };
+            if scope
+                .as_ref()
+                .is_none_or(|sc| sc.own.contains(&c.file) || hits.iter().any(|h| route_changed(*h)))
+            {
+                needed.extend(hits);
+            }
+        }
+        warm(&needed);
+    }
+    let t_prefetch = t0.elapsed().as_millis();
+    for c in calls.iter().filter(in_file) {
         let o = matcher.outcome(c);
         let (label, routes_hit) = match &o {
             Outcome::Matched(v) => ("matched", v.clone()),
@@ -1485,6 +1565,18 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
             .as_ref()
             .map(|a| payload_check(c, a))
             .unwrap_or_default();
+        // `codemap-ignore` on (or above) the call: what it finds is on purpose.
+        let finds = matches!(label, "missing" | "method_mismatch" | "unresolved")
+            || !variants_missing.is_empty()
+            || !missing_fields.is_empty()
+            || !typed_missing.is_empty()
+            || !missing_required.is_empty()
+            || !unknown_field.is_empty()
+            || !renames.is_empty();
+        if finds && crate::release::line_marked(&project.root, &c.file, c.line as usize) {
+            *summary.entry("ignored").or_insert(0) += 1;
+            continue;
+        }
         if let Some((_, known)) = &baseline {
             let keys = finding_keys(
                 &c.file,

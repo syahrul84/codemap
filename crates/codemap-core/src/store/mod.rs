@@ -32,6 +32,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0018_rust.sql"),
     include_str!("migrations/0019_table_indexes.sql"),
     include_str!("migrations/0020_views.sql"),
+    include_str!("migrations/0021_blade.sql"),
 ];
 
 /// Schema version this build creates and understands.
@@ -316,6 +317,44 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
 }
 
 /// Sets `key` to `value`, or removes it when `value` is `None`.
+/// Makes the stored rows of each key equal to `want`, writing only the keys
+/// whose rows differ: `remove` drops a key's rows, `add` inserts one. A
+/// refresh after one edited file then touches that file's rows, not every
+/// row of the project. Returns how many keys were written.
+pub fn sync_rows<K, R>(
+    have: HashMap<K, Vec<R>>,
+    mut want: HashMap<K, Vec<R>>,
+    mut remove: impl FnMut(&K) -> Result<()>,
+    mut add: impl FnMut(&K, &R) -> Result<()>,
+) -> Result<usize>
+where
+    K: Eq + std::hash::Hash,
+    R: Ord,
+{
+    let mut written = 0;
+    for (key, mut old) in have {
+        let mut new = want.remove(&key).unwrap_or_default();
+        old.sort();
+        new.sort();
+        if old != new {
+            remove(&key)?;
+            for row in &new {
+                add(&key, row)?;
+            }
+            written += 1;
+        }
+    }
+    for (key, new) in want {
+        if !new.is_empty() {
+            for row in &new {
+                add(&key, row)?;
+            }
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 pub fn set_meta_opt(conn: &Connection, key: &str, value: Option<&str>) -> Result<()> {
     match value {
         Some(v) => set_meta(conn, key, v),

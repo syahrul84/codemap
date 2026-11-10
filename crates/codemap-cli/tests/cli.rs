@@ -201,7 +201,12 @@ fn query_search_symbol_returns_envelope() {
     let out = query_fixture(&["search_symbol", r#"{"query":"OrderStatus"}"#]);
     let v = json(&out);
     assert_eq!(v["data"]["found"], true);
-    assert_eq!(v["data"]["matches"][0]["fqn"], "App\\Enums\\OrderStatus");
+    // Brief matches are one line each: `fqn  kind  file:line  signature`.
+    let first = v["data"]["matches"][0].as_str().unwrap();
+    assert!(
+        first.starts_with("App\\Enums\\OrderStatus  enum  app/Enums/OrderStatus.php:"),
+        "{first}"
+    );
     let meta = v["meta"].as_object().unwrap();
     for key in ["project", "indexed_at", "git_commit"] {
         assert!(meta.contains_key(key), "meta.{key} missing: {meta:?}");
@@ -293,8 +298,16 @@ fn query_list_routes_filters_and_not_found() {
     ]));
     assert_eq!(v["data"]["found"], true);
     assert_eq!(v["data"]["total"], 1);
-    assert_eq!(v["data"]["routes"][0]["name"], "customers.update");
-    assert_eq!(v["data"]["routes"][0]["file"], "routes/api.php:9");
+    // Brief routes are one line each: `METHOD uri  → action  file:line  name:…`.
+    let route = v["data"]["routes"][0].as_str().unwrap();
+    assert!(route.contains("  name:customers.update"), "{route}");
+    assert!(route.contains("  routes/api.php:9"), "{route}");
+    let full = json(&query_fixture(&[
+        "list_routes",
+        r#"{"uri_contains":"customers","method":"PUT","detail":"full"}"#,
+    ]));
+    assert_eq!(full["data"]["routes"][0]["name"], "customers.update");
+    assert_eq!(full["data"]["routes"][0]["file"], "routes/api.php:9");
     assert_eq!(v["meta"]["project"], "acme/slim-shop");
 
     let v = json(&query_fixture(&[

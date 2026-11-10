@@ -4,7 +4,7 @@
 
 CREATE TABLE views (
     file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    framework TEXT    NOT NULL,   -- vue | swiftui | compose
+    framework TEXT    NOT NULL,   -- vue | swiftui | compose | blade
     name      TEXT    NOT NULL,
     path      TEXT    NOT NULL,
     line      INTEGER NOT NULL,

@@ -101,8 +101,16 @@ fn not_found_names_the_folders_the_scan_skips() {
 fn the_apps_own_code_ranks_above_test_copies() {
     let (_root, _data, store, p) = project(FILES);
     let c = call(&store, &p, "search_symbol", json!({"query": "Cart"}));
-    assert_eq!(c["matches"][0]["fqn"], "App\\Services\\Cart", "{c}");
-    assert_eq!(c["matches"][1]["fqn"], "Tests\\Fakes\\Cart", "{c}");
+    let fqn = |i: usize| {
+        c["matches"][i]
+            .as_str()
+            .unwrap()
+            .split("  ")
+            .next()
+            .unwrap()
+    };
+    assert_eq!(fqn(0), "App\\Services\\Cart", "{c}");
+    assert_eq!(fqn(1), "Tests\\Fakes\\Cart", "{c}");
 }
 
 /// A workspace folder with a Laravel backend and an iOS app: both are apps.

@@ -4,6 +4,7 @@
 
 pub mod accepts;
 pub mod background;
+pub mod blade;
 pub mod cache_map;
 pub mod config_php;
 pub mod detect;

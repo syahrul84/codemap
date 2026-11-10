@@ -2,6 +2,8 @@
 //! views, Compose functions) and the edges "this view shows that one". Each
 //! framework's adapter replaces its own rows; tools read them all alike.
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
@@ -39,32 +41,93 @@ pub struct ViewRow {
 }
 
 /// Replaces `framework`'s views and uses (inside the caller's transaction).
+/// Only the files whose rows differ are written.
 pub fn replace(conn: &Connection, framework: &str, views: &[View], uses: &[Use]) -> Result<()> {
-    conn.execute("DELETE FROM views WHERE framework = ?1", [framework])?;
-    conn.execute("DELETE FROM view_uses WHERE framework = ?1", [framework])?;
+    type ViewRowKey = (i64, String, u32, Option<String>);
+    type UseRow = (Option<String>, String, Option<String>, u32);
+    let mut have: HashMap<String, Vec<ViewRowKey>> = HashMap::new();
     {
-        let mut ins = conn.prepare_cached(
-            "INSERT INTO views (file_id, framework, name, path, line, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        let mut stmt = conn.prepare_cached(
+            "SELECT path, file_id, name, line, kind FROM views WHERE framework = ?1",
         )?;
-        for v in views {
-            ins.execute(params![
-                v.file_id, framework, v.name, v.path, v.line, v.kind
-            ])?;
+        let rows = stmt.query_map([framework], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?),
+            ))
+        })?;
+        for row in rows {
+            let (path, v) = row?;
+            have.entry(path).or_default().push(v);
         }
     }
-    let mut ins = conn.prepare_cached(
-        "INSERT INTO view_uses (framework, from_path, from_name, to_name, to_path, line) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
-    for u in uses {
-        ins.execute(params![
-            framework,
-            u.from_path,
-            u.from_name,
-            u.to_name,
-            u.to_path,
-            u.line
-        ])?;
+    let mut want: HashMap<String, Vec<ViewRowKey>> = HashMap::new();
+    for v in views {
+        want.entry(v.path.clone()).or_default().push((
+            v.file_id,
+            v.name.clone(),
+            v.line,
+            Some(v.kind.clone()),
+        ));
     }
+    crate::store::sync_rows(
+        have,
+        want,
+        |path| {
+            conn.prepare_cached("DELETE FROM views WHERE framework = ?1 AND path = ?2")?
+                .execute(params![framework, path])?;
+            Ok(())
+        },
+        |path, (file_id, name, line, kind)| {
+            conn.prepare_cached(
+                "INSERT INTO views (file_id, framework, name, path, line, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![file_id, framework, name, path, line, kind])?;
+            Ok(())
+        },
+    )?;
+
+    let mut have: HashMap<String, Vec<UseRow>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare_cached(
+            "SELECT from_path, from_name, to_name, to_path, line FROM view_uses WHERE framework = ?1",
+        )?;
+        let rows = stmt.query_map([framework], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?),
+            ))
+        })?;
+        for row in rows {
+            let (path, u) = row?;
+            have.entry(path).or_default().push(u);
+        }
+    }
+    let mut want: HashMap<String, Vec<UseRow>> = HashMap::new();
+    for u in uses {
+        want.entry(u.from_path.clone()).or_default().push((
+            u.from_name.clone(),
+            u.to_name.clone(),
+            u.to_path.clone(),
+            u.line,
+        ));
+    }
+    crate::store::sync_rows(
+        have,
+        want,
+        |path| {
+            conn.prepare_cached("DELETE FROM view_uses WHERE framework = ?1 AND from_path = ?2")?
+                .execute(params![framework, path])?;
+            Ok(())
+        },
+        |path, (from_name, to_name, to_path, line)| {
+            conn.prepare_cached(
+                "INSERT INTO view_uses (framework, from_path, from_name, to_name, to_path, line) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![framework, path, from_name, to_name, to_path, line])?;
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 

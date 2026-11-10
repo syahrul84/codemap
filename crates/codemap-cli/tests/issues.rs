@@ -758,7 +758,7 @@ fn issue_35_routes_in_a_closure_variable() {
     let r = call(ISSUE_35, "list_routes", json!({}));
     let text = r.to_string();
     assert!(
-        text.contains("{lang}/widgets/{id}") && text.contains("\"widgets/{id}"),
+        text.contains("{lang}/widgets/{id}") && text.contains(" widgets/{id}  "),
         "{r}"
     );
 }
@@ -886,8 +886,12 @@ fn search_matches_word_parts() {
         json!({"query": "actions widget"}),
     );
     assert_eq!(v["found"], true, "{v}");
-    assert_eq!(v["matches"][0]["name"], "WidgetActions", "{v}");
+    let name = |v: &Value| {
+        let line = v["matches"][0].as_str().unwrap_or_default();
+        line.split("  ").next().unwrap_or_default().to_owned()
+    };
+    assert!(name(&v).ends_with("WidgetActions"), "{v}");
     assert!(v["note"].as_str().unwrap().contains("all of"), "{v}");
     let v = call(ISSUE_17, "search_symbol", json!({"query": "view_widget"}));
-    assert_eq!(v["matches"][0]["name"], "ViewWidget", "{v}");
+    assert!(name(&v).ends_with("ViewWidget"), "{v}");
 }

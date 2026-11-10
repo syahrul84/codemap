@@ -1058,12 +1058,15 @@ impl Verifier<'_> {
                 c = c.detail(match v.framework.as_str() {
                     "swiftui" => "SwiftUI view",
                     "compose" => "Compose function",
+                    "blade" => "Blade view",
                     _ => "view",
                 });
             }
             return Ok(c);
         }
-        let has_native = codemap_core::views::any(conn, Some("swiftui"))?
+        let has_blade = codemap_core::views::any(conn, Some("blade"))?;
+        let has_native = has_blade
+            || codemap_core::views::any(conn, Some("swiftui"))?
             || codemap_core::views::any(conn, Some("compose"))?;
         Ok(
             match codemap_vue::component::check(self.store, self.root, name)? {
@@ -1085,7 +1088,11 @@ impl Verifier<'_> {
                 ComponentCheck::NoFrontend if has_native => {
                     let names = codemap_core::views::names(conn)?;
                     Check::new("component", name, Status::NotFound)
-                        .detail("no SwiftUI view or Compose function has this name")
+                        .detail(if has_blade {
+                            "no Blade view has this name"
+                        } else {
+                            "no SwiftUI view or Compose function has this name"
+                        })
                         .suggest(closest(name, &names))
                 }
                 ComponentCheck::NoFrontend => Check::new("component", name, Status::Unresolved)

@@ -22,7 +22,10 @@ use crate::tools::{
 use crate::verify::VerifyParams;
 
 /// How long a call waits for re-indexing before answering from the old index.
-pub const REFRESH_BUDGET: Duration = Duration::from_secs(1);
+/// A stale answer sends the assistant back to reading files, which costs far
+/// more than a second of waiting, so the wait covers the edits of a normal
+/// turn on a large frontend; only a branch switch or a first index runs past it.
+pub const REFRESH_BUDGET: Duration = Duration::from_secs(2);
 
 pub const INSTRUCTIONS: &str = "Use these tools instead of grep, find or reading whole files \
 for any question about this project's code; load them first if your client defers them. \
@@ -31,7 +34,7 @@ schema, components and screens, read from the source with file:line: answers are
 size of the files they replace, so never guess a class, route or column. Call project_overview at the start of a task. Call search_symbol \
 before creating any class, method or helper and reuse what exists. Call get_schema before writing \
 queries, migrations or model code; never assume column names. Prefer get_symbol over reading whole \
-files. For Vue, Nuxt, React, SwiftUI or Compose code, call get_component before using or changing a \
+files. For Vue, Nuxt, React, SwiftUI or Compose code, or a Blade template, call get_component before using or changing a \
 component, list_pages for screens, api_usage for HTTP calls, and search_symbol for composables and \
 stores; Swift, Kotlin and Rust types and members go through the same tools. Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true, re-check files directly. found: false means it does not exist \
 in the project, unless the answer lists not_scanned folders (code that is not indexed). If an answer turns out wrong after you checked the files, report it once with \
@@ -549,7 +552,7 @@ impl CodemapServer {
 
     #[tool(
         name = "search_symbol",
-        description = "Use before writing any new class, method or helper, to find existing code to reuse, or to locate code. Matches short names, FQNs, Class::method and partial names. Reuse what it finds instead of writing a duplicate or inventing a name; the app's own code ranks above test and fixture copies. Returns found:false with suggestions when nothing exists."
+        description = "Use before writing any new class, method or helper, to find existing code to reuse, or to locate code. Matches short names, FQNs, Class::method and partial names. Reuse what it finds instead of writing a duplicate or inventing a name; the app's own code ranks above test and fixture copies. Each match is one line, `fqn  kind  file:line  signature` (`detail: full` for objects). Returns found:false with suggestions when nothing exists."
     )]
     pub async fn search_symbol(
         &self,
@@ -571,7 +574,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_component",
-        description = "Use before using, changing or creating a Vue component, Nuxt page, React function component, SwiftUI view or Jetpack Compose function: props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. Accepts a name (OrderCard), tag (order-card) or file path."
+        description = "Use before using, changing or creating a Vue component, Nuxt page, React function component, SwiftUI view, Jetpack Compose function or Laravel Blade view (instead of grepping resources/views): props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. For a Blade view (`orders.index`, `x-alert`, or its file): the layout it extends, sections, includes and components (resolved to files), the variables it expects, its forms and the routes they post to, and who renders it (controller method, the keys it passes, the route) or includes it. Accepts a name (OrderCard), tag (order-card) or file path."
     )]
     pub async fn get_component(
         &self,
@@ -593,7 +596,7 @@ impl CodemapServer {
 
     #[tool(
         name = "list_routes",
-        description = "Use to find Laravel HTTP endpoints or which controller handles a URI. Filters: uri_contains, name_prefix, method, controller, middleware. Each route has methods, uri, name, action, middleware, file:line. Pass `permissions: true` for who may call each route (middleware, checks in the action, Form Request authorize(), policy)."
+        description = "Use to find Laravel HTTP endpoints or which controller handles a URI. Filters: uri_contains, name_prefix, method, controller, middleware. Each route is one line, `METHOD uri  → action  file:line`, then its name and middleware; the middleware most of them have and the controller namespace they share are said once (`middleware_unless_noted`, `controllers_in`) (`detail: full` for objects). Pass `permissions: true` for who may call each route (middleware, checks in the action, Form Request authorize(), policy)."
     )]
     pub async fn list_routes(
         &self,

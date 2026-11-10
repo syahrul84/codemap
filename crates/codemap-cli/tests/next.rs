@@ -67,8 +67,13 @@ fn next_app_router_with_supabase() {
 
     // Route handlers are endpoints; the page's fetch matches one.
     let routes = call(&store, &project, "list_routes", json!({}));
-    assert_eq!(routes["routes"][0]["uri"], "api/availability/{slug}");
-    assert_eq!(routes["routes"][0]["methods"], "GET|HEAD");
+    assert!(
+        routes["routes"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("GET api/availability/{slug}  → "),
+        "{routes}"
+    );
     let api = call(
         &store,
         &project,

@@ -198,8 +198,11 @@ fn rust_crate() {
         json!({"query": "load", "namespace_prefix": "demo_tool::store"}),
     );
     assert_eq!(n["found"], true, "{n}");
-    assert_eq!(
-        n["matches"][0]["fqn"], "demo_tool::store::Store::load",
+    assert!(
+        n["matches"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("demo_tool::store::Store::load  "),
         "{n}"
     );
     let ver = call(

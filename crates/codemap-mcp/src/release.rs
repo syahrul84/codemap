@@ -109,6 +109,22 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
                 "SELECT COUNT(*) FROM pages WHERE name = ?1 OR meta LIKE ?2",
                 &[&v.name, &format!("%\"shows\":\"{}\"%", v.name)],
             );
+            if v.framework == "blade" {
+                // Views a package renders by name are not the project's to show.
+                let by_package = ["errors.", "vendor.", "pagination.", "layouts."]
+                    .iter()
+                    .any(|p| v.name.starts_with(p));
+                let maybe = !codemap_laravel::blade::by_pattern(conn, &v.name)
+                    .unwrap_or_default()
+                    .is_empty();
+                if shown == 0 && !by_package && !maybe {
+                    out.push(format!(
+                        "{f}: Blade view {} is not rendered or included anywhere (view(), @include, <x-…>, mailables and Route::view were checked)",
+                        v.name
+                    ));
+                }
+                continue;
+            }
             if shown + screen == 0 {
                 let what = if v.framework == "swiftui" {
                     "SwiftUI view"
@@ -401,27 +417,32 @@ fn places(root: &std::path::Path, text: &str) -> Vec<(String, usize)> {
 
 /// A `codemap-ignore` comment on the line a problem points at, or the line above.
 fn marked_in_source(root: &std::path::Path, text: &str) -> bool {
-    places(root, text).into_iter().any(|(file, line)| {
-        let Ok(src) = std::fs::read_to_string(root.join(&file)) else {
-            return false;
-        };
-        let lines: Vec<&str> = src.lines().collect();
-        [line.checked_sub(1), line.checked_sub(2)]
-            .into_iter()
-            .flatten()
-            .filter_map(|i| lines.get(i))
-            .any(|l| {
-                // `pidx-ignore`: the name before codemap, still honoured.
-                [
-                    "codemap-ignore",
-                    "codemap: ignore",
-                    "pidx-ignore",
-                    "pidx: ignore",
-                ]
-                .iter()
-                .any(|m| l.contains(m))
-            })
-    })
+    places(root, text)
+        .into_iter()
+        .any(|(file, line)| line_marked(root, &file, line))
+}
+
+/// A `codemap-ignore` comment on `line` of `file` (1-based), or the line above.
+pub(crate) fn line_marked(root: &std::path::Path, file: &str, line: usize) -> bool {
+    let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        return false;
+    };
+    let lines: Vec<&str> = src.lines().collect();
+    [line.checked_sub(1), line.checked_sub(2)]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| lines.get(i))
+        .any(|l| {
+            // `pidx-ignore`: the name before codemap, still honoured.
+            [
+                "codemap-ignore",
+                "codemap: ignore",
+                "pidx-ignore",
+                "pidx: ignore",
+            ]
+            .iter()
+            .any(|m| l.contains(m))
+        })
 }
 
 /// Whole-word occurrences of an identifier.

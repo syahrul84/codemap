@@ -585,6 +585,12 @@ fn frontend(g: &mut Graph, store: &Store, project: &Project, app: &str, root: &s
                     lines.push(format!("{label} :{}", c.line));
                 }
                 Outcome::External => lines.push(format!("{label} :{} (external)", c.line)),
+                // `codemap-ignore` on (or above) the call: on purpose.
+                Outcome::MethodMismatch(_) | Outcome::NotFound(_)
+                    if crate::release::line_marked(&project.root, &c.file, c.line as usize) =>
+                {
+                    lines.push(format!("{label} :{} (marked codemap-ignore)", c.line));
+                }
                 Outcome::MethodMismatch(_) => {
                     missing.push(format!("{label} :{} wrong method", c.line));
                 }

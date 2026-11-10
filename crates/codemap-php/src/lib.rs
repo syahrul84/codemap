@@ -3,6 +3,7 @@
 //! cases and functions, with namespace and `use` resolution to FQNs.
 
 pub mod ast;
+pub mod blade;
 pub mod doc;
 pub mod extract;
 pub mod index;

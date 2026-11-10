@@ -850,6 +850,27 @@ pub fn find_usages(store: &Store, project: &Project, p: FindUsagesParams) -> R<A
             for c in classes {
                 php_class(store, &c.fqn, &mut f)?;
             }
+            // A Blade template: the views that include or extend it, and the
+            // PHP that renders it.
+            {
+                let mut stmt = store.conn().prepare_cached(
+                    "SELECT from_path, line FROM view_uses
+                     WHERE framework = 'blade' AND to_path = ?1 AND from_path != ?1
+                     ORDER BY from_path, line",
+                )?;
+                let rows = stmt.query_map([&target], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+                })?;
+                for row in rows {
+                    let (file, line) = row?;
+                    let what = if file.ends_with(".blade.php") {
+                        "includes it"
+                    } else {
+                        "renders it"
+                    };
+                    f.add(file, line, what);
+                }
+            }
             if let Ok(Some(_)) =
                 store
                     .conn()
@@ -1363,6 +1384,37 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         let mut what: Vec<String> = Vec::new();
         // Classes that call the changed file's classes, with the path to them.
         let mut php_chain: Vec<(String, Vec<String>)> = Vec::new();
+        // A Blade template: the views and PHP that show it, and the routes of
+        // the pages it ends up in (through includes and layouts).
+        if file.ends_with(".blade.php") {
+            let reach = codemap_laravel::blade::reach(store.conn(), &file)?;
+            if let Some(name) = &reach.name {
+                what.push(format!("Blade view {name}"));
+            }
+            for (from, line) in reach.users {
+                f.add(from, line, "shows it");
+            }
+            for (owner, from, line) in reach.renderers {
+                let (class, method) = owner
+                    .as_deref()
+                    .and_then(|o| o.split_once("::"))
+                    .unwrap_or_default();
+                for r in all_routes.iter().filter(|r| {
+                    (r.file.as_deref() == Some(from.as_str()) && r.line == Some(line))
+                        || (!class.is_empty()
+                            && r.controller_fqn
+                                .as_deref()
+                                .is_some_and(|c| c.eq_ignore_ascii_case(class))
+                            && r.controller_method.as_deref().unwrap_or("__invoke") == method)
+                }) {
+                    let row = format!("{} {} → {}", r.methods_str(), r.uri, r.action_label());
+                    if !f.routes.contains(&row) {
+                        f.routes.push(row);
+                        tests_hitting(store, r, &mut f)?;
+                    }
+                }
+            }
+        }
         if file.ends_with(".php") {
             let classes: Vec<SymbolRecord> = by_file
                 .get(&file)
@@ -1636,6 +1688,10 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         all_tests.dedup();
     }
     let commands = test_commands(project, &tests, &all_tests);
+    let (entries, not_indexed, changed_note) = match detail {
+        Detail::Full => (entries, Vec::new(), None),
+        _ => brief_changed(entries),
+    };
     let mut data = json!({
         "found": !files.is_empty(),
         "changed": entries,
@@ -1643,6 +1699,12 @@ fn impact(store: &Store, project: &Project, files: &[String], detail: Detail) ->
         "tests_total": tests.len(),
         "run": commands,
     });
+    if !not_indexed.is_empty() {
+        data["changed_not_indexed"] = json!(not_indexed);
+    }
+    if let Some(n) = changed_note {
+        data["changed_note"] = json!(n);
+    }
     if let Some(n) = php_runner_note(project, &tests) {
         data["run_note"] = json!(n);
     }
@@ -2095,6 +2157,64 @@ pub(crate) fn test_commands(
         }
     }
     out
+}
+
+/// Brief change impact: the entries with their long lists cut, the files
+/// codemap does not read as one short list, and a note when anything was cut.
+fn brief_changed(entries: Vec<Value>) -> (Vec<Value>, Vec<String>, Option<String>) {
+    const FILES: usize = 40;
+    const NAMES: usize = 6;
+    const ROUTES: usize = 8;
+    const UNREAD: usize = 8;
+    let mut kept = Vec::new();
+    let mut unread: Vec<String> = Vec::new();
+    let mut cut = false;
+    for mut e in entries {
+        let is = e["is"].as_str().unwrap_or_default().to_owned();
+        if is.starts_with("not indexed") {
+            unread.push(e["file"].as_str().unwrap_or_default().to_owned());
+            continue;
+        }
+        let names: Vec<&str> = is.split("; ").collect();
+        if names.len() > NAMES {
+            e["is"] = json!(format!(
+                "{}; … {} more",
+                names[..NAMES].join("; "),
+                names.len() - NAMES
+            ));
+        }
+        for key in ["routes", "routes_via_callers"] {
+            if let Some(n) = e[key].as_array().map(Vec::len).filter(|n| *n > ROUTES) {
+                let mut first: Vec<Value> = e[key].as_array().cloned().unwrap_or_default();
+                first.truncate(ROUTES);
+                first.push(json!(format!("… {} more", n - ROUTES)));
+                e[key] = json!(first);
+                cut = true;
+            }
+        }
+        kept.push(e);
+    }
+    let total = kept.len();
+    if total > FILES {
+        kept.truncate(FILES);
+        cut = true;
+    }
+    if unread.len() > UNREAD {
+        let n = unread.len() - UNREAD;
+        unread.truncate(UNREAD);
+        unread.push(format!("… {n} more"));
+    }
+    let note = cut.then(|| {
+        let mut n = String::from("long lists are cut");
+        if total > FILES {
+            n.push_str(&format!(" (first {FILES} of {total} changed files)"));
+        }
+        n.push_str(
+            "; `tests_total`, `affected_files` and `run` cover everything. Pass detail: \"full\", or `changed_files` with fewer files, for all of it",
+        );
+        n
+    });
+    (kept, unread, note)
 }
 
 #[cfg(test)]
