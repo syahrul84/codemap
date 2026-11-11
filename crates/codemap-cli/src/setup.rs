@@ -107,10 +107,9 @@ fn hook_command(exe: &str, action: &str) -> String {
 
 fn is_ours(entry: &Value) -> bool {
     entry["hooks"].as_array().into_iter().flatten().any(|h| {
-        h["command"]
-            .as_str()
-            .is_some_and(|c| c.contains(" hook check") || c.contains(" hook used"))
-            && h["command"].as_str().is_some_and(|c| c.contains("codemap"))
+        h["command"].as_str().is_some_and(|c| {
+            c.contains(" hook check") || c.contains(" hook used") || c.contains(" hook edited")
+        }) && h["command"].as_str().is_some_and(|c| c.contains("codemap"))
     })
 }
 
@@ -149,9 +148,16 @@ fn with_hooks(mut settings: Value, exe: Option<&str>) -> Value {
     if !settings.is_object() {
         settings = json!({});
     }
-    for (event, matcher, action) in [
-        ("PreToolUse", "Grep|Glob|Bash", "check"),
-        ("PostToolUse", "mcp__codemap.*", "used"),
+    for (event, ours) in [
+        ("PreToolUse", &[("Grep|Glob|Bash", "check")][..]),
+        (
+            "PostToolUse",
+            &[
+                ("mcp__codemap.*", "used"),
+                // After an edit: names it uses that do not exist.
+                ("Edit|Write|MultiEdit", "edited"),
+            ][..],
+        ),
     ] {
         let list = settings["hooks"][event]
             .as_array()
@@ -159,10 +165,12 @@ fn with_hooks(mut settings: Value, exe: Option<&str>) -> Value {
             .unwrap_or_default();
         let mut list: Vec<Value> = list.into_iter().filter(|e| !is_ours(e)).collect();
         if let Some(exe) = exe {
-            list.push(json!({
-                "matcher": matcher,
-                "hooks": [{ "type": "command", "command": hook_command(exe, action) }],
-            }));
+            for (matcher, action) in ours {
+                list.push(json!({
+                    "matcher": matcher,
+                    "hooks": [{ "type": "command", "command": hook_command(exe, action) }],
+                }));
+            }
         }
         if list.is_empty() {
             if let Some(h) = settings["hooks"].as_object_mut() {
@@ -299,14 +307,28 @@ pub fn run(scope: Scope, opts: Options) -> anyhow::Result<()> {
             mark(rules.contains(BEGIN)),
             p.rules.display()
         );
+        let has = |action: &str| {
+            hooks
+                .iter()
+                .any(|c| c.ends_with(&format!(" hook {action}")))
+        };
         println!(
             "  {} search hook in {}{}",
-            mark(hooks.len() == 2),
+            mark(has("check") && has("used")),
             p.settings.display(),
             if hooks.is_empty() || program_ok {
                 String::new()
             } else {
                 " (its program path no longer exists: run `codemap setup` again)".into()
+            }
+        );
+        println!(
+            "  {} check after each edit{}",
+            mark(has("edited")),
+            if has("edited") || hooks.is_empty() {
+                ""
+            } else {
+                " (run `codemap setup` again to add it)"
             }
         );
         return Ok(());
@@ -420,11 +442,11 @@ pub fn run(scope: Scope, opts: Options) -> anyhow::Result<()> {
 
 // ---------------------------------------------------------------- hooks
 
-fn state_dir(data_dir: &Path) -> PathBuf {
+pub(crate) fn state_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("hooks")
 }
 
-fn safe(id: &str) -> String {
+pub(crate) fn safe(id: &str) -> String {
     id.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(80)
@@ -432,7 +454,7 @@ fn safe(id: &str) -> String {
 }
 
 /// One line per hook decision, for `codemap usage`.
-fn log(data_dir: &Path, event: &str, session: &str) {
+pub(crate) fn log(data_dir: &Path, event: &str, session: &str) {
     let path = data_dir.join("hooks.jsonl");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
         let _ = std::fs::remove_file(&path);
@@ -562,6 +584,14 @@ pub fn hook(action: &str, data_dir: Option<PathBuf>) {
                 let window = Duration::from_secs(60 * agent.search_window_minutes.unwrap_or(30));
                 if recently_used(&data_dir, &session, window) {
                     log(&data_dir, "search_allowed", &session);
+                    // A search codemap did not answer: where it looked.
+                    crate::gaps::record(
+                        &data_dir,
+                        &safe(&session),
+                        cwd.as_deref(),
+                        tool,
+                        &v["tool_input"],
+                    );
                     return None;
                 }
                 log(&data_dir, "search_refused", &session);
@@ -637,9 +667,20 @@ mod tests {
         let with = with_hooks(mine.clone(), Some("/bin/codemap"));
         assert_eq!(with["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
         assert_eq!(with["hooks"]["PostToolUse"][0]["matcher"], "mcp__codemap.*");
+        assert_eq!(
+            with["hooks"]["PostToolUse"][1]["matcher"],
+            "Edit|Write|MultiEdit"
+        );
+        assert!(
+            with["hooks"]["PostToolUse"][1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with(" hook edited")
+        );
         // Again: replaced, not doubled.
         let twice = with_hooks(with, Some("/bin/codemap"));
         assert_eq!(twice["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(twice["hooks"]["PostToolUse"].as_array().unwrap().len(), 2);
         assert_eq!(with_hooks(twice, None), mine);
     }
 }

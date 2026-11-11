@@ -369,7 +369,7 @@ pub fn refresh(
         tracing::debug!(ms = t.elapsed().as_millis() as u64, "filament");
     }
     let t = Instant::now();
-    crate::blade::refresh(store, changed)?;
+    crate::blade::refresh(store, &base.scan, opts.full)?;
     tracing::debug!(ms = t.elapsed().as_millis() as u64, "blade views");
     Ok(RefreshReport {
         scan: base.scan,

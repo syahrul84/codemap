@@ -48,6 +48,9 @@ pub struct AgentConfig {
     /// Searches always allowed: path parts or globs (`logs/`, `*.md`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow_search: Vec<String>,
+    /// `false` turns off the check that runs after each edit (default on).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_edits: Option<bool>,
 }
 
 /// `[report] send = "ask" | "never"`: whether a wrong-answer report may be
@@ -323,7 +326,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("rules", &["files", "note", "when", "level", "app"]),
     ("report", &["send"]),
-    ("agent", &["search_window_minutes", "allow_search"]),
+    (
+        "agent",
+        &["search_window_minutes", "allow_search", "check_edits"],
+    ),
 ];
 
 impl Config {

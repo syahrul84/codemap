@@ -1467,6 +1467,70 @@ fn sighting(r: &Report) -> String {
     )
 }
 
+/// Sends an issue that is not a wrong-answer report (a gap in what codemap
+/// covers). `marker` is a line kept in the body: an open issue holding the
+/// same marker gets `again` as a comment instead of a second issue.
+pub fn send_text(title: &str, body: &str, marker: &str, again: &str) -> Result<Sent, String> {
+    if gh(&["--version"], None).is_none() {
+        let mut link = format!(
+            "https://github.com/{REPO}/issues/new?title={}&body={}",
+            url_encode(title),
+            url_encode(body)
+        );
+        if link.len() > 7500 {
+            link = format!(
+                "https://github.com/{REPO}/issues/new?title={}",
+                url_encode(title)
+            );
+        }
+        return Err(format!(
+            "`gh` is not installed; open this link and press Submit: {link}"
+        ));
+    }
+    let found = gh(
+        &[
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--state",
+            "open",
+            "--search",
+            &format!("\"{marker}\" in:body"),
+            "--json",
+            "number,url",
+            "--jq",
+            ".[0].url",
+        ],
+        None,
+    )
+    .filter(|u| u.starts_with("https://"));
+    if let Some(url) = found {
+        gh(&["issue", "comment", &url, "--body-file", "-"], Some(again))
+            .ok_or("posting the comment with gh failed")?;
+        return Ok(Sent { url, comment: true });
+    }
+    gh(
+        &[
+            "issue",
+            "create",
+            "--repo",
+            REPO,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+        ],
+        Some(body),
+    )
+    .filter(|u| u.starts_with("https://"))
+    .map(|url| Sent {
+        url,
+        comment: false,
+    })
+    .ok_or_else(|| "creating the issue with gh failed (is `gh auth login` done?)".to_owned())
+}
+
 pub fn send(project: &Project, r: &Report, edited: Option<&str>) -> Result<Sent, String> {
     let (title, mut body) =
         issue(project, r).ok_or("only a report with a reproducing made-up example can be sent")?;

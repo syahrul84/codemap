@@ -328,6 +328,7 @@ codemap stats  [--project <path>] [--json]            # counts, timings, index s
 codemap doctor [--project <path>] [--json]            # detection reasons, warnings, unresolved routes, broken routes
 codemap map    [--project <path>] --out <file.html>   # the code map: one page to open in a browser
 codemap misses [--project <path>] [--json] [--clear]  # names the AI asked for that don't exist, ranked
+codemap gaps [--project <path>] [--days N] [--json] [--backfill] [--ignore "<area>"] [--send "*.<type>" --note "…"]  # what codemap did not cover: where the AI searched anyway
 codemap reports [--project <path>] [--all] [--json] [--export <dir>] [--close <id>] [--send <id>] [--clear] [--to-fixture <id>]
 codemap setup  [--scope user|project] [--dry-run] [--no-hook] [--check] [--remove]   # register with Claude Code (see above)
 codemap hook   check|used                             # called by the hooks setup installs
@@ -387,6 +388,26 @@ While Claude works through the MCP server, every name it asks for that does not 
 - `project_overview` lists the ones made more than once (`often_mistaken`), so Claude avoids them in the next session.
 - The code map has an **AI mistakes** tab, and marks the real item each wrong name was closest to.
 - `codemap misses --clear` empties the log.
+
+### The check after each edit
+
+`codemap setup` also installs a hook that runs after the AI app edits or writes a file (`codemap hook edited`). It looks only at what the edit added and tells the assistant, right then, when that uses something the project does not have:
+
+- **PHP:** classes, static methods, a class's calls on itself (`$this->total()`), route names, tables and columns in queries.
+- **Blade:** views in `@extends` / `@include` and route names.
+- **Vue / JS / TS:** calls to the backend that match no route (or only with another method), and translation keys no locale defines.
+
+What was already wrong in the file before the edit is not reported (views named only in `@includeIf` / `@includeFirst` may be missing and are left alone), each finding is said once per session, and nothing is blocked: the edit has happened, the assistant just reads the note with the tool result. A name the same change creates later is fine. PHP's own functions and package helpers are not checked (they cannot all be known), nor are methods called on other values (what class a variable holds is a guess), calls inside closures, or columns a query names itself (`count(*) as total`) or reaches through a join. `[agent] check_edits = false` in `.codemap.toml` turns it off for a project; `codemap setup --check` shows whether it is installed (run `codemap setup` again to add it to an older install).
+
+### What codemap did not cover
+
+Once a codemap tool has run in a session, the search hook lets `grep`, `rg`, `find`, Grep and Glob through. Each of those searches is a question codemap did not answer, so the hook notes where it looked: the folder (two levels) and the file type, and whether it looked for a definition, a name, other text or files by name.
+
+- `codemap gaps` adds them up for a project, most searched first, in two lists: **not covered** (file types codemap does not read, folders outside the scan) and **read by codemap, searched anyway** (a definition or a name there is something codemap could probably have answered; other text is wording inside the code).
+- Not everything is worth covering. `codemap gaps --ignore "resources/css *.css"` sets an area aside; `--unignore` brings it back; set-aside areas are listed under `set_aside` in `--json`.
+- `codemap gaps --backfill` fills the log from past Claude Code sessions (`~/.claude/projects`, or a folder you pass) for the time before the hook noted searches: every code search of a session that also used codemap. Running it again replaces what the last run added.
+- `codemap gaps --send "*.md"` (or an area, `--send "docs *.md"`) turns one file type's gap into an issue for the codemap repository. Only counts go in it: the file type, whether codemap reads it, how many searches and sessions, and how many looked for a definition, a name, other text or files. Folders, file names and search text are never sent. `--note "…"` adds what was needed there in your own words. The issue is shown first and sent only after you answer `y` at a terminal (a piped answer is refused, so an assistant running the command cannot send it); a file type that already has an open issue gets a comment instead of a second issue, so the issue shows how many projects hit it. `[report] send = "never"` and `CODEMAP_NO_REPORT_SEND` switch this off too.
+- The log (`gaps.jsonl` in the data folder) stays on this machine: the folders and globs searched and the first 120 characters of the pattern. `CODEMAP_NO_USAGE_LOG=1` turns it off; `codemap gaps --clear` empties it.
 
 ### Wrong-answer reports
 

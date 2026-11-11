@@ -6,6 +6,7 @@ pub mod browser;
 pub mod compose;
 pub mod copy_rules;
 pub mod deploy;
+pub mod edits;
 pub mod i18n;
 pub mod leftovers;
 pub mod livedata;

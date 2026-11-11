@@ -9,6 +9,7 @@ use codemap_core::{Config, ScanOptions, Store, paths};
 use codemap_mcp::RefreshReport;
 use serde::Serialize;
 
+mod gaps;
 mod setup;
 mod update;
 
@@ -126,6 +127,42 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Empty the log.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// What codemap did not cover: the folders and file types an AI searched
+    /// with grep / find after codemap had been used, most searched first.
+    /// Set an area aside when it is not worth covering.
+    Gaps {
+        /// The project folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Only the last N days.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// Set an area aside as not relevant, e.g. "resources/css *.css".
+        #[arg(long, value_name = "AREA")]
+        ignore: Option<String>,
+        /// Bring back an area that was set aside.
+        #[arg(long, value_name = "AREA")]
+        unignore: Option<String>,
+        /// Send one file type's gap to the codemap repository as an issue
+        /// (`*.md`, or an area such as "docs *.md"). Only counts are sent,
+        /// never folders, file names or search text; you see the issue and
+        /// confirm first.
+        #[arg(long, value_name = "FILE_TYPE")]
+        send: Option<String>,
+        /// With --send: what was needed there, in your own words.
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+        /// Fill the log from past Claude Code sessions (default folder:
+        /// ~/.claude/projects), for the time before the hook noted searches.
+        #[arg(long, value_name = "FOLDER", num_args = 0..=1, default_missing_value = "")]
+        backfill: Option<PathBuf>,
+        /// Empty the log (every project's).
         #[arg(long)]
         clear: bool,
     },
@@ -324,6 +361,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             )?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Hook { action } if action == "edited" => {
+            // Never fails and never blocks: an edit already happened.
+            if let Some(text) = hook_edited(&cli) {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PostToolUse",
+                            "additionalContext": text,
+                        }
+                    })
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Hook { action } => {
             setup::hook(action, paths::resolve_data_dir(cli.data_dir.clone()).ok());
             Ok(ExitCode::SUCCESS)
@@ -377,6 +429,27 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
             clear,
         } => cmd_misses(&cli, project, *json, *clear),
+        Command::Gaps {
+            project,
+            json,
+            days,
+            ignore,
+            unignore,
+            send,
+            note,
+            backfill,
+            clear,
+        } => cmd_gaps(
+            &cli,
+            project,
+            *json,
+            *days,
+            ignore.as_deref(),
+            unignore.as_deref(),
+            send.as_deref().map(|s| (s, note.as_deref())),
+            backfill.as_deref(),
+            *clear,
+        ),
         Command::Baseline { project, out } => cmd_baseline(&cli, project, out.as_deref()),
         Command::Usage {
             project,
@@ -1160,8 +1233,14 @@ fn cmd_query(
         .and_then(|a| mcp.iter().find(|p| p.app.as_deref() == Some(a)))
         .unwrap_or(&mcp[0]);
     let (text, outcome) = match &result {
+        // Indented for a person at a terminal; one line for a program or an
+        // assistant reading the output, where the indentation is only cost.
         Ok(env) => (
-            serde_json::to_string_pretty(env)?,
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                serde_json::to_string_pretty(env)?
+            } else {
+                serde_json::to_string(env)?
+            },
             codemap_mcp::usage::outcome_of(&env.data),
         ),
         Err(codemap_mcp::ToolError::InvalidParams(m)) => (m.clone(), "invalid_args"),
@@ -1282,6 +1361,355 @@ fn cmd_misses(cli: &Cli, project: &Path, json: bool, clear: bool) -> anyhow::Res
         );
         println!("    {}", s("idea"));
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `codemap hook edited`: after the AI app edited a file (the tool call as
+/// JSON on stdin), the names the edit brought in that do not exist in the
+/// project, as text for the assistant. `None` when there is nothing to say
+/// or the check cannot run (no index yet, a file outside the project, …).
+fn hook_edited(cli: &Cli) -> Option<String> {
+    use std::io::Read as _;
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&input).ok()?;
+    let session = setup::safe(v["session_id"].as_str().unwrap_or("default"));
+    let tool = v["tool_name"].as_str()?;
+    let tool_input = &v["tool_input"];
+    let cwd = PathBuf::from(v["cwd"].as_str()?);
+    let file = PathBuf::from(tool_input["file_path"].as_str()?);
+    // Only the kinds of file the check reads: anything else costs nothing.
+    let name = file.file_name()?.to_string_lossy().to_lowercase();
+    if ![
+        ".php", ".vue", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts",
+    ]
+    .iter()
+    .any(|e| name.ends_with(e))
+    {
+        return None;
+    }
+    let file = if file.is_absolute() {
+        file
+    } else {
+        cwd.join(file)
+    };
+    let file = file.canonicalize().ok()?;
+    let now = std::fs::read_to_string(&file).ok()?;
+    // The project (or the app of a workspace) the file belongs to and that
+    // has an index: the session's folder, else a folder above it (a session
+    // started in a subfolder of the project).
+    let home = dirs::home_dir();
+    let mut found = None;
+    for dir in cwd.ancestors().take(4) {
+        if home.as_deref() == Some(dir) || dir.parent().is_none() {
+            break;
+        }
+        // Switched off for this folder and what is under it.
+        if Config::load(dir).is_ok_and(|c| c.agent.check_edits == Some(false)) {
+            return None;
+        }
+        let Ok(projects) = Project::resolve(cli, dir) else {
+            continue;
+        };
+        found = projects
+            .into_iter()
+            .filter(|p| file.starts_with(&p.root) && p.index_path.is_file())
+            .max_by_key(|p| p.root.components().count());
+        if found.is_some() {
+            break;
+        }
+    }
+    let p = found?;
+    if p.config.agent.check_edits == Some(false) {
+        return None;
+    }
+    let rel = file
+        .strip_prefix(&p.root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let s = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or_default().to_owned();
+    // The file before the edit. The AI app's own record of it when it gives
+    // one; else the edit undone, or (a whole file written) what git has.
+    let response = &v["tool_response"];
+    let before = if let Some(original) = response["originalFile"].as_str() {
+        original.to_owned()
+    } else {
+        match tool {
+            "Edit" => codemap_mcp::edits::before_edit(
+                &now,
+                &s(tool_input, "old_string"),
+                &s(tool_input, "new_string"),
+                tool_input["replace_all"] == true,
+            )?,
+            "MultiEdit" => {
+                let mut text = now.clone();
+                for e in tool_input["edits"].as_array()?.iter().rev() {
+                    text = codemap_mcp::edits::before_edit(
+                        &text,
+                        &s(e, "old_string"),
+                        &s(e, "new_string"),
+                        e["replace_all"] == true,
+                    )?;
+                }
+                text
+            }
+            "Write" => {
+                let committed = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&p.root)
+                    .args(["show", &format!("HEAD:./{rel}")])
+                    .stderr(std::process::Stdio::null())
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+                match committed {
+                    Some(text) => text,
+                    // A new file: everything in it is the edit's.
+                    None if response["type"] == "create" => String::new(),
+                    // An existing file git does not have, and no record of
+                    // what it held: what the edit added cannot be known.
+                    None => return None,
+                }
+            }
+            _ => return None,
+        }
+    };
+    let (store, _) = p.refresh_as(false, "hook").ok()?;
+    let found = codemap_mcp::edits::check_edit(&store, &p.mcp(), &rel, &before, &now);
+    let data_dir = paths::resolve_data_dir(cli.data_dir.clone()).ok()?;
+    // Each finding once per session: the assistant has read it.
+    let told_file = setup::state_dir(&data_dir).join(format!("told-{session}"));
+    let told = std::fs::read_to_string(&told_file).unwrap_or_default();
+    let fresh: Vec<String> = found
+        .into_iter()
+        .filter(|f| !told.lines().any(|l| l == format!("{rel}\t{f}")))
+        // A note stays short; what is left over is told at the next edit.
+        .take(12)
+        .collect();
+    setup::log(
+        &data_dir,
+        if fresh.is_empty() {
+            "edit_checked"
+        } else {
+            "edit_flagged"
+        },
+        &session,
+    );
+    if fresh.is_empty() {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(setup::state_dir(&data_dir));
+    let mut all = told;
+    for f in &fresh {
+        all.push_str(&format!("{rel}\t{f}\n"));
+    }
+    let _ = std::fs::write(&told_file, all);
+    Some(format!(
+        "codemap: this edit of {rel} uses what the project does not have:\n- {}\n(Fine if this change creates it later.)",
+        fresh.join("\n- ")
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_gaps(
+    cli: &Cli,
+    project: &Path,
+    json: bool,
+    days: i64,
+    ignore: Option<&str>,
+    unignore: Option<&str>,
+    send: Option<(&str, Option<&str>)>,
+    backfill: Option<&Path>,
+    clear: bool,
+) -> anyhow::Result<ExitCode> {
+    let data_dir = paths::resolve_data_dir(cli.data_dir.clone())?;
+    if clear {
+        gaps::clear(&data_dir)?;
+        eprintln!("the log of searches codemap did not cover is empty");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let root = project
+        .canonicalize()
+        .with_context(|| format!("no such folder: {}", project.display()))?;
+    for (area, set) in [(ignore, true), (unignore, false)] {
+        if let Some(area) = area {
+            gaps::set_ignored(&data_dir, &root, area, set)?;
+        }
+    }
+    let since = codemap_core::time::days_ago_rfc3339(days.clamp(1, 3650));
+    if let Some(folder) = backfill {
+        let folder = if folder.as_os_str().is_empty() {
+            dirs::home_dir()
+                .context("no home folder; pass the sessions folder to --backfill")?
+                .join(".claude")
+                .join("projects")
+        } else {
+            folder.to_path_buf()
+        };
+        anyhow::ensure!(folder.is_dir(), "no such folder: {}", folder.display());
+        let (sessions, searches) = gaps::backfill(&data_dir, &folder, &since)?;
+        eprintln!(
+            "added {searches} searches from {sessions} past sessions that used codemap (last {days} days, every project)"
+        );
+    }
+    let config = Config::load(&root).unwrap_or_default();
+    let unscanned = codemap_core::scan::unscanned_folders(&root, &config);
+    let report = gaps::report(&data_dir, &root, &since, &unscanned);
+    if let Some((what, note)) = send {
+        let projects = Project::resolve(cli, project)?;
+        if let Some(why) = projects
+            .first()
+            .and_then(|p| codemap_mcp::reports::sending_off(&p.mcp()))
+        {
+            anyhow::bail!("sending is off: {why}");
+        }
+        let issue = match gaps::issue(&report, what, days, note) {
+            Ok(i) => i,
+            Err(why) => anyhow::bail!("{why}"),
+        };
+        println!(
+            "This goes to https://github.com/{}/issues (counts only, never your folders, file names or search text):\n\nTitle: {}\n\n{}",
+            codemap_core::updates::REPO,
+            issue.title,
+            issue.body
+        );
+        // The person decides, at a keyboard: a piped "y" is not a person.
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() {
+            println!(
+                "Not sent: confirming needs a terminal. Run this command yourself to send it."
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        print!("Send? y/n ");
+        use std::io::Write as _;
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") && !answer.trim().eq_ignore_ascii_case("yes") {
+            println!("Not sent.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        match codemap_mcp::reports::send_text(
+            &issue.title,
+            &issue.body,
+            &issue.marker,
+            &issue.again,
+        ) {
+            Ok(sent) => {
+                gaps::set_sent(&data_dir, &root, &issue.kind, &sent.url)?;
+                if sent.comment {
+                    println!(
+                        "Added to the open issue {} as a comment (this file type was already reported; no new issue).",
+                        sent.url
+                    );
+                } else {
+                    println!("Sent: {}", sent.url);
+                }
+            }
+            Err(e) => println!("{e}"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let areas = report["areas"].as_array().cloned().unwrap_or_default();
+    if areas.is_empty() {
+        let aside = report["set_aside"].as_array().map_or(0, Vec::len);
+        if aside > 0 {
+            println!(
+                "Every area searched in the last {days} days is set aside ({aside}); `--json` lists them, `--unignore \"<area>\"` brings one back."
+            );
+        } else {
+            println!(
+                "No searches around codemap logged for this project in the last {days} days. They are noted by the search hook (`codemap setup`) from this version on."
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let asked = |k: &str| report["by_question"][k].as_u64().unwrap_or(0);
+    println!(
+        "{} searches in {} session(s) went around codemap in the last {days} days:",
+        report["searches"], report["sessions"]
+    );
+    println!(
+        "  {:>5}  in file types codemap does not read, or folders it does not scan",
+        asked("not_covered")
+    );
+    println!(
+        "  {:>5}  looked for a definition or a name in files codemap reads (it could probably have answered)",
+        asked("definition_or_name")
+    );
+    println!(
+        "  {:>5}  looked for other text in files codemap reads",
+        asked("text")
+    );
+    println!("  {:>5}  looked for files by name", asked("files"));
+    let print = |a: &serde_json::Value| {
+        let kinds: Vec<String> = a["kinds_of_question"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, n)| format!("{n} {k}"))
+            .collect();
+        println!(
+            "{:>5}×  {}   ({} session(s): {})",
+            a["searches"],
+            a["area"].as_str().unwrap_or_default(),
+            a["sessions"],
+            kinds.join(", ")
+        );
+        let examples: Vec<&str> = a["examples"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.as_str())
+            .collect();
+        if !examples.is_empty() {
+            println!("        e.g. {}", examples.join("  ·  "));
+        }
+        let kind = a["area"]
+            .as_str()
+            .and_then(|k| k.split_once("  "))
+            .map(|(_, kind)| kind)
+            .unwrap_or_default();
+        if let Some(url) = report["file_types"][kind]["issue"].as_str() {
+            println!("        sent: {url}");
+        }
+    };
+    const MOST: usize = 15;
+    for (title, wanted) in [
+        (
+            "Not covered: file types codemap does not read, folders it does not scan",
+            &["not_read", "not_scanned"][..],
+        ),
+        ("Read by codemap, searched anyway", &["read", "mixed"][..]),
+    ] {
+        let list: Vec<&serde_json::Value> = areas
+            .iter()
+            .filter(|a| wanted.contains(&a["codemap"].as_str().unwrap_or_default()))
+            .collect();
+        if list.is_empty() {
+            continue;
+        }
+        println!("\n{title}:");
+        for a in list.iter().take(MOST) {
+            print(a);
+        }
+        if list.len() > MOST {
+            println!("       … {} more areas (--json for all)", list.len() - MOST);
+        }
+    }
+    let aside = report["set_aside"].as_array().map_or(0, Vec::len);
+    println!(
+        "\n{aside} area(s) set aside. `codemap gaps --ignore \"<area>\"` sets one aside as not worth covering; `--unignore` brings it back; `--send \"*.<type>\"` sends one file type to the codemap repository as an issue (counts only, after you confirm)."
+    );
     Ok(ExitCode::SUCCESS)
 }
 

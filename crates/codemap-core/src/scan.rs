@@ -616,6 +616,12 @@ fn find_unscanned_folders(root: &Path, config: &Config) -> Vec<String> {
     out
 }
 
+/// Whether codemap reads files with this name at all (by its type; where
+/// the file is does not matter here).
+pub fn reads_file(name: &str) -> bool {
+    lang_for(Path::new(name)).is_some()
+}
+
 fn lang_for(path: &Path) -> Option<&'static str> {
     let name = path.file_name()?.to_str()?;
     match name {

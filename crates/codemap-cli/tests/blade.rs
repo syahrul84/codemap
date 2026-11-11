@@ -399,3 +399,53 @@ fn other_tools_know_views() {
     assert!(has(row, "routes", "GET|HEAD orders → "), "{u}");
     assert!(has(&u["changed"][1], "routes", "GET|HEAD about"), "{u}");
 }
+
+/// After an edit only the links that changed are redone: a controller that
+/// starts rendering another view, a template that drops an include, and an
+/// unrelated file that changes nothing.
+#[test]
+fn links_follow_edits() {
+    let mut app = app();
+    let root = app.project.root.clone();
+    let edit = |file: &str, from: &str, to: &str| {
+        let path = root.join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(from), "{file} has no `{from}`");
+        std::fs::write(&path, text.replacen(from, to, 1)).unwrap();
+    };
+    edit(
+        "app/Http/Controllers/OrderController.php",
+        "return view('orders.index', [",
+        "return view('orphan', [",
+    );
+    edit(
+        "resources/views/orders/index.blade.php",
+        "@include('orders.partials.row', ['order' => $order])",
+        "",
+    );
+    edit(
+        "app/Mail/OrderPaid.php",
+        "class OrderPaid",
+        "final class OrderPaid",
+    );
+    codemap_mcp::refresh(
+        &mut app.store,
+        &root,
+        &app.project.config,
+        ScanOptions::default(),
+    )
+    .unwrap();
+
+    let orphan = app.call("get_component", json!({ "name": "orphan" }));
+    assert!(
+        has(&orphan, "rendered_by", "OrderController::index"),
+        "{orphan}"
+    );
+    let index = app.call("get_component", json!({ "name": "orders.index" }));
+    assert!(index.get("rendered_by").is_none(), "{index}");
+    assert!(!has(&index, "includes", "orders.partials.row"), "{index}");
+    let row = app.call("get_component", json!({ "name": "orders.partials.row" }));
+    assert!(row.get("shown_in").is_none(), "{row}");
+    let mail = app.call("get_component", json!({ "name": "emails.orders.paid" }));
+    assert!(has(&mail, "rendered_by", "OrderPaid::build"), "{mail}");
+}

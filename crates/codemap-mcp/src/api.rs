@@ -996,7 +996,7 @@ impl<'a> Shapes<'a> {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApiUsageParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// A backend endpoint: `GET api/v1/malls/{mall}`, `api/v1/malls`, or part of a URI (`malls`).

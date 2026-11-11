@@ -2,8 +2,8 @@
 //! and relation a change relies on exists. Each item is `exists`, `not_found`
 //! (with suggestions), `external` (vendor / PHP built-in) or `unresolved`.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 use codemap_core::Store;
 use codemap_core::envelope::Detail;
@@ -96,7 +96,7 @@ impl Claims {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VerifyParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Explicit claims to check.
@@ -241,6 +241,108 @@ const PHP_BUILTIN_CLASSES: &[&str] = &[
 ];
 
 /// Namespaces of packages every Laravel app has (used when `vendor/` is absent).
+/// The global class names Laravel registers for its facades
+/// (`Facade::defaultAliases()`), usable without an import.
+const LARAVEL_ALIASES: &[&str] = &[
+    "App",
+    "Arr",
+    "Artisan",
+    "Auth",
+    "Blade",
+    "Broadcast",
+    "Bus",
+    "Cache",
+    "Concurrency",
+    "Config",
+    "Context",
+    "Cookie",
+    "Crypt",
+    "Date",
+    "DB",
+    "Eloquent",
+    "Event",
+    "File",
+    "Gate",
+    "Hash",
+    "Http",
+    "Js",
+    "Lang",
+    "Log",
+    "Mail",
+    "Notification",
+    "Number",
+    "Password",
+    "Process",
+    "Queue",
+    "RateLimiter",
+    "Redirect",
+    "Redis",
+    "Request",
+    "Response",
+    "Route",
+    "Schedule",
+    "Schema",
+    "Session",
+    "Storage",
+    "Str",
+    "URL",
+    "Uri",
+    "Validator",
+    "View",
+    "Vite",
+];
+
+/// `(namespace prefix, package)` for every package in `composer.lock`
+/// (`autoload.psr-4` and `psr-0`), read once per project.
+fn locked_namespaces(root: &Path) -> std::sync::Arc<Vec<(String, String)>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::SystemTime;
+    type Entry = (Option<SystemTime>, Arc<Vec<(String, String)>>);
+    static SEEN: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    let file = root.join("composer.lock");
+    // Read again when the lock file changes (`composer require`) or appears.
+    let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    if let Some((at, v)) = seen.lock().ok().and_then(|s| s.get(root).cloned())
+        && at == stamp
+    {
+        return v;
+    }
+    let mut out = Vec::new();
+    if let Some(lock) = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    {
+        for list in ["packages", "packages-dev"] {
+            for p in lock[list].as_array().into_iter().flatten() {
+                let name = p["name"].as_str().unwrap_or_default();
+                for style in ["psr-4", "psr-0"] {
+                    for ns in p["autoload"][style].as_object().into_iter().flatten() {
+                        let ns = ns.0.trim_start_matches('\\');
+                        // An empty prefix would claim every class.
+                        if ns.len() > 1 {
+                            out.push((ns.to_owned(), name.to_owned()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let out = Arc::new(out);
+    if let Ok(mut s) = seen.lock() {
+        s.insert(root.to_path_buf(), (stamp, out.clone()));
+    }
+    out
+}
+
+/// Whether `fqn` is under the namespace prefix `ns`: the prefix ends at a
+/// separator (`Parsedown` is not a prefix of `ParsedownExtra`).
+fn under_namespace(fqn: &str, ns: &str) -> bool {
+    fqn.strip_prefix(ns).is_some_and(|rest| {
+        rest.is_empty() || ns.ends_with(['\\', '_']) || rest.starts_with(['\\', '_'])
+    })
+}
+
 const FRAMEWORK_NAMESPACES: &[&str] = &[
     "Illuminate\\",
     "Laravel\\",
@@ -793,6 +895,13 @@ impl Verifier<'_> {
         {
             return Some("PHP built-in class".into());
         }
+        // `Validator::make()`, `DB::table()`: Laravel's global facade names.
+        if !fqn.contains('\\')
+            && LARAVEL_ALIASES.contains(&fqn)
+            && self.root.join("artisan").is_file()
+        {
+            return Some("Laravel facade alias".into());
+        }
         let composer = self.root.join("vendor/composer");
         if composer.is_dir() {
             if let Some(path) = psr4_path(&composer.join("autoload_psr4.php"), self.root, fqn) {
@@ -817,12 +926,23 @@ impl Verifier<'_> {
             }
             return None;
         }
-        FRAMEWORK_NAMESPACES
+        if FRAMEWORK_NAMESPACES.iter().any(|ns| fqn.starts_with(ns)) {
+            return Some(
+                "framework namespace (vendor/ is not installed, so not checked on disk)".into(),
+            );
+        }
+        // vendor/ is not here (it lives in a container, say): the lock file
+        // still names every installed package's namespaces.
+        if let Some(package) = locked_namespaces(self.root)
             .iter()
-            .any(|ns| fqn.starts_with(ns))
-            .then(|| {
-                "framework namespace (vendor/ is not installed, so not checked on disk)".into()
-            })
+            .find(|(ns, _)| under_namespace(fqn, ns))
+            .map(|(_, p)| p)
+        {
+            return Some(format!(
+                "class of package {package} (from composer.lock; vendor/ is not installed, so not checked on disk)"
+            ));
+        }
+        None
     }
 
     fn class(&self, name: &str) -> Result<Check, ToolError> {
@@ -863,6 +983,46 @@ impl Verifier<'_> {
     }
 
     fn method(&self, item: &str) -> Result<Check, ToolError> {
+        let check = self.method_of_class(item)?;
+        // `\\Log::info()`, `Notification::send()`: a bare name that is one of
+        // Laravel's global facade names. A project class with that short name
+        // (a model called Notification, a test's stand-in called Log) is
+        // tried first; a method it does not have is the facade's, unless the
+        // project itself declares that global class outside its tests.
+        let bare = item
+            .split("::")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('\\');
+        if check.status == Status::NotFound
+            && item.contains("::")
+            && !bare.contains('\\')
+            && LARAVEL_ALIASES.contains(&bare)
+            && self.root.join("artisan").is_file()
+            && !symbols::by_fqn(self.store.conn(), bare)?.iter().any(|s| {
+                s.kind.is_class_like()
+                    && !codemap_core::scan::is_test_path(&s.file)
+                    && !codemap_core::scan::is_fixture_path(&s.file)
+            })
+        {
+            return Ok(Check::new("method", item, Status::External)
+                .detail("class is external: Laravel facade alias"));
+        }
+        // Every PHP enum has `cases()`; a backed one `from()` / `tryFrom()`.
+        if check.status == Status::NotFound
+            && let Some((class, method)) = item.split_once("::")
+            && matches!(method.trim_end_matches("()"), "cases" | "from" | "tryFrom")
+            && let ClassHit::Found(s) = self.find_class(class)?
+            && s.kind == SymbolKind::Enum
+            && s.file.ends_with(".php")
+        {
+            return Ok(Check::new("method", item, Status::External).detail("PHP enum built-in"));
+        }
+        Ok(check)
+    }
+
+    fn method_of_class(&self, item: &str) -> Result<Check, ToolError> {
         // `Type.method` is the Swift spelling.
         let Some((class, method)) = item
             .split_once("::")
@@ -1528,6 +1688,12 @@ fn collect(node: Node<'_>, src: &[u8], scope: &mut Scope, ns: bool, claims: &mut
     // redirect()->route('name') / URL::route('name')
     if node.kind() == "member_call_expression"
         && node.child_by_field_name("name").map(|n| text(n, src)) == Some("route")
+        // `$this->route('order')` / `$request->route('order')` read a route
+        // parameter of the current request, not a route by name.
+        && !node
+            .child_by_field_name("object")
+            .map(|o| text(o, src).to_lowercase())
+            .is_some_and(|o| o == "$this" || o.contains("request"))
         && let Some(r) = first_string_arg(node, src)
     {
         claims.routes.push(r);

@@ -20,7 +20,7 @@ type R<T> = Result<T, ToolError>;
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindUsagesParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// What to look for: `App\Models\Order`, `Order`, `Order::save`, a function,

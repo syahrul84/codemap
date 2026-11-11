@@ -555,3 +555,160 @@ fn setup_previews_backs_up_and_can_skip_the_hook() {
     let again = run(&["setup", "--no-hook"]);
     assert!(again.contains("rule block: already in"), "{again}");
 }
+
+/// Searches the hook lets through are noted, `codemap gaps` adds them up by
+/// folder and file type, and past sessions can be read in.
+#[test]
+fn gaps_lists_where_searches_went_around_codemap() {
+    use std::io::Write as _;
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("resources/views")).unwrap();
+    let hook = |action: &str, input: serde_json::Value| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(["--data-dir", data.path().to_str().unwrap(), "hook", action])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
+    };
+    let search = |cmd: &str| {
+        serde_json::json!({
+            "session_id": "s1", "tool_name": "Bash", "cwd": root,
+            "tool_input": { "command": cmd },
+        })
+    };
+    // Refused (codemap not used yet): not a gap.
+    hook("check", search("grep -rn '@include' resources/views"));
+    hook(
+        "used",
+        serde_json::json!({ "session_id": "s1", "tool_name": "mcp__codemap__search_symbol" }),
+    );
+    hook(
+        "check",
+        search("grep -rn '@include' resources/views --include='*.blade.php'"),
+    );
+    hook(
+        "check",
+        search("grep -n 'x-alert' resources/views/a.blade.php"),
+    );
+    hook("check", search("grep -rn color resources/css/app.css"));
+    hook("check", search("git log | grep fix"));
+
+    let gaps = |extra: &[&str]| {
+        let mut args = vec![
+            "--data-dir",
+            data.path().to_str().unwrap(),
+            "gaps",
+            "--json",
+            "--project",
+        ];
+        args.push(root.to_str().unwrap());
+        args.extend_from_slice(extra);
+        json(&codemap(&args))
+    };
+    let r = gaps(&[]);
+    assert_eq!(r["searches"], 3, "{r}");
+    assert_eq!(r["areas"][0]["area"], "resources/views  *.blade.php", "{r}");
+    assert_eq!(r["areas"][0]["searches"], 2, "{r}");
+    assert_eq!(r["areas"][1]["area"], "resources/css  *.css", "{r}");
+    assert_eq!(r["areas"][1]["codemap"], "not_read", "{r}");
+
+    let r = gaps(&["--ignore", "resources/css *.css"]);
+    assert_eq!(r["areas"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["set_aside"][0]["area"], "resources/css  *.css", "{r}");
+
+    // Sending shows the issue and asks first; without a yes nothing is sent.
+    // The issue holds counts only: no folder, file name or search text.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .args([
+            "--data-dir",
+            data.path().to_str().unwrap(),
+            "gaps",
+            "--project",
+        ])
+        .arg(&root)
+        .args([
+            "--send",
+            "resources/views *.blade.php",
+            "--note",
+            "who renders a view",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Even a piped "y": only a person at a terminal can confirm.
+    child.stdin.take().unwrap().write_all(b"y\n").unwrap();
+    let shown = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+    assert!(
+        shown.contains("Title: Searched anyway: `*.blade.php` files"),
+        "{shown}"
+    );
+    assert!(shown.contains("2 searches in 1 session(s)"), "{shown}");
+    assert!(
+        shown.contains("who renders a view") && shown.contains("Not sent"),
+        "{shown}"
+    );
+    for private in ["resources", "x-alert", "@include", root.to_str().unwrap()] {
+        assert!(!shown.contains(private), "{private} leaked: {shown}");
+    }
+
+    // A past session that used codemap, read in from its transcript.
+    let history = tempfile::tempdir().unwrap();
+    let line = |tool: &str, input: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant", "sessionId": "old", "cwd": root,
+            "timestamp": "2020-01-01T00:00:00.000Z",
+            "message": { "content": [{ "type": "tool_use", "name": tool, "input": input }] },
+        })
+        .to_string()
+    };
+    std::fs::write(
+        history.path().join("old.jsonl"),
+        [
+            line(
+                "mcp__codemap__get_symbol",
+                serde_json::json!({ "name": "Order" }),
+            ),
+            line(
+                "Bash",
+                serde_json::json!({ "command": "rg -n total tests/Feature -g '*.php'" }),
+            ),
+            line("Bash", serde_json::json!({ "command": "ls" })),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let r = gaps(&[
+        "--days",
+        "3650",
+        "--backfill",
+        history.path().to_str().unwrap(),
+    ]);
+    assert_eq!(r["searches"], 4, "{r}");
+    assert!(
+        r["areas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["area"] == "tests/Feature  *.php"),
+        "{r}"
+    );
+    // Reading the same history again does not count it twice.
+    let r = gaps(&[
+        "--days",
+        "3650",
+        "--backfill",
+        history.path().to_str().unwrap(),
+    ]);
+    assert_eq!(r["searches"], 4, "{r}");
+}

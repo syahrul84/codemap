@@ -19,6 +19,8 @@ pub const FRAMEWORK: &str = "blade";
 /// Bump when the rows `rebuild` writes change.
 const VIEWS_VERSION: &str = "1";
 const META_KEY: &str = "blade_views";
+const SITES_KEY: &str = "blade_render_sites";
+const CLASSES_KEY: &str = "blade_component_files";
 
 /// One template.
 struct Template {
@@ -334,19 +336,89 @@ pub fn rebuild(store: &mut Store) -> Result<usize> {
     Ok(n)
 }
 
-/// Rebuilds the Blade rows when a file changed, or when they were never built.
-pub fn refresh(store: &mut Store, changed: bool) -> Result<usize> {
+/// A fingerprint of every place PHP names a view: when it is the same as at
+/// the last rebuild, no render site was added, removed or moved.
+fn render_sites(conn: &Connection) -> Result<String> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT f.path, r.line, r.target FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE r.kind = 'view' ORDER BY f.path, r.line, r.target",
+    )?;
+    let mut rows = stmt.query([])?;
+    // FNV-1a: a change detector, not a secret.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut n = 0u64;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    while let Some(r) = rows.next()? {
+        eat(r.get_ref(0)?.as_str().unwrap_or_default().as_bytes());
+        eat(&r.get::<_, i64>(1)?.to_le_bytes());
+        eat(r.get_ref(2)?.as_str().unwrap_or_default().as_bytes());
+        eat(&[0]);
+        n += 1;
+    }
+    Ok(format!("{n}:{h:016x}"))
+}
+
+/// Rebuilds the Blade rows when something they are built from changed: a
+/// template, a component class, or a place PHP renders a view. Editing any
+/// other file leaves them as they are.
+pub fn refresh(store: &mut Store, scan: &codemap_core::ScanReport, full: bool) -> Result<usize> {
     let conn = store.conn();
-    let built = get_meta(conn, META_KEY)?.as_deref() == Some(VIEWS_VERSION);
     let any: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM blade_files) OR EXISTS (SELECT 1 FROM views WHERE framework = ?1)",
         [FRAMEWORK],
         |r| r.get(0),
     )?;
-    if !any || (built && !changed) {
+    if !any {
         return Ok(0);
     }
-    rebuild(store)
+    let built = get_meta(conn, META_KEY)?.as_deref() == Some(VIEWS_VERSION);
+    let mut due = full || !built;
+    if !due {
+        let mut renders = conn.prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM refs r JOIN files f ON f.id = r.file_id
+             WHERE r.kind = 'view' AND f.path = ?1)",
+        )?;
+        // A component class is known by its name, wherever its file is:
+        // the files that held one at the last rebuild, and any that hold
+        // one now.
+        let component_files: Vec<String> = get_meta(conn, CLASSES_KEY)?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let mut declares = conn.prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE f.path = ?1 AND s.kind = 'class'
+               AND (s.fqn LIKE '%!\\View!\\Components!\\%' ESCAPE '!' OR s.fqn LIKE '%Livewire!\\%' ESCAPE '!'))",
+        )?;
+        for p in scan.changed_paths.iter().chain(&scan.removed_paths) {
+            if p.ends_with(".blade.php")
+                || component_files.contains(p)
+                || renders.query_row([p], |r| r.get::<_, bool>(0))?
+                || declares.query_row([p], |r| r.get::<_, bool>(0))?
+            {
+                due = true;
+                break;
+            }
+        }
+    }
+    let sites = render_sites(conn)?;
+    if !due && get_meta(conn, SITES_KEY)?.as_deref() == Some(sites.as_str()) {
+        return Ok(0);
+    }
+    let n = rebuild(store)?;
+    let conn = store.conn();
+    set_meta(conn, SITES_KEY, &sites)?;
+    let files: std::collections::BTreeSet<String> = Classes::load(conn)?
+        .0
+        .into_iter()
+        .map(|(_, path, _)| path)
+        .collect();
+    set_meta(conn, CLASSES_KEY, &serde_json::to_string(&files)?)?;
+    Ok(n)
 }
 
 /// How many Blade views of each kind, for the overview.

@@ -172,7 +172,20 @@ impl CodemapServer {
                 interval,
                 gate: tokio::sync::Mutex::new(()),
             }),
-            tool_router: Self::tool_router() + Self::report_router(),
+            tool_router: {
+                // Every session that loads the tools pays for their schemas:
+                // send them without what a caller has no use for.
+                let mut router = Self::tool_router() + Self::report_router();
+                for route in router.map.values_mut() {
+                    let slim = slim_schema(serde_json::Value::Object(
+                        (*route.attr.input_schema).clone(),
+                    ));
+                    if let serde_json::Value::Object(o) = slim {
+                        route.attr.input_schema = Arc::new(o);
+                    }
+                }
+                router
+            },
         })
     }
 
@@ -574,7 +587,7 @@ impl CodemapServer {
 
     #[tool(
         name = "get_component",
-        description = "Use before using, changing or creating a Vue component, Nuxt page, React function component, SwiftUI view, Jetpack Compose function or Laravel Blade view (instead of grepping resources/views): props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. For a Blade view (`orders.index`, `x-alert`, or its file): the layout it extends, sections, includes and components (resolved to files), the variables it expects, its forms and the routes they post to, and who renders it (controller method, the keys it passes, the route) or includes it. Accepts a name (OrderCard), tag (order-card) or file path."
+        description = "Use before using, changing or creating a Vue component, Nuxt page, React function component, SwiftUI view, Jetpack Compose function or Laravel Blade view (instead of grepping resources/views): props (type, required, default), emits, v-model, slots, which components it renders (resolved to files or libraries), who renders it, stores and composables it uses. For a SwiftUI view or composable: inputs / parameters, state, environment, the views it shows, where it is shown and how it is opened. For a Blade view (`orders.index`, `x-alert` or its file): layout, includes and components (as files), the variables it expects, its forms, and who renders it (controller method, keys passed, route). Accepts a name (OrderCard), tag (order-card) or file path."
     )]
     pub async fn get_component(
         &self,
@@ -884,6 +897,98 @@ impl CodemapServer {
     }
 }
 
+/// A tool's parameter schema as it is sent: the same parameters and types,
+/// without the `$schema` line, with shared definitions written where they
+/// are used (a two-value choice as a plain `enum`), and without `default:
+/// null`, number formats and line breaks in descriptions. What a parameter
+/// accepts does not change.
+pub fn slim_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let defs = schema
+        .as_object_mut()
+        .and_then(|o| {
+            o.remove("$schema");
+            o.remove("$defs")
+        })
+        .unwrap_or(Value::Null);
+    fn walk(v: &mut Value, defs: &Value, depth: u8) {
+        match v {
+            Value::Object(o) => {
+                // `{"$ref": "#/$defs/X", …}` → X's own schema, with what was beside it.
+                if depth < 8
+                    && let Some(name) = o
+                        .get("$ref")
+                        .and_then(Value::as_str)
+                        .and_then(|r| r.strip_prefix("#/$defs/"))
+                        .map(str::to_owned)
+                    && let Some(def) = defs.get(&name).and_then(Value::as_object)
+                {
+                    o.remove("$ref");
+                    for (k, val) in def {
+                        o.entry(k.clone()).or_insert_with(|| val.clone());
+                    }
+                }
+                // A choice of fixed words is an `enum`.
+                let words: Option<Vec<Value>> =
+                    o.get("oneOf").and_then(Value::as_array).and_then(|a| {
+                        a.iter()
+                            .map(|m| m.get("const").filter(|c| c.is_string()).cloned())
+                            .collect()
+                    });
+                if let Some(words) = words.filter(|w| !w.is_empty()) {
+                    o.remove("oneOf");
+                    o.insert("type".into(), Value::String("string".into()));
+                    o.insert("enum".into(), Value::Array(words));
+                }
+                if o.get("default").is_some_and(Value::is_null) {
+                    o.remove("default");
+                }
+                if o.get("type")
+                    .is_some_and(|t| t.to_string().contains("integer"))
+                {
+                    o.remove("format");
+                    if o.get("minimum").and_then(Value::as_f64) == Some(0.0) {
+                        o.remove("minimum");
+                    }
+                }
+                if let Some(Value::String(d)) = o.get_mut("description") {
+                    *d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                }
+                for (key, child) in o.iter_mut() {
+                    // `properties` maps parameter names to schemas: a
+                    // parameter called `type` or `format` is not a keyword.
+                    match child {
+                        Value::Object(params) if key == "properties" => {
+                            for (_, param) in params.iter_mut() {
+                                walk(param, defs, depth + 1);
+                            }
+                        }
+                        _ => walk(child, defs, depth + 1),
+                    }
+                }
+            }
+            Value::Array(a) => {
+                for child in a {
+                    walk(child, defs, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    let original = schema.clone();
+    walk(&mut schema, &defs, 0);
+    // A reference that could not be written out (too deep, or to a missing
+    // definition) needs its definitions: send the schema as it was.
+    if schema.to_string().contains("\"$ref\"") {
+        let mut whole = original;
+        if let (Some(o), false) = (whole.as_object_mut(), defs.is_null()) {
+            o.insert("$defs".into(), defs);
+        }
+        return whole;
+    }
+    schema
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for CodemapServer {
     async fn initialize(
@@ -959,4 +1064,53 @@ pub async fn serve(projects: Vec<Project>) -> anyhow::Result<()> {
     tracing::info!("MCP server ready on stdio");
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use serde_json::json;
+
+    #[test]
+    fn schemas_are_sent_slim_and_mean_the_same() {
+        let slim = super::slim_schema(json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {
+                "DetailParam": { "oneOf": [
+                    { "description": "Compact (default).", "type": "string", "const": "brief" },
+                    { "description": "Everything known.", "type": "string", "const": "full" }
+                ]},
+                "Claims": { "type": "object", "properties": {
+                    "classes": { "type": "array", "items": { "type": "string" }, "default": [] }
+                }}
+            },
+            "type": "object",
+            "properties": {
+                "query": { "description": "Short name,\nor FQN.", "type": "string" },
+                "limit": { "type": ["integer", "null"], "format": "uint", "minimum": 0, "default": null },
+                "claims": { "anyOf": [{ "$ref": "#/$defs/Claims" }, { "type": "null" }], "default": null },
+                "detail": { "$ref": "#/$defs/DetailParam", "default": "brief" }
+            },
+            "additionalProperties": false,
+            "required": ["query"]
+        }));
+        assert_eq!(
+            slim,
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "description": "Short name, or FQN.", "type": "string" },
+                    "limit": { "type": ["integer", "null"] },
+                    "claims": { "anyOf": [
+                        { "type": "object", "properties": {
+                            "classes": { "type": "array", "items": { "type": "string" }, "default": [] }
+                        }},
+                        { "type": "null" }
+                    ]},
+                    "detail": { "type": "string", "enum": ["brief", "full"], "default": "brief" }
+                },
+                "additionalProperties": false,
+                "required": ["query"]
+            })
+        );
+    }
 }

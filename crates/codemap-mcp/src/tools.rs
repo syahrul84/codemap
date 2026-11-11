@@ -542,7 +542,7 @@ impl From<DetailParam> for Detail {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OverviewParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// `brief` (default) or `full`.
@@ -573,7 +573,7 @@ pub fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::E
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Short name, FQN, `Class::method`, or part of a name.
@@ -618,7 +618,7 @@ impl From<SearchParams> for SearchInput {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetSymbolParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Short name, FQN, or `Class::method` / `Class::$property` / `Class::CONST`.
@@ -643,7 +643,7 @@ pub struct GetSymbolParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetComponentParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Component name (`OrderCard`), tag (`order-card`), or file path (`src/components/OrderCard.vue`).
@@ -662,7 +662,7 @@ pub struct GetComponentParams {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListPagesParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Substring of the page URL, e.g. `orders` or `:id`.
@@ -712,7 +712,7 @@ impl From<ListPagesParams> for codemap_vue::pages::PageFilter {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListRoutesParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Substring of the URI, e.g. `orders`.
@@ -772,7 +772,7 @@ impl From<ListRoutesParams> for ListInput {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaParams {
-    /// Workspace app to look at (`backend`, `consumer`, …). Omit to search every app.
+    /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Table name. Omit to list all tables.
