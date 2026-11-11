@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-11
+
 - A check after each edit. `codemap setup` installs a second hook (`codemap hook edited`, after Edit / Write): it compares the file before and after the edit and tells the assistant at once when the edit brought in something the project does not have: a class, static method, a method a class calls on itself, route name, table or column in PHP; a view or route name in Blade; an endpoint that matches no backend route or a translation key no locale defines in Vue / JS / TS. Only what the edit added is reported, once per session, and nothing is blocked. `[agent] check_edits = false` turns it off; run `codemap setup` again to add it to an existing install.
 - Fewer tokens: the tool definitions an AI app loads are about 14% smaller (the same parameters, sent without the `$schema` line, repeated definitions and `default: null`), and `codemap query` prints one-line JSON when its output goes to a program or an assistant rather than a terminal.
 - `verify`: `cases()`, `from()` and `tryFrom()` on a PHP enum are built in, not missing.
