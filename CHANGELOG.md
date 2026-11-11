@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-12
+
 Found by running the check after each edit over every file of two workspaces (about 14,500 files) as if each had just been written:
 
 - The check after each edit, and `verify`, no longer report these as missing:
