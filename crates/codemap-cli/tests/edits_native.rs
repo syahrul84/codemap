@@ -174,4 +174,15 @@ fn rust_paths_into_the_projects_own_crates() {
     ] {
         assert!(!told.contains(quiet), "{quiet}: {told}");
     }
+    // A local trait put on another crate's type gives the index an item
+    // under that crate's name; the crate is still not the project's.
+    f.write(
+        "src/ext.rs",
+        "pub trait Shout {\n    fn shout(&self) -> String;\n}\n\nimpl Shout for serde_json::Value {\n    fn shout(&self) -> String {\n        self.to_string()\n    }\n}\n",
+    );
+    let told = f.write(
+        "src/probe2.rs",
+        "use serde_json::Map;\nuse serde_json::NoSuchThing;\n\npub fn probe2() {}\n",
+    );
+    assert_eq!(told, "");
 }

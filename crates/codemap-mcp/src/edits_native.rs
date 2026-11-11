@@ -274,24 +274,34 @@ pub fn rust(
     out: &mut Vec<String>,
 ) {
     let conn = store.conn();
-    let crates = strings(
+    // The workspace's crates: the first name of each file's module path.
+    // (Not the first name of every item: `impl Local for other_crate::Type`
+    // gives an item a path that starts with a crate that is not ours.)
+    let first = |module: String| module.split("::").next().unwrap_or_default().to_owned();
+    let mut crates: Vec<String> = strings(
         conn,
-        "SELECT DISTINCT substr(s.fqn, 1, instr(s.fqn, '::') - 1) FROM symbols s
-         JOIN files f ON f.id = s.file_id WHERE f.lang = 'rust' AND instr(s.fqn, '::') > 0",
+        "SELECT DISTINCT json_extract(facts_json, '$.module') FROM rust_files",
         &[],
-    );
+    )
+    .into_iter()
+    .map(first)
+    .filter(|c| !c.is_empty())
+    .collect();
+    crates.sort();
+    crates.dedup();
     if crates.is_empty() {
         return;
     }
-    // The crate this file is in: the one its own items are under.
+    // The crate this file is in.
     let own = strings(
         conn,
-        "SELECT substr(s.fqn, 1, instr(s.fqn, '::') - 1) FROM symbols s
-         JOIN files f ON f.id = s.file_id WHERE f.path = ?1 AND instr(s.fqn, '::') > 0 LIMIT 1",
+        "SELECT json_extract(facts_json, '$.module') FROM rust_files WHERE path = ?1",
         &[file],
     )
     .into_iter()
-    .next();
+    .next()
+    .map(first)
+    .filter(|c| !c.is_empty());
     let before = rust_paths(&code_only(old));
     let mut texts: Option<Vec<String>> = None;
     for path in rust_paths(&code_only(new)).difference(&before) {
