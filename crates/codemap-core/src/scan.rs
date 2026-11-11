@@ -99,6 +99,17 @@ const ROOT_FILES: &[&str] = &[
     "app.config.ts",
 ];
 
+/// How close to a refresh a write must be to count as "during it": file
+/// times and the clock are not exact.
+const RACY_NS: i64 = 2_000_000_000;
+
+/// Now, in nanoseconds since the epoch (the unit of a file's mtime here).
+pub fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as i64)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScanOptions {
     /// Treat every file as changed.
@@ -152,6 +163,7 @@ pub fn scan(
     opts: ScanOptions,
 ) -> Result<ScanReport> {
     let started = Instant::now();
+    let started_wall = now_ns();
     let mut warnings = Vec::new();
     let mut report = ScanReport::default();
 
@@ -168,6 +180,7 @@ pub fn scan(
     // Git runs a subprocess; do it before taking the write lock.
     let head = git::head(root);
     let now = time::now_rfc3339();
+    let scan_started_ns = started_wall;
 
     // Read, compare and write under one write lock, so a concurrent scan of the
     // same index (CLI + MCP server) waits and then sees our result.
@@ -175,6 +188,21 @@ pub fn scan(
         .conn_mut()
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let existing = file_states(&tx)?;
+    let stamp = |key: &str| -> Option<i64> {
+        crate::store::get_meta(&tx, key)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+    };
+    let last_scan = stamp(meta_keys::SCAN_STARTED_NS);
+    // A refresh that did not finish has no end: everything since counts.
+    let last_done = stamp(meta_keys::REFRESH_DONE_NS)
+        .filter(|done| last_scan.is_some_and(|start| *done >= start))
+        .unwrap_or(i64::MAX - RACY_NS);
+    let racy = |mtime_ns: i64| {
+        last_scan
+            .is_some_and(|start| mtime_ns >= start - RACY_NS && mtime_ns <= last_done + RACY_NS)
+    };
     let seen: HashSet<&str> = walked.iter().map(|w| w.rel.as_str()).collect();
     let mut removed: Vec<String> = existing
         .keys()
@@ -216,7 +244,11 @@ pub fn scan(
         };
         match existing.get(&w.rel) {
             None => added.push((w, hash)),
-            Some(s) if !opts.full && s.hash == hash => touched.push(w),
+            // Same content as last time, written again. If that was while
+            // the last refresh ran, the refresh may have read it half
+            // written (a file is rewritten by truncating it first): its
+            // facts are taken again.
+            Some(s) if !opts.full && s.hash == hash && !racy(w.mtime_ns) => touched.push(w),
             Some(_) => modified.push((w, hash)),
         }
     }
@@ -267,6 +299,11 @@ pub fn scan(
         ..report.clone()
     };
     set_meta(&tx, meta_keys::INDEXED_AT, &now)?;
+    set_meta(
+        &tx,
+        meta_keys::SCAN_STARTED_NS,
+        &scan_started_ns.to_string(),
+    )?;
     set_meta(&tx, meta_keys::PROJECT_ROOT, &root.to_string_lossy())?;
     set_meta(&tx, meta_keys::LAST_SCAN, &serde_json::to_string(&summary)?)?;
     // `git status` is slow on big repos and Docker Desktop mounts: only re-run

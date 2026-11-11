@@ -12,7 +12,7 @@ use super::{ActionKind, RouteDef, RouteSource};
 
 /// The installed major version of a package (`composer.lock`), else from the
 /// constraint in `composer.json`; `None` when the project does not require it.
-fn major(root: &Path, package: &str) -> Option<u64> {
+pub(super) fn major(root: &Path, package: &str) -> Option<u64> {
     let json: serde_json::Value = std::fs::read_to_string(root.join("composer.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())?;
@@ -124,8 +124,10 @@ pub fn routes(root: &Path) -> Vec<RouteDef> {
     // Passport: automatic from 11 (unless ignoreRoutes), `Passport::routes()`
     // before that. JSON API routes until 12, or when asked for.
     if let Some(v) = major(root, "laravel/passport") {
+        // `ignoreRoutes()` and then its route file required by hand, to give
+        // the routes other middleware: they are still registered.
         let registered = if v >= 11 {
-            !has("Passport::ignoreRoutes()")
+            !has("Passport::ignoreRoutes()") || has("passport/routes/web.php")
         } else {
             has("Passport::routes(")
         };
@@ -435,6 +437,17 @@ mod tests {
             "<?php Passport::ignoreRoutes();",
         );
         assert!(routes(off.path()).is_empty());
+        // Opted out, then its route file required by hand (to change the
+        // middleware): the routes are there.
+        let by_hand = project(
+            r#"{"require":{"laravel/passport":"^13.0"}}"#,
+            "<?php Passport::ignoreRoutes(); Route::group(['prefix' => 'oauth'], function () { require base_path('vendor/laravel/passport/routes/web.php'); });",
+        );
+        assert!(
+            uris(&by_hand).contains(&"POST oauth/token".to_owned()),
+            "{:?}",
+            uris(&by_hand)
+        );
         let none = project(r#"{"require":{"laravel/framework":"^11.0"}}"#, "<?php");
         assert!(routes(none.path()).is_empty());
     }

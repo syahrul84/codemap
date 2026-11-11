@@ -133,6 +133,21 @@ fn incremental_rescans_only_changed_files() {
     let r = run(&mut store, root, false);
     assert_eq!((r.touched, r.unchanged), (0, n));
 
+    // The same content written again while the last refresh was running
+    // (its time is "now"): that refresh may have read the file half
+    // written, so its facts are taken again.
+    set_file_mtime(root.join("routes/web.php"), FileTime::now()).unwrap();
+    let r = run(&mut store, root, false);
+    assert_eq!((r.touched, r.modified, r.reparsed), (0, 1, 1), "{r:?}");
+    assert_eq!(r.changed_paths, ["routes/web.php"]);
+    set_file_mtime(
+        root.join("routes/web.php"),
+        FileTime::from_unix_time(T0 + 30, 0),
+    )
+    .unwrap();
+    let r = run(&mut store, root, false);
+    assert_eq!((r.touched, r.reparsed), (1, 0), "{r:?}");
+
     // Delete one file.
     std::fs::remove_file(root.join("routes/api.php")).unwrap();
     let r = run(&mut store, root, false);

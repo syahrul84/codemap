@@ -77,7 +77,10 @@ pub fn backends(store: &Store, project: &Project) -> R<(Vec<Backend>, Vec<String
         let opened = (|| -> codemap_core::Result<Store> {
             let index = match &link.index_path {
                 Some(p) => p.clone(),
-                None => paths::index_path(data_dir, &paths::resolve_project_id(None, &root)?),
+                None => paths::index_path(
+                    data_dir,
+                    &paths::resolve_project_id_in(None, &root, data_dir)?,
+                ),
             };
             let mut s = Store::open(&index)?;
             // Re-check the linked project at most every LINK_TTL (it is a

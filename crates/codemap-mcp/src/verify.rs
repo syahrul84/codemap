@@ -233,6 +233,180 @@ const PHP_BUILTIN_CLASSES: &[&str] = &[
     "PDOStatement",
     "SimpleXMLElement",
     "DOMDocument",
+    "DOMNode",
+    "DOMElement",
+    "DOMNodeList",
+    "DOMXPath",
+    "DOMText",
+    "DOMAttr",
+    "DOMComment",
+    "DOMException",
+    "DOMDocumentFragment",
+    "DOMNamedNodeMap",
+    "DOMCharacterData",
+    "DOMImplementation",
+    "XMLReader",
+    "XMLWriter",
+    "LibXMLError",
+    "ErrorException",
+    "AssertionError",
+    "UnhandledMatchError",
+    "Random\\Randomizer",
+    "Pdo\\Mysql",
+    "Pdo\\Pgsql",
+    "Pdo\\Sqlite",
+    "Pdo\\Dblib",
+    "Pdo\\Firebird",
+    "Pdo\\Odbc",
+    "SplFileInfo",
+    "SplFileObject",
+    "SplTempFileObject",
+    "SplFixedArray",
+    "SplDoublyLinkedList",
+    "SplPriorityQueue",
+    "SplMinHeap",
+    "SplMaxHeap",
+    "SplSubject",
+    "SplObserver",
+    "DirectoryIterator",
+    "FilesystemIterator",
+    "RecursiveDirectoryIterator",
+    "RecursiveIteratorIterator",
+    "RecursiveArrayIterator",
+    "RecursiveIterator",
+    "CallbackFilterIterator",
+    "RegexIterator",
+    "LimitIterator",
+    "InfiniteIterator",
+    "AppendIterator",
+    "MultipleIterator",
+    "NoRewindIterator",
+    "CachingIterator",
+    "IteratorIterator",
+    "FilterIterator",
+    "EmptyIterator",
+    "GlobIterator",
+    "OuterIterator",
+    "SeekableIterator",
+    "WeakReference",
+    "Fiber",
+    "finfo",
+    "XSLTProcessor",
+    "tidy",
+    "tidyNode",
+    "IntlChar",
+    "UConverter",
+    "Spoofchecker",
+    "IntlException",
+    "IntlPartsIterator",
+    "IntlRuleBasedBreakIterator",
+    "IntlCodePointBreakIterator",
+    "RedisCluster",
+    "RedisArray",
+    "Memcache",
+    "GearmanClient",
+    "GearmanWorker",
+    "Gmagick",
+    "COM",
+    "FFI",
+    "SodiumException",
+    "SNMP",
+    "XMLParser",
+    "InflateContext",
+    "DeflateContext",
+    "Shmop",
+    "SysvSemaphore",
+    "SysvSharedMemory",
+    "SysvMessageQueue",
+    "Socket",
+    "AddressInfo",
+    "EnchantBroker",
+    "EnchantDictionary",
+    "GMP",
+    "SQLite3Stmt",
+    "SQLite3Result",
+    "mysqli_driver",
+    "mysqli_warning",
+    "SplHeap",
+    "SplEnum",
+    "SplType",
+    "SplObjectStorage",
+    "ArgumentCountError",
+    "CompileError",
+    "ParseError",
+    "RecursiveCallbackFilterIterator",
+    "RecursiveRegexIterator",
+    "RecursiveTreeIterator",
+    "RecursiveCachingIterator",
+    "ParentIterator",
+    "Countable",
+    "InternalIterator",
+    "WeakMap",
+    "SensitiveParameterValue",
+    "FiberError",
+    "Reflection",
+    "Reflector",
+    "ReflectionObject",
+    "ReflectionEnum",
+    "ReflectionEnumBackedCase",
+    "ReflectionEnumUnitCase",
+    "ReflectionParameter",
+    "ReflectionType",
+    "ReflectionUnionType",
+    "ReflectionIntersectionType",
+    "ReflectionAttribute",
+    "ReflectionClassConstant",
+    "ReflectionException",
+    "ReflectionExtension",
+    "ReflectionGenerator",
+    "NumberFormatter",
+    "IntlDateFormatter",
+    "MessageFormatter",
+    "Collator",
+    "Locale",
+    "Normalizer",
+    "Transliterator",
+    "IntlCalendar",
+    "IntlTimeZone",
+    "IntlBreakIterator",
+    "ResourceBundle",
+    "ZipArchive",
+    "PharData",
+    "Phar",
+    "CURLFile",
+    "CurlHandle",
+    "CurlMultiHandle",
+    "GdImage",
+    "GdFont",
+    "Imagick",
+    "ImagickPixel",
+    "ImagickDraw",
+    "ImagickException",
+    "SoapClient",
+    "SoapFault",
+    "SoapServer",
+    "SoapHeader",
+    "SoapVar",
+    "SoapParam",
+    "mysqli",
+    "mysqli_result",
+    "mysqli_stmt",
+    "mysqli_sql_exception",
+    "SQLite3",
+    "Redis",
+    "RedisException",
+    "Memcached",
+    "SessionHandler",
+    "SessionHandlerInterface",
+    "HashContext",
+    "OpenSSLAsymmetricKey",
+    "OpenSSLCertificate",
+    "Directory",
+    "php_user_filter",
+    "IntBackedEnum",
+    "StringBackedEnum",
+    "Deprecated",
+    "NoDiscard",
     "Attribute",
     "ReturnTypeWillChange",
     "SensitiveParameter",
@@ -294,10 +468,10 @@ const LARAVEL_ALIASES: &[&str] = &[
 
 /// `(namespace prefix, package)` for every package in `composer.lock`
 /// (`autoload.psr-4` and `psr-0`), read once per project.
-fn locked_namespaces(root: &Path) -> std::sync::Arc<Vec<(String, String)>> {
+fn locked_namespaces(root: &Path) -> std::sync::Arc<Locked> {
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::SystemTime;
-    type Entry = (Option<SystemTime>, Arc<Vec<(String, String)>>);
+    type Entry = (Option<SystemTime>, Arc<Locked>);
     static SEEN: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
     let seen = SEEN.get_or_init(Default::default);
     let file = root.join("composer.lock");
@@ -308,7 +482,7 @@ fn locked_namespaces(root: &Path) -> std::sync::Arc<Vec<(String, String)>> {
     {
         return v;
     }
-    let mut out = Vec::new();
+    let mut out = Locked::default();
     if let Some(lock) = std::fs::read_to_string(&file)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -316,14 +490,33 @@ fn locked_namespaces(root: &Path) -> std::sync::Arc<Vec<(String, String)>> {
         for list in ["packages", "packages-dev"] {
             for p in lock[list].as_array().into_iter().flatten() {
                 let name = p["name"].as_str().unwrap_or_default();
+                let mut mapped = false;
                 for style in ["psr-4", "psr-0"] {
                     for ns in p["autoload"][style].as_object().into_iter().flatten() {
                         let ns = ns.0.trim_start_matches('\\');
                         // An empty prefix would claim every class.
                         if ns.len() > 1 {
-                            out.push((ns.to_owned(), name.to_owned()));
+                            mapped = true;
+                            out.namespaces.push((ns.to_owned(), name.to_owned()));
                         }
                     }
+                }
+                // Loaded by class map: the lock file does not say which
+                // namespace, only the package's name.
+                let vendor: String = name
+                    .split('/')
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if !mapped
+                    && p["autoload"]["classmap"].is_array()
+                    && vendor.len() >= 4
+                    && !out.unmapped.iter().any(|(v, _)| *v == vendor)
+                {
+                    out.unmapped.push((vendor, name.to_owned()));
                 }
             }
         }
@@ -333,6 +526,84 @@ fn locked_namespaces(root: &Path) -> std::sync::Arc<Vec<(String, String)>> {
         s.insert(root.to_path_buf(), (stamp, out.clone()));
     }
     out
+}
+
+/// The file that registers `name` as a global class name: the `aliases` of
+/// `config/app.php` (`'OneSignal' => OneSignalFacade::class`), or those the
+/// installed packages bring (`bootstrap/cache/packages.php`).
+fn registered_alias(root: &Path, name: &str) -> Option<&'static str> {
+    [
+        "config/app.php",
+        "bootstrap/cache/packages.php",
+        // What the packages ask to be registered (`extra.laravel.aliases`),
+        // for an app whose package cache was never written here.
+        "vendor/composer/installed.json",
+    ]
+    .into_iter()
+    .find(|file| {
+        if file.ends_with(".json") {
+            let key = format!("\"{name}\": \"");
+            return std::fs::read_to_string(root.join(file)).is_ok_and(|text| {
+                text.match_indices(&key).any(|(i, _)| {
+                    text[i + key.len()..]
+                        .split('"')
+                        .next()
+                        .is_some_and(|class| class.contains("\\\\"))
+                })
+            });
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            return false;
+        };
+        ['\'', '"'].iter().any(|q| {
+            let key = format!("{q}{name}{q}");
+            text.match_indices(&key).any(|(i, _)| {
+                let Some(value) = text[i + key.len()..].trim_start().strip_prefix("=>") else {
+                    return false;
+                };
+                let value = value
+                    .trim_start()
+                    .split([',', '\n'])
+                    .next()
+                    .unwrap_or_default();
+                // A class, not a setting: `Foo::class` or `'Vendor\\Foo'`.
+                value.contains("::class")
+                    || (value.starts_with(['\'', '"']) && value.contains('\\'))
+            })
+        })
+    })
+}
+
+/// What `composer.lock` says about the installed packages.
+#[derive(Default)]
+struct Locked {
+    /// `(namespace prefix, package)`.
+    namespaces: Vec<(String, String)>,
+    /// `(vendor name in lower case, package)` for packages that name no
+    /// namespace (a class map only).
+    unmapped: Vec<(String, String)>,
+}
+
+/// The file composer loads at start (`autoload_files.php`) that is named
+/// after the class: `vendor/mockery/mockery/library/Mockery.php` for `Mockery`.
+fn autoloaded_file(list: &Path, class: &str) -> Option<String> {
+    let text = std::fs::read_to_string(list).ok()?;
+    let end = format!("/{}.php'", class.to_ascii_lowercase());
+    text.lines().find_map(|l| {
+        let l = l.trim().trim_end_matches(',');
+        if !l.to_ascii_lowercase().ends_with(&end) {
+            return None;
+        }
+        let path = l.rsplit_once(" . '")?.1.trim_end_matches('\'');
+        Some(format!(
+            "{}{path}",
+            if l.contains("$vendorDir") {
+                "vendor"
+            } else {
+                ""
+            }
+        ))
+    })
 }
 
 /// Whether `fqn` is under the namespace prefix `ns`: the prefix ends at a
@@ -361,7 +632,7 @@ const FRAMEWORK_NAMESPACES: &[&str] = &[
 ];
 
 /// Laravel global helpers (vendor functions, not indexed).
-const LARAVEL_HELPERS: &[&str] = &[
+pub(crate) const LARAVEL_HELPERS: &[&str] = &[
     "abort",
     "abort_if",
     "abort_unless",
@@ -640,6 +911,10 @@ pub fn verify(store: &Store, project: &Project, p: VerifyParams) -> Result<Value
     let v = Verifier {
         store,
         root: &project.root,
+        models: Default::default(),
+        routes: Default::default(),
+        table_names: Default::default(),
+        table_checks: Default::default(),
     };
     let mut results = Vec::new();
     let mut seen = BTreeSet::new();
@@ -765,7 +1040,7 @@ pub fn verify(store: &Store, project: &Project, p: VerifyParams) -> Result<Value
             push(check);
         }
     }
-    let known_tables: BTreeSet<String> = v.tables()?.into_iter().collect();
+    let known_tables: BTreeSet<String> = v.tables()?.iter().cloned().collect();
     for qc in &claims.qualified_columns {
         let table = qc.split('.').next().unwrap_or_default();
         if known_tables.contains(table) {
@@ -829,6 +1104,12 @@ fn merge(into: &mut Claims, from: Claims) {
 struct Verifier<'a> {
     store: &'a Store,
     root: &'a Path,
+    // Read once per run: a new file can name hundreds of things, and the
+    // models, routes and tables of a large app are thousands of rows.
+    models: std::cell::OnceCell<Vec<models::ModelInfo>>,
+    routes: std::cell::OnceCell<Vec<routes::RouteDef>>,
+    table_names: std::cell::OnceCell<Vec<String>>,
+    table_checks: std::cell::RefCell<HashMap<String, Check>>,
 }
 
 enum ClassHit {
@@ -838,6 +1119,22 @@ enum ClassHit {
 }
 
 impl Verifier<'_> {
+    fn models(&self) -> Result<&[models::ModelInfo], ToolError> {
+        if self.models.get().is_none() {
+            let all = models::load(self.store.conn())?;
+            let _ = self.models.set(all);
+        }
+        Ok(self.models.get().map_or(&[], Vec::as_slice))
+    }
+
+    fn routes(&self) -> Result<&[routes::RouteDef], ToolError> {
+        if self.routes.get().is_none() {
+            let all = routes::all(self.store.conn())?;
+            let _ = self.routes.set(all);
+        }
+        Ok(self.routes.get().map_or(&[], Vec::as_slice))
+    }
+
     fn find_class(&self, name: &str) -> Result<ClassHit, ToolError> {
         let name = name.trim().trim_start_matches('\\');
         let conn = self.store.conn();
@@ -892,6 +1189,13 @@ impl Verifier<'_> {
         if PHP_BUILTIN_CLASSES
             .iter()
             .any(|b| b.eq_ignore_ascii_case(fqn))
+            // Namespaces PHP itself owns (`Dom\HTMLDocument`, `Random\Engine\Secure`).
+            || [
+                "Dom\\", "Random\\", "Pdo\\", "FTP\\", "LDAP\\", "PgSql\\", "IMAP\\", "Odbc\\",
+                "BcMath\\", "Uri\\", "Soap\\", "Ds\\", "Swoole\\", "MongoDB\\", "parallel\\",
+            ]
+            .iter()
+            .any(|ns| fqn.len() > ns.len() && fqn[..ns.len()].eq_ignore_ascii_case(ns))
         {
             return Some("PHP built-in class".into());
         }
@@ -901,6 +1205,13 @@ impl Verifier<'_> {
             && self.root.join("artisan").is_file()
         {
             return Some("Laravel facade alias".into());
+        }
+        // `OneSignal::sendNotification()`: a global name the app or one of
+        // its packages registers for a class.
+        if !fqn.contains('\\')
+            && let Some(file) = registered_alias(self.root, fqn)
+        {
+            return Some(format!("class alias registered in {file}"));
         }
         let composer = self.root.join("vendor/composer");
         if composer.is_dir() {
@@ -924,6 +1235,13 @@ impl Verifier<'_> {
                     format!("class in {path} (composer classmap), outside the indexed folders")
                 });
             }
+            // `Mockery`: a global class its package loads by file
+            // (`library/Mockery.php` in composer's `files`), not by namespace.
+            if !fqn.contains('\\')
+                && let Some(path) = autoloaded_file(&composer.join("autoload_files.php"), fqn)
+            {
+                return Some(format!("vendor class ({path})"));
+            }
             return None;
         }
         if FRAMEWORK_NAMESPACES.iter().any(|ns| fqn.starts_with(ns)) {
@@ -933,13 +1251,38 @@ impl Verifier<'_> {
         }
         // vendor/ is not here (it lives in a container, say): the lock file
         // still names every installed package's namespaces.
-        if let Some(package) = locked_namespaces(self.root)
+        let locked = locked_namespaces(self.root);
+        if let Some(package) = locked
+            .namespaces
             .iter()
-            .find(|(ns, _)| under_namespace(fqn, ns))
+            // `Mockery` itself, beside `Mockery\Mock`.
+            .find(|(ns, _)| {
+                under_namespace(fqn, ns) || ns.trim_end_matches('\\').eq_ignore_ascii_case(fqn)
+            })
             .map(|(_, p)| p)
         {
             return Some(format!(
                 "class of package {package} (from composer.lock; vendor/ is not installed, so not checked on disk)"
+            ));
+        }
+        // A package that lists no namespace (PHPUnit loads by class map):
+        // its classes start with its vendor name (`PHPUnit\…` of phpunit/phpunit,
+        // `SebastianBergmann\…` of sebastian/diff).
+        let first: String = fqn
+            .split('\\')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if let Some((_, package)) = locked
+            .unmapped
+            .iter()
+            .find(|(vendor, _)| first.starts_with(vendor.as_str()))
+        {
+            return Some(format!(
+                "class of package {package} (from composer.lock, by its vendor name; vendor/ is not installed, so not checked on disk)"
             ));
         }
         None
@@ -1056,8 +1399,9 @@ impl Verifier<'_> {
                 .file(Some(format!("{}:{}", m.file, m.line))),
             other => {
                 // Eloquent: `Order::paid()` calls `scopePaid`; scopes are methods too.
-                let model = models::load(conn)?
-                    .into_iter()
+                let model = self
+                    .models()?
+                    .iter()
                     .find(|m| m.fqn.eq_ignore_ascii_case(&fqn));
                 if let Some(scope) = model
                     .as_ref()
@@ -1157,7 +1501,7 @@ impl Verifier<'_> {
     }
 
     fn route(&self, item: &str) -> Result<Check, ToolError> {
-        let all = routes::all(self.store.conn())?;
+        let all = self.routes()?;
         let item = item.trim();
         // `POST api/orders/{order}` form.
         if let Some((method, uri)) = item.split_once(' ')
@@ -1196,14 +1540,18 @@ impl Verifier<'_> {
         })
     }
 
-    fn tables(&self) -> Result<Vec<String>, ToolError> {
-        let v = schema::describe(self.store.conn(), None, Detail::Brief)?;
-        Ok(v["tables"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|t| t["table"].as_str().map(str::to_owned))
-            .collect())
+    fn tables(&self) -> Result<&[String], ToolError> {
+        if self.table_names.get().is_none() {
+            let v = schema::describe(self.store.conn(), None, Detail::Brief)?;
+            let names = v["tables"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t["table"].as_str().map(str::to_owned))
+                .collect();
+            let _ = self.table_names.set(names);
+        }
+        Ok(self.table_names.get().map_or(&[], Vec::as_slice))
     }
 
     fn component(&self, name: &str) -> Result<Check, ToolError> {
@@ -1263,20 +1611,27 @@ impl Verifier<'_> {
 
     fn table(&self, name: &str) -> Result<Check, ToolError> {
         let name = name.trim();
+        if let Some(c) = self.table_checks.borrow().get(name) {
+            return Ok(c.clone());
+        }
         let tables = self.tables()?;
         if tables.is_empty() {
             return Ok(Check::new("table", name, Status::Unresolved)
                 .detail("no migrations or schema dump indexed"));
         }
         let v = schema::describe(self.store.conn(), Some(name), Detail::Full)?;
-        Ok(if v["found"] == true {
+        let check = if v["found"] == true {
             Check::new("table", name, Status::Exists)
                 .file(v["created_in"].as_str().map(str::to_owned))
         } else {
             Check::new("table", name, Status::NotFound)
                 .detail(v["hint"].as_str().unwrap_or_default())
-                .suggest(closest(name, &tables))
-        })
+                .suggest(closest(name, tables))
+        };
+        self.table_checks
+            .borrow_mut()
+            .insert(name.to_owned(), check.clone());
+        Ok(check)
     }
 
     fn column(&self, item: &str) -> Result<Check, ToolError> {
@@ -1298,6 +1653,23 @@ impl Verifier<'_> {
             });
         }
         let cols = schema::load_columns(self.store.conn(), table)?;
+        // A table no migration here creates (it is only changed): the
+        // columns it was made with are not known, so one that is not among
+        // those added later may well be there.
+        let partly_known: bool = self
+            .store
+            .conn()
+            .query_row(
+                "SELECT confidence = 'low' FROM db_tables WHERE name = ?1",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if partly_known && !cols.iter().any(|c| c.name == column) {
+            return Ok(Check::new("column", item, Status::Unresolved).detail(format!(
+                "table {table} is not created by a migration here, so only the columns added later are known"
+            )));
+        }
         Ok(match cols.iter().find(|c| c.name == column) {
             Some(c) => Check::new("column", item, Status::Exists)
                 .file(c.created_in.clone())
@@ -1323,8 +1695,9 @@ impl Verifier<'_> {
         let ClassHit::Found(class) = self.find_class(model)? else {
             return Ok(None); // the class itself is reported separately
         };
-        let Some(m) = models::load(self.store.conn())?
-            .into_iter()
+        let Some(m) = self
+            .models()?
+            .iter()
             .find(|m| m.fqn.eq_ignore_ascii_case(&class.fqn))
         else {
             return Ok(None); // not an Eloquent model
@@ -1356,8 +1729,9 @@ impl Verifier<'_> {
                     .suggest(self.suggestions(short(class), Some(SymbolKind::Class))?));
             }
         };
-        let Some(model) = models::load(self.store.conn())?
-            .into_iter()
+        let Some(model) = self
+            .models()?
+            .iter()
             .find(|m| m.fqn.eq_ignore_ascii_case(&fqn))
         else {
             return Ok(Check::new("relation", item, Status::NotFound)
@@ -1401,10 +1775,11 @@ fn short(name: &str) -> &str {
 }
 
 fn is_php_function(name: &str) -> bool {
-    !name.contains('\\')
-        && PHP_FUNCTION_PREFIXES
-            .iter()
-            .any(|p| name == *p || (p.ends_with('_') && name.starts_with(p)))
+    crate::php_functions::is_builtin(name)
+        || !name.contains('\\')
+            && PHP_FUNCTION_PREFIXES
+                .iter()
+                .any(|p| name == *p || (p.ends_with('_') && name.starts_with(p)))
 }
 
 /// Best matches by Jaro-Winkler (≥ 0.75), at most 5.
@@ -1530,6 +1905,361 @@ pub fn snippet_claims(code: &str) -> Claims {
     claims
 }
 
+/// Method calls on a value whose class the code declares, as `Class::method`:
+/// a parameter with a class type that the function never assigns
+/// (`Order $order` → `$order->total()`), and a typed property of the class
+/// reached through `$this` (`private Billing $billing` →
+/// `$this->billing->charge()`). Calls inside closures are left out.
+///
+/// A value that is what a method returned (`$gateway = $this->gateway();`
+/// then `$gateway->charge()`) comes back as `>Class::gateway>charge`: the
+/// class is known only once the index says what `gateway()` returns.
+pub fn typed_receiver_calls(code: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let src = code.as_bytes();
+    let Some(tree) = codemap_php::parse::parse(src) else {
+        return out;
+    };
+    let ns = src.windows(10).any(|w| w == b"namespace ");
+    let mut scope = Scope::default();
+    typed_walk(
+        tree.root_node(),
+        src,
+        &mut scope,
+        ns,
+        &HashMap::new(),
+        &mut out,
+    );
+    out
+}
+
+/// `Order` or `?Order` as a declared type; not a union or a built-in type.
+fn declared_class(ty: Node<'_>, src: &[u8], scope: &Scope, ns: bool) -> Option<String> {
+    let t = if ty.kind() == "optional_type" {
+        named_children(ty).into_iter().next()?
+    } else {
+        ty
+    };
+    (t.kind() == "named_type")
+        .then(|| class_name(text(t, src), scope, ns))
+        .flatten()
+}
+
+/// The key under which the typed properties of a class also carry the
+/// class's own name.
+const THIS_CLASS: &str = "\0class";
+
+/// The method a value is the result of, when what it was called on is
+/// known: `$this->gateway()`, `self::make()`, `Billing::current()`,
+/// `$billing->gateway()` on a typed parameter or property.
+fn returned_from(
+    right: Node<'_>,
+    src: &[u8],
+    scope: &Scope,
+    ns: bool,
+    props: &HashMap<String, String>,
+    params: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    let method = right
+        .child_by_field_name("name")
+        .filter(|n| n.kind() == "name")
+        .map(|n| text(n, src).to_owned())?;
+    let class = match right.kind() {
+        "scoped_call_expression" => {
+            let scope_node = right.child_by_field_name("scope")?;
+            match text(scope_node, src) {
+                "self" | "static" => props.get(THIS_CLASS).cloned()?,
+                other if matches!(scope_node.kind(), "name" | "qualified_name") => {
+                    class_name(other, scope, ns)?
+                }
+                _ => return None,
+            }
+        }
+        "member_call_expression" => {
+            let obj = right.child_by_field_name("object")?;
+            match obj.kind() {
+                "variable_name" if text(obj, src) == "$this" => props.get(THIS_CLASS).cloned()?,
+                "variable_name" => params.get(text(obj, src)).cloned()?,
+                "member_access_expression" => obj
+                    .child_by_field_name("object")
+                    .filter(|o| text(*o, src) == "$this")
+                    .and_then(|_| obj.child_by_field_name("name"))
+                    .and_then(|p| props.get(text(p, src)))
+                    .cloned()?,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some((class, method))
+}
+
+fn typed_walk(
+    node: Node<'_>,
+    src: &[u8],
+    scope: &mut Scope,
+    ns: bool,
+    props: &HashMap<String, String>,
+    out: &mut BTreeSet<String>,
+) {
+    match node.kind() {
+        "namespace_definition" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| text(n, src))
+                .unwrap_or("");
+            scope.set_namespace(name);
+        }
+        "namespace_use_declaration" => {
+            apply_use_declaration(node, src, scope);
+            return;
+        }
+        "class_declaration" | "trait_declaration" | "enum_declaration" => {
+            let Some(body) = node.child_by_field_name("body") else {
+                return;
+            };
+            let mut typed = HashMap::new();
+            // The class itself, for `$this->make()` and `self::make()`.
+            if let Some(name) = node.child_by_field_name("name") {
+                typed.insert(THIS_CLASS.to_owned(), scope.qualify(text(name, src)));
+            }
+            for member in named_children(body) {
+                match member.kind() {
+                    "property_declaration" => {
+                        let Some(class) = member
+                            .child_by_field_name("type")
+                            .and_then(|t| declared_class(t, src, scope, ns))
+                        else {
+                            continue;
+                        };
+                        for el in named_children(member) {
+                            if el.kind() == "property_element"
+                                && let Some(name) = named_children(el).into_iter().next()
+                            {
+                                typed.insert(
+                                    text(name, src).trim_start_matches('$').to_owned(),
+                                    class.clone(),
+                                );
+                            }
+                        }
+                    }
+                    // `public function __construct(private Billing $billing)`
+                    "method_declaration"
+                        if member.child_by_field_name("name").map(|n| text(n, src))
+                            == Some("__construct") =>
+                    {
+                        let params = member.child_by_field_name("parameters");
+                        for p in params.map(named_children).unwrap_or_default() {
+                            if p.kind() == "property_promotion_parameter"
+                                && let Some(class) = p
+                                    .child_by_field_name("type")
+                                    .and_then(|t| declared_class(t, src, scope, ns))
+                                && let Some(name) = p.child_by_field_name("name")
+                            {
+                                typed.insert(
+                                    text(name, src).trim_start_matches('$').to_owned(),
+                                    class,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for member in named_children(body) {
+                typed_walk(member, src, scope, ns, &typed, out);
+            }
+            return;
+        }
+        "method_declaration" | "function_definition" => {
+            typed_function(node, src, scope, ns, props, out);
+            return;
+        }
+        _ => {}
+    }
+    for c in named_children(node) {
+        typed_walk(c, src, scope, ns, props, out);
+    }
+}
+
+fn typed_function(
+    node: Node<'_>,
+    src: &[u8],
+    scope: &Scope,
+    ns: bool,
+    props: &HashMap<String, String>,
+    out: &mut BTreeSet<String>,
+) {
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
+    // name → (class its declaration gives it, times the function writes it)
+    let mut vars: HashMap<String, (Option<String>, u32)> = HashMap::new();
+    let params = node.child_by_field_name("parameters");
+    for p in params.map(named_children).unwrap_or_default() {
+        if matches!(
+            p.kind(),
+            "simple_parameter" | "property_promotion_parameter"
+        ) && let Some(class) = p
+            .child_by_field_name("type")
+            .and_then(|t| declared_class(t, src, scope, ns))
+            && let Some(name) = p.child_by_field_name("name")
+        {
+            // A parameter starts typed and must never be written.
+            vars.insert(text(name, src).to_owned(), (Some(class), 1));
+        }
+    }
+    let params: HashMap<String, String> = vars
+        .iter()
+        .filter_map(|(k, (c, _))| c.clone().map(|c| (k.clone(), c)))
+        .collect();
+    // name → the method its one value came from.
+    let mut sources: HashMap<String, (String, String)> = HashMap::new();
+    // Every write to a variable. One that is `$x = new Billing(…)` or
+    // `$x = app(Billing::class)`, and the only one, says what `$x` is; a
+    // parameter the function gives another value is no longer what its type
+    // said (`$order = $order->fresh() ?? …`).
+    let mentions = |text: &str, name: &str| {
+        text.match_indices(name).any(|(i, _)| {
+            !text[i + name.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "assignment_expression"
+            | "augmented_assignment_expression"
+            | "reference_assignment_expression" => {
+                if let Some(left) = n.child_by_field_name("left") {
+                    let l = text(left, src);
+                    if left.kind() == "variable_name" {
+                        let right = n
+                            .child_by_field_name("right")
+                            .filter(|_| n.kind() == "assignment_expression");
+                        let made = right.and_then(|r| made_class(r, src, scope, ns));
+                        let from = right
+                            .filter(|_| made.is_none())
+                            .and_then(|r| returned_from(r, src, scope, ns, props, &params));
+                        let e = vars.entry(l.to_owned()).or_insert((None, 0));
+                        e.1 += 1;
+                        e.0 = if e.1 == 1 { made } else { None };
+                        match from {
+                            Some(f) if e.1 == 1 => {
+                                sources.insert(l.to_owned(), f);
+                            }
+                            _ => {
+                                sources.remove(l);
+                            }
+                        }
+                    } else {
+                        // `[$a, $b] = …`, `$x['k'] = …`: a write to each name in it.
+                        for (name, e) in vars.iter_mut() {
+                            if mentions(l, name) && !l.starts_with(&format!("{name}->")) {
+                                e.1 += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            "foreach_statement"
+            | "catch_clause"
+            | "static_variable_declaration"
+            | "global_declaration" => {
+                let end = n
+                    .child_by_field_name("body")
+                    .map_or(n.end_byte(), |b| b.start_byte());
+                // What is looped over is read; the rest of the header is written.
+                let header = std::str::from_utf8(&src[n.start_byte()..end]).unwrap_or_default();
+                let written = header.split_once(" as ").map_or(header, |(_, w)| w);
+                for (name, e) in vars.iter_mut() {
+                    if mentions(written, name) {
+                        e.1 += 1;
+                    }
+                }
+            }
+            // `use (&$total)`: the closure may write it.
+            "anonymous_function_use_clause" => {
+                let clause = text(n, src);
+                for (name, e) in vars.iter_mut() {
+                    if mentions(clause, &format!("&{name}")) {
+                        e.1 += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+        stack.extend(named_children(n));
+    }
+    // Written once, by a call on something known.
+    sources.retain(|name, _| vars.get(name).is_some_and(|(_, writes)| *writes == 1));
+    let vars: HashMap<String, String> = vars
+        .into_iter()
+        .filter_map(|(name, (class, writes))| {
+            // Written once: its declaration (a parameter) or the one
+            // assignment that made it.
+            (writes == 1).then_some(class).flatten().map(|c| (name, c))
+        })
+        .collect();
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        // A closure is a function of its own: its typed parameters are
+        // looked at, the names around it and `$this` are not.
+        if n.kind().contains("anonymous_function") || n.kind() == "arrow_function" {
+            typed_function(n, src, scope, ns, &HashMap::new(), out);
+            continue;
+        }
+        if n.kind().contains("anonymous") {
+            continue;
+        }
+        if matches!(
+            n.kind(),
+            "member_call_expression" | "nullsafe_member_call_expression"
+        ) && let Some(name) = n.child_by_field_name("name").filter(|x| x.kind() == "name")
+            && let Some(obj) = n.child_by_field_name("object")
+        {
+            let class = match obj.kind() {
+                "variable_name" => vars.get(text(obj, src)),
+                "member_access_expression" => obj
+                    .child_by_field_name("object")
+                    .filter(|o| text(*o, src) == "$this")
+                    .and_then(|_| obj.child_by_field_name("name"))
+                    .filter(|p| p.kind() == "name")
+                    .and_then(|p| props.get(text(p, src))),
+                _ => None,
+            };
+            if let Some(class) = class {
+                out.insert(format!("{class}::{}", text(name, src)));
+            } else if obj.kind() == "variable_name"
+                && let Some((class, method)) = sources.get(text(obj, src))
+            {
+                out.insert(format!(">{class}::{method}>{}", text(name, src)));
+            }
+        }
+        stack.extend(named_children(n));
+    }
+}
+
+/// The class a value is made as: `new Billing(…)`, `app(Billing::class)`,
+/// `resolve(Billing::class)`, `app()->make(Billing::class)`.
+fn made_class(right: Node<'_>, src: &[u8], scope: &Scope, ns: bool) -> Option<String> {
+    if right.kind() == "object_creation_expression" {
+        let class = named_children(right)
+            .into_iter()
+            .find(|c| matches!(c.kind(), "name" | "qualified_name"))?;
+        return class_name(text(class, src), scope, ns);
+    }
+    let compact: String = text(right, src).split_whitespace().collect();
+    let arg = ["app(", "resolve(", "app()->make(", "\\app(", "\\resolve("]
+        .iter()
+        .find_map(|p| compact.strip_prefix(p))?;
+    let class = arg.strip_suffix("::class)")?;
+    class
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '\\')
+        .then(|| class_name(class, scope, ns))
+        .flatten()
+}
+
 fn class_name(raw: &str, scope: &Scope, has_namespace: bool) -> Option<String> {
     let raw = raw.trim();
     let lower = raw.to_ascii_lowercase();
@@ -1576,14 +2306,25 @@ fn collect(node: Node<'_>, src: &[u8], scope: &mut Scope, ns: bool, claims: &mut
         "namespace_use_declaration" => {
             apply_use_declaration(node, src, scope);
             // Imported classes are claims too (functions/consts are skipped).
-            if node.child_by_field_name("type").is_none() {
+            let what = text(node, src)
+                .trim_start()
+                .trim_start_matches("use")
+                .trim_start();
+            if node.child_by_field_name("type").is_none()
+                && !what.starts_with("function ")
+                && !what.starts_with("const ")
+            {
                 let mut stack = vec![node];
                 while let Some(n) = stack.pop() {
                     if n.kind() == "namespace_use_clause" {
                         let alias = n.child_by_field_name("alias").map(|a| a.id());
                         if let Some(name) = named_children(n).into_iter().find(|c| {
                             matches!(c.kind(), "name" | "qualified_name") && Some(c.id()) != alias
-                        }) {
+                        }) && !names_a_namespace(
+                            src,
+                            n.child_by_field_name("alias")
+                                .map_or_else(|| short(text(name, src)), |a| text(a, src)),
+                        ) {
                             let prefix = named_children(node)
                                 .into_iter()
                                 .find(|c| c.kind() == "namespace_name")
@@ -1648,10 +2389,13 @@ fn collect(node: Node<'_>, src: &[u8], scope: &mut Scope, ns: bool, claims: &mut
                 let is_db = short_name == "DB" || fqn == "Illuminate\\Support\\Facades\\DB";
                 let is_schema =
                     short_name == "Schema" || fqn == "Illuminate\\Support\\Facades\\Schema";
-                let names_table = is_db && method == "table"
-                    || is_schema
-                        && matches!(method, "table" | "drop" | "dropIfExists" | "hasTable");
-                if names_table && let Some(t) = first_string_arg(node, src) {
+                // `Schema::hasTable` and `dropIfExists` are written for a
+                // table that may not be there, so they claim nothing.
+                let names_table =
+                    is_db && method == "table" || is_schema && matches!(method, "table" | "drop");
+                if names_table
+                    && let Some(t) = first_string_arg(node, src).and_then(|t| table_claim(&t))
+                {
                     claims.tables.push(t);
                 }
                 if !is_db && !is_schema {
@@ -1752,6 +2496,46 @@ const COLUMN_METHODS: &[&str] = &[
     "orWhereColumn",
 ];
 
+/// Methods that run the query and hand back its rows or a value: what is
+/// chained after them works on a collection, a model or a number, so
+/// `->get()->pluck('owner')->firstWhere('type', 1)` names no column.
+const RESULT_METHODS: &[&str] = &[
+    "get",
+    "all",
+    "first",
+    "firstOrFail",
+    "firstOr",
+    "firstWhere",
+    "firstOrCreate",
+    "firstOrNew",
+    "updateOrCreate",
+    "create",
+    "find",
+    "findOrFail",
+    "findOrNew",
+    "findMany",
+    "findOr",
+    "sole",
+    "pluck",
+    "value",
+    "paginate",
+    "simplePaginate",
+    "cursorPaginate",
+    "cursor",
+    "lazy",
+    "lazyById",
+    "count",
+    "exists",
+    "doesntExist",
+    "sum",
+    "avg",
+    "average",
+    "min",
+    "max",
+    "collect",
+    "toArray",
+];
+
 /// Methods taking raw SQL as the first argument.
 const RAW_METHODS: &[&str] = &[
     "orderByRaw",
@@ -1762,6 +2546,53 @@ const RAW_METHODS: &[&str] = &[
     "orHavingRaw",
     "groupByRaw",
 ];
+
+/// Whether a static call on a model starts a query on its table
+/// (`Order::where(…)`, `Order::query()`, `Order::with(…)`), as opposed to a
+/// static method the model declares itself.
+fn starts_query(method: &str) -> bool {
+    COLUMN_METHODS.contains(&method)
+        || RAW_METHODS.contains(&method)
+        || RESULT_METHODS.contains(&method)
+        || [
+            "where", "orWhere", "with", "without", "orderBy", "find", "first", "has",
+        ]
+        .iter()
+        .any(|p| method.starts_with(p))
+        || matches!(
+            method,
+            "query"
+                | "newQuery"
+                | "newModelQuery"
+                | "on"
+                | "from"
+                | "join"
+                | "leftJoin"
+                | "rightJoin"
+                | "crossJoin"
+                | "distinct"
+                | "limit"
+                | "take"
+                | "skip"
+                | "offset"
+                | "lockForUpdate"
+                | "sharedLock"
+                | "when"
+                | "unless"
+                | "doesntHave"
+                | "onlyTrashed"
+                | "inRandomOrder"
+                | "having"
+                | "chunk"
+                | "chunkById"
+                | "each"
+                | "insert"
+                | "upsert"
+                | "forceCreate"
+                | "truncate"
+                | "destroy"
+        )
+}
 
 /// A call chain is analysed once, at its outermost call.
 fn is_chain_top(node: Node<'_>) -> bool {
@@ -1787,6 +2618,9 @@ fn is_chain_top(node: Node<'_>) -> bool {
 enum ChainRoot {
     Model(String),
     Table(String),
+    /// A query on a table the chain does not name (`$query->where(…)` in a
+    /// scope or a `whereHas` closure).
+    Query,
     Unknown,
 }
 
@@ -1858,6 +2692,49 @@ fn qualified_identifiers(sql: &str) -> Vec<String> {
     out
 }
 
+/// `use Filament\Actions;` then `Actions\CreateAction::make()`: the import is
+/// of a namespace, not a class, when the file goes on from it with a `\`.
+fn names_a_namespace(src: &[u8], alias: &str) -> bool {
+    let src = String::from_utf8_lossy(src);
+    let needle = format!("{alias}\\");
+    src.match_indices(&needle).any(|(i, _)| {
+        let before = src[..i].chars().next_back();
+        let after = src[i + needle.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '\\')
+            && after.is_some_and(|c| c.is_alphabetic() || c == '_')
+    })
+}
+
+/// The table a `DB::table(...)` argument names: `orders as o` is `orders`.
+/// None for the database's own catalogs (`pg_class`, `information_schema.x`,
+/// `sqlite_master`), which no migration creates, and for anything that is
+/// not a plain name.
+fn table_claim(raw: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let name = match lower.find(" as ") {
+        Some(i) => &raw[..i],
+        None => raw,
+    }
+    .trim();
+    let l = name.to_ascii_lowercase();
+    let catalog = [
+        "pg_",
+        "sqlite_",
+        "information_schema.",
+        "performance_schema.",
+        "mysql.",
+        "sys.",
+    ]
+    .iter()
+    .any(|p| l.starts_with(p));
+    (!name.is_empty()
+        && !catalog
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+    .then(|| name.to_owned())
+}
+
 /// A column name as written in a query argument, or None when it is an expression.
 fn column_name(raw: &str) -> Option<String> {
     let lower = raw.to_ascii_lowercase();
@@ -1908,6 +2785,7 @@ fn analyze_chain(top: Node<'_>, src: &[u8], scope: &Scope, ns: bool, claims: &mu
                             break call_args(node)
                                 .first()
                                 .and_then(|a| string_value(*a, src))
+                                .and_then(|t| table_claim(&t))
                                 .map_or(ChainRoot::Unknown, ChainRoot::Table);
                         }
                         "raw" | "select" | "selectOne" | "statement" | "unprepared" | "update"
@@ -1922,10 +2800,26 @@ fn analyze_chain(top: Node<'_>, src: &[u8], scope: &Scope, ns: bool, claims: &mu
                         _ => break ChainRoot::Unknown,
                     }
                 }
-                break if short_name == "Schema" {
+                // `Post::categories()->pluck('name')`: a static method of the
+                // model's own may return anything; only a query's own first
+                // calls start a query on the model's table.
+                break if short_name == "Schema" || !starts_query(method) {
                     ChainRoot::Unknown
                 } else {
                     ChainRoot::Model(class)
+                };
+            }
+            // By its name: `$query`, `$q`, `$builder`. `$json->where('data.0.id', …)`
+            // and `$rows->where('user.name', …)` are not SQL.
+            "variable_name" => {
+                let name = text(node, src).trim_start_matches('$').to_lowercase();
+                break if name.contains("query")
+                    || name.contains("builder")
+                    || matches!(name.as_str(), "q" | "qb" | "join" | "sub" | "relation")
+                {
+                    ChainRoot::Query
+                } else {
+                    ChainRoot::Unknown
                 };
             }
             _ => break ChainRoot::Unknown,
@@ -1935,13 +2829,20 @@ fn analyze_chain(top: Node<'_>, src: &[u8], scope: &Scope, ns: bool, claims: &mu
     let add = |raw: &str, claims: &mut Claims| {
         let Some(col) = column_name(raw) else { return };
         if col.contains('.') {
-            claims.qualified_columns.push(col);
+            // `table.column`, on a query: not a path into JSON or an array.
+            let plain = col.split('.').count() == 2
+                && col
+                    .split('.')
+                    .all(|p| p.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
+            if plain && !matches!(root, ChainRoot::Unknown) {
+                claims.qualified_columns.push(col);
+            }
             return;
         }
         match &root {
             ChainRoot::Model(m) => claims.model_columns.push((m.clone(), col)),
             ChainRoot::Table(t) => claims.columns.push(format!("{t}.{col}")),
-            ChainRoot::Unknown => {}
+            ChainRoot::Query | ChainRoot::Unknown => {}
         }
     };
     for call in calls {
@@ -1957,6 +2858,9 @@ fn analyze_chain(top: Node<'_>, src: &[u8], scope: &Scope, ns: bool, claims: &mu
             continue;
         }
         if !COLUMN_METHODS.contains(&name) {
+            if RESULT_METHODS.contains(&name) {
+                break;
+            }
             continue;
         }
         let all_args = matches!(name, "select" | "addSelect" | "groupBy" | "pluck");
@@ -1989,12 +2893,129 @@ fn analyze_chain(top: Node<'_>, src: &[u8], scope: &Scope, ns: bool, claims: &mu
                 }
             }
         }
+        // `->pluck('payload')->pluck('refund_id')`: the second reads the
+        // values the first returned, not a column.
+        if RESULT_METHODS.contains(&name) {
+            break;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_query_ends_at_its_result() {
+        let c = snippet_claims(
+            r#"<?php
+use App\Models\Placement;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use function Psy\debug;
+use const App\Support\LIMIT;
+use Filament\Actions;
+use Filament\Actions\Action;
+use App\Resources\OrderResource;
+Actions\CreateAction::make();
+OrderResource\Pages\ListOrders::route('/');
+OrderResource::getUrl();
+Placement::query()->where('page_id', 1)->with('block')->get()->pluck('block')->firstWhere('type', 'x');
+Placement::query()->pluck('payload')->pluck('refund_id');
+Placement::categories()->pluck('name', 'id');
+Placement::calendarFor(1)->groupBy('day');
+DB::table('orders as o')->where('total', 5)->first()->update(['gone' => 1]);
+DB::table('pg_class')->where('relname', 'x');
+Schema::dropIfExists('gone');
+Schema::hasTable('maybe');
+Schema::table('kept', fn ($t) => $t);
+"#,
+        );
+        let mc: Vec<String> = c
+            .model_columns
+            .iter()
+            .map(|(m, col)| format!("{m}.{col}"))
+            .collect();
+        assert_eq!(
+            mc,
+            [
+                "App\\Models\\Placement.page_id",
+                "App\\Models\\Placement.payload"
+            ]
+        );
+        assert_eq!(c.columns, ["orders.total"]);
+        assert_eq!(c.tables, ["orders", "kept"]);
+        assert!(
+            !c.classes
+                .iter()
+                .any(|x| x.contains("debug") || x.contains("LIMIT"))
+        );
+        // An import the file goes on from with `\` is a namespace.
+        assert!(
+            !c.classes.contains(&"Filament\\Actions".to_owned()),
+            "{:?}",
+            c.classes
+        );
+        assert!(c.classes.contains(&"Filament\\Actions\\Action".to_owned()));
+        assert!(
+            c.classes
+                .contains(&"Filament\\Actions\\CreateAction".to_owned())
+        );
+        assert_eq!(table_claim("orders AS o").as_deref(), Some("orders"));
+        assert_eq!(table_claim("information_schema.tables"), None);
+        assert_eq!(table_claim("(select 1) as t"), None);
+    }
+
+    #[test]
+    fn packages_without_a_vendor_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("composer.lock"),
+            r#"{"packages":[{"name":"acme/shop","autoload":{"psr-4":{"Acme\\Shop\\":"src/"}}}],
+                "packages-dev":[{"name":"phpunit/phpunit","autoload":{"classmap":["src/"]}},
+                                {"name":"phar-io/manifest","autoload":{"classmap":["src/"]}}]}"#,
+        )
+        .unwrap();
+        let l = locked_namespaces(dir.path());
+        assert_eq!(
+            l.namespaces,
+            [("Acme\\Shop\\".to_owned(), "acme/shop".to_owned())]
+        );
+        let vendors: Vec<&str> = l.unmapped.iter().map(|(v, _)| v.as_str()).collect();
+        assert_eq!(vendors, ["phpunit", "phario"]);
+
+        // Composer's own lists, when the packages are installed.
+        let composer = dir.path().join("vendor/composer");
+        std::fs::create_dir_all(&composer).unwrap();
+        std::fs::write(
+            composer.join("autoload_files.php"),
+            "<?php\nreturn array(\n    'abc' => $vendorDir . '/mockery/mockery/library/Mockery.php',\n);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            autoloaded_file(&composer.join("autoload_files.php"), "Mockery").as_deref(),
+            Some("vendor/mockery/mockery/library/Mockery.php")
+        );
+        assert_eq!(
+            autoloaded_file(&composer.join("autoload_files.php"), "Mock"),
+            None
+        );
+
+        // Global names the app registers for classes.
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(
+            dir.path().join("config/app.php"),
+            "<?php\nreturn [\n    'name' => 'Shop',\n    'aliases' => [\n        'OneSignal' => Berkayk\\OneSignal\\OneSignalFacade::class,\n        \"Zip\" => 'ZanySoft\\Zip\\Facades\\Zip',\n    ],\n];\n",
+        )
+        .unwrap();
+        assert_eq!(
+            registered_alias(dir.path(), "OneSignal"),
+            Some("config/app.php")
+        );
+        assert_eq!(registered_alias(dir.path(), "Zip"), Some("config/app.php"));
+        assert_eq!(registered_alias(dir.path(), "name"), None);
+        assert_eq!(registered_alias(dir.path(), "Signal"), None);
+    }
 
     #[test]
     fn query_columns_and_raw_sql() {

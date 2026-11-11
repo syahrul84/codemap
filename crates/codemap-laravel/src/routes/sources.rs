@@ -29,7 +29,24 @@ pub fn extract_static(root: &Path, detection: &Detection) -> StaticRoutes {
         ev.provider(&provider.file, &provider.fqn);
         sources.push(format!("{} ({})", provider.fqn, provider.file));
     }
-    if sources.is_empty() {
+    // Any other service provider may register routes too: a group of its
+    // own, a package's route file it requires, a route file it maps.
+    let before = ev.routes.len();
+    for provider in &detection.service_providers {
+        let had = ev.routes.len();
+        ev.provider(&provider.file, &provider.fqn);
+        if ev.routes.len() > had {
+            sources.push(format!("{} ({})", provider.fqn, provider.file));
+        }
+    }
+    // A provider that maps the app's route files stands in for the
+    // conventional ones; one that only adds a few routes does not.
+    let maps_route_files = ev.routes[before..]
+        .iter()
+        .any(|r| r.file.as_deref().is_some_and(|f| f.starts_with("routes/")));
+    let declared = detection.with_routing && sources.iter().any(|s| s.contains("withRouting"))
+        || !detection.route_providers.is_empty();
+    if !declared && !maps_route_files {
         let mut found = false;
         if root.join("routes/api.php").is_file() {
             let api = Group {
@@ -55,6 +72,16 @@ pub fn extract_static(root: &Path, detection: &Detection) -> StaticRoutes {
                     .into(),
             });
         }
+    }
+
+    // Laravel MCP loads `routes/ai.php` itself, where `Mcp::web('/mcp/x', …)`
+    // registers the servers a client reaches over HTTP.
+    if root.join("routes/ai.php").is_file()
+        && super::packages::major(root, "laravel/mcp").is_some()
+        && !ev.files.contains("routes/ai.php")
+    {
+        ev.route_file("routes/ai.php", &Group::default());
+        sources.push("routes/ai.php (loaded by laravel/mcp)".to_owned());
     }
 
     // A file reached from two sources (mixed layout) registers its routes once.

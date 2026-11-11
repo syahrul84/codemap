@@ -534,6 +534,36 @@ async fn wrong_answers_are_reported_by_call_id() {
         "{err:?}"
     );
     client.cancel().await.unwrap();
+
+    // `codemap reports --send <id>` shows what would be sent, and sends
+    // only when a person confirms at a terminal: a piped "y" is refused.
+    let report = saved["data"]["report_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("report id in {saved}"))
+        .to_owned();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_codemap"))
+        .env("CODEMAP_NO_UPDATE_CHECK", "1")
+        .args(["--data-dir", data.path().to_str().unwrap()])
+        .args(["--project-id", "mcp-test", "reports", "--project"])
+        .arg(fixture("laravel11-slim"))
+        .args(["--send", &report])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write as _;
+        child.stdin.take().unwrap().write_all(b"y\n").unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        shown.contains("Title:") && shown.contains("Not sent: confirming needs a terminal"),
+        "{shown}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!shown.contains("Sent: "), "{shown}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

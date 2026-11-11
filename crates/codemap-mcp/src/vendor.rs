@@ -93,7 +93,14 @@ pub fn find_method(root: &Path, classes: &[String], method: &str) -> Lookup {
     let mut magic: Option<String> = None;
     let mut unknown = false;
     while let Some(class) = queue.pop() {
-        if checked.iter().any(|c| c.eq_ignore_ascii_case(&class)) || checked.len() > 24 {
+        if checked.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+            continue;
+        }
+        // A class with very many traits (a Filament page): past this many
+        // files the rest is not read, and the answer is "not known", never
+        // "missing".
+        if checked.len() >= 150 {
+            unknown = true;
             continue;
         }
         let Some(file) = class_file(root, &class) else {
@@ -128,7 +135,7 @@ pub fn find_method(root: &Path, classes: &[String], method: &str) -> Lookup {
         if member(method) {
             return Lookup::Found(decl.fqn.clone());
         }
-        if magic.is_none() && member("__call") {
+        if magic.is_none() && (member("__call") || member("__callStatic")) {
             magic = Some(decl.fqn.clone());
         }
         queue.extend(decl.meta.extends.iter().cloned());

@@ -41,6 +41,11 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 pub mod meta_keys {
     pub const SCHEMA_VERSION: &str = "schema_version";
     pub const INDEXED_AT: &str = "indexed_at";
+    /// When the last scan started and when the refresh it began was done
+    /// (nanoseconds since the epoch): a file written in between may have
+    /// been read half-written.
+    pub const SCAN_STARTED_NS: &str = "scan_started_ns";
+    pub const REFRESH_DONE_NS: &str = "refresh_done_ns";
     pub const GIT_COMMIT: &str = "git_commit";
     pub const GIT_DIRTY: &str = "git_dirty";
     pub const PROJECT_ROOT: &str = "project_root";

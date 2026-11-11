@@ -69,6 +69,68 @@ pub fn resolve_project_id(explicit: Option<&str>, root: &Path) -> Result<String>
     Ok(short_hash(&format!("path:{canonical}")))
 }
 
+/// [`resolve_project_id`], with an index of its own for a second checkout of
+/// the same repository (another clone, a git worktree). Both have the same
+/// remote and first commit, so by that alone they would share one index and
+/// each would undo the other's: every call re-reads what differs, and an
+/// answer given before that is done describes the other checkout.
+///
+/// The checkout an index was made for keeps the id; another one, while the
+/// first still exists, gets an id of its own from its path. A project that
+/// moved (the folder it was indexed at is gone) keeps its index. In Docker
+/// the project is always at the mount point, so nothing changes there.
+pub fn resolve_project_id_in(
+    explicit: Option<&str>,
+    root: &Path,
+    data_dir: &Path,
+) -> Result<String> {
+    let id = resolve_project_id(explicit, root)?;
+    if explicit.is_some() || crate::updates::in_docker() {
+        return Ok(id);
+    }
+    let here = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // The indexes under this id: the project's own, and one per app when it
+    // is a workspace (`<id>-backend`).
+    let mut dirs = vec![data_dir.join(&id)];
+    for entry in std::fs::read_dir(data_dir).into_iter().flatten().flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!("{id}-"))
+        {
+            dirs.push(entry.path());
+        }
+    }
+    let recorded: Vec<PathBuf> = dirs
+        .iter()
+        .filter_map(|d| recorded_root(&d.join(INDEX_FILE)))
+        .collect();
+    let ours = |r: &PathBuf| r == &here || r.starts_with(&here);
+    if recorded.is_empty() || recorded.iter().any(ours) || !recorded.iter().any(|r| r.is_dir()) {
+        return Ok(id);
+    }
+    Ok(short_hash(&format!("{id}\npath:{}", here.display())))
+}
+
+/// The folder an index was made for, as it says itself.
+fn recorded_root(index: &Path) -> Option<PathBuf> {
+    if !index.is_file() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        index,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        [crate::store::meta_keys::PROJECT_ROOT],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .map(PathBuf::from)
+}
+
 /// The id becomes a directory name, so keep it to a safe character set.
 pub fn validate_project_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
@@ -153,6 +215,87 @@ mod tests {
         let back = resolve_project_id(None, &dir.path().join("backend")).unwrap();
         assert_ne!(front, back);
         assert_ne!(top, front);
+    }
+
+    #[test]
+    fn a_second_checkout_gets_its_own_index() {
+        let base = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let first = base.path().join("first");
+        std::fs::create_dir(&first).unwrap();
+        git(&first, &["init", "-q"]);
+        std::fs::write(first.join("a"), "a").unwrap();
+        git(&first, &["add", "."]);
+        git(&first, &["commit", "-qm", "x"]);
+        git(
+            &first,
+            &["remote", "add", "origin", "https://example.test/shop.git"],
+        );
+        // Another clone of the same repository, and a worktree of the first.
+        let second = base.path().join("second");
+        git(base.path(), &["clone", "-q", "first", "second"]);
+        git(
+            &second,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.test/shop.git",
+            ],
+        );
+        let tree = base.path().join("tree");
+        git(&first, &["worktree", "add", "-q", "../tree"]);
+
+        // Nothing indexed yet: all three would use the same id.
+        let id = resolve_project_id_in(None, &first, data.path()).unwrap();
+        assert_eq!(resolve_project_id(None, &second).unwrap(), id);
+        // The first is indexed: it keeps the id, the others get their own.
+        let store = crate::Store::open(&index_path(data.path(), &id)).unwrap();
+        store
+            .set_meta(
+                crate::store::meta_keys::PROJECT_ROOT,
+                &first.canonicalize().unwrap().to_string_lossy(),
+            )
+            .unwrap();
+        drop(store);
+        assert_eq!(
+            resolve_project_id_in(None, &first, data.path()).unwrap(),
+            id
+        );
+        let other = resolve_project_id_in(None, &second, data.path()).unwrap();
+        let worktree = resolve_project_id_in(None, &tree, data.path()).unwrap();
+        assert_ne!(other, id);
+        assert_ne!(worktree, id);
+        assert_ne!(worktree, other);
+        assert_eq!(
+            resolve_project_id_in(None, &second, data.path()).unwrap(),
+            other
+        );
+        // An explicit id is used as given.
+        assert_eq!(
+            resolve_project_id_in(Some("mine"), &second, data.path()).unwrap(),
+            "mine"
+        );
+        // The first is gone (the project moved): its index goes with it.
+        std::fs::rename(&first, base.path().join("moved")).unwrap();
+        assert_eq!(
+            resolve_project_id_in(None, &second, data.path()).unwrap(),
+            id
+        );
     }
 
     #[test]

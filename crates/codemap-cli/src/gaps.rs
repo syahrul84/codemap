@@ -532,9 +532,11 @@ pub fn backfill(data_dir: &Path, history: &Path, since: &str) -> std::io::Result
                     .as_deref()
                     .is_some_and(|from| second(at).as_str() >= from)
                     || !crate::setup::is_code_search(tool, &part["input"], &[])
+                    // By the call's own id: the copy in a resumed session
+                    // carries the new session's name.
                     || part["id"]
                         .as_str()
-                        .is_some_and(|id| !seen_calls.insert(format!("{session}:{id}")))
+                        .is_some_and(|id| !seen_calls.insert(id.to_owned()))
                 {
                     continue;
                 }
@@ -620,9 +622,19 @@ fn norm(area: &str) -> String {
     area.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The app of a workspace that `dir` (an area's folders) is in, if any.
+fn app_of<'a>(dir: &str, apps: &'a [String]) -> Option<&'a str> {
+    apps.iter()
+        .map(String::as_str)
+        .filter(|a| dir == *a || dir.starts_with(&format!("{a}/")))
+        .max_by_key(|a| a.len())
+}
+
 /// The area a target belongs to: its first two folders and its file type.
 /// `resources/views/orders/index.blade.php` → `resources/views  *.blade.php`.
-fn area_of(target: &str, cwd: &Path, root: &Path) -> Option<String> {
+/// In a workspace (`apps`: each app's folder from the root) the two folders
+/// are counted inside the app: `backend/app/Http  *.php`.
+fn area_of(target: &str, cwd: &Path, root: &Path, apps: &[String]) -> Option<String> {
     let t = target.trim();
     // A shell variable (`$f`) says nothing about where the search looked.
     // Nor does the home folder: it is not this project's.
@@ -654,9 +666,10 @@ fn area_of(target: &str, cwd: &Path, root: &Path) -> Option<String> {
             _ => None,
         })
         .collect();
+    let app = app_of(&parts.join("/"), apps).map_or(0, |a| a.split('/').count());
     // A git worktree is a copy of the project: its folders are the project's.
-    if parts.len() > 2 && matches!(parts[0].as_str(), ".worktrees" | "worktrees") {
-        parts.drain(..2);
+    if parts.len() > app + 2 && matches!(parts[app].as_str(), ".worktrees" | "worktrees") {
+        parts.drain(app..app + 2);
     }
     let last = parts.last().cloned().unwrap_or_default();
     let is_glob = last.contains('*');
@@ -680,7 +693,7 @@ fn area_of(target: &str, cwd: &Path, root: &Path) -> Option<String> {
     let dirs: Vec<String> = parts
         .into_iter()
         .take_while(|p| !p.contains('*'))
-        .take(2)
+        .take(app + 2)
         .collect();
     let dir = if dirs.is_empty() {
         "(whole project)".to_owned()
@@ -853,7 +866,17 @@ pub fn set_ignored(data_dir: &Path, root: &Path, area: &str, set: bool) -> std::
 /// The areas searched without codemap, most searched first. `reads` says
 /// whether codemap reads that kind of file at all (`null`: a folder of
 /// mixed files); `not_scanned` that the folder is outside `[scan] include`.
-pub fn report(data_dir: &Path, root: &Path, since: &str, unscanned: &[String]) -> Value {
+///
+/// `unscanned`: folders the scan does not read, from the root (`docs`, or
+/// `backend/docs` in a workspace). `apps`: the folders of a workspace's apps
+/// from the root; empty for a project that is one app.
+pub fn report(
+    data_dir: &Path,
+    root: &Path,
+    since: &str,
+    unscanned: &[String],
+    apps: &[String],
+) -> Value {
     #[derive(Default)]
     struct Area {
         searches: u64,
@@ -873,8 +896,21 @@ pub fn report(data_dir: &Path, root: &Path, since: &str, unscanned: &[String]) -
             Some((d, k)) => (d, Some(k)),
             None => (key, None),
         };
-        let first = dir.split('/').next().unwrap_or_default();
-        if unscanned.iter().any(|u| u.trim_end_matches('/') == first) {
+        // The folder the scan decides on: the first one, inside the app
+        // when the project is a workspace.
+        let app = app_of(dir, apps);
+        let inside = app.map_or(dir, |a| dir[a.len()..].trim_start_matches('/'));
+        let first = inside.split('/').next().unwrap_or_default();
+        let folder = match app {
+            Some(a) if !first.is_empty() => format!("{a}/{first}"),
+            Some(a) => a.to_owned(),
+            None => first.to_owned(),
+        };
+        if unscanned.iter().any(|u| u.trim_end_matches('/') == folder) {
+            return "not_scanned";
+        }
+        // A folder of the workspace that is no app's is read by none.
+        if app.is_none() && !apps.is_empty() && dir != "(whole project)" {
             return "not_scanned";
         }
         match kind.and_then(|k| k.strip_prefix("*.")) {
@@ -911,7 +947,7 @@ pub fn report(data_dir: &Path, root: &Path, since: &str, unscanned: &[String]) -
         // One search counts once per area it looked in.
         let keys: BTreeSet<String> = targets
             .iter()
-            .filter_map(|t| area_of(t, &cwd, root))
+            .filter_map(|t| area_of(t, &cwd, root, apps))
             .collect();
         if keys.is_empty() {
             continue;
@@ -1081,7 +1117,7 @@ mod tests {
     #[test]
     fn areas_are_folder_and_type() {
         let root = Path::new("/p");
-        let a = |t: &str| area_of(t, root, root).unwrap();
+        let a = |t: &str| area_of(t, root, root, &[]).unwrap();
         assert_eq!(
             a("resources/views/orders/index.blade.php"),
             "resources/views  *.blade.php"
@@ -1099,9 +1135,9 @@ mod tests {
         assert_eq!(a("app/*Controller*"), "app  (by name)");
         assert_eq!(a("/p/config/app.php"), "config  *.php");
         // Outside the project: not this project's gap.
-        assert_eq!(area_of("/etc/hosts", root, root), None);
-        assert_eq!(area_of("$f", root, root), None);
-        assert_eq!(area_of("../other/src", root, root), None);
+        assert_eq!(area_of("/etc/hosts", root, root, &[]), None);
+        assert_eq!(area_of("$f", root, root, &[]), None);
+        assert_eq!(area_of("../other/src", root, root, &[]), None);
         assert_eq!(a("app/../config/app.php"), "config  *.php");
         assert_eq!(a("app/**/*.php"), "app  *.php");
         // Words the project chose stay out of the kind.
@@ -1112,9 +1148,67 @@ mod tests {
             "app/Models  *.php"
         );
         assert_eq!(
-            area_of("views/a.blade.php", Path::new("/p/resources"), root).unwrap(),
+            area_of("views/a.blade.php", Path::new("/p/resources"), root, &[]).unwrap(),
             "resources/views  *.blade.php"
         );
+    }
+
+    #[test]
+    fn a_workspace_is_counted_app_by_app() {
+        let root = Path::new("/w");
+        let apps = ["backend".to_owned(), "apps/web".to_owned()];
+        let a = |t: &str| area_of(t, root, root, &apps).unwrap();
+        assert_eq!(
+            a("backend/app/Http/Controllers/OrderController.php"),
+            "backend/app/Http  *.php"
+        );
+        assert_eq!(
+            a("backend/.worktrees/fix/app/Models/Order.php"),
+            "backend/app/Models  *.php"
+        );
+        assert_eq!(
+            a("apps/web/src/pages/index.vue"),
+            "apps/web/src/pages  *.vue"
+        );
+        assert_eq!(a("docs/adr/0001.md"), "docs/adr  *.md");
+
+        let data = tempfile::tempdir().unwrap();
+        for cmd in [
+            "grep -rn total backend/app/Models/Order.php",
+            "grep -rn total backend/docs/notes.php",
+            "grep -rn total docs/adr",
+            "grep -rn total apps/web/src/pages/index.vue",
+        ] {
+            record(
+                data.path(),
+                "s1",
+                Some(root),
+                "Bash",
+                &json!({ "command": cmd }),
+            );
+        }
+        let r = report(
+            data.path(),
+            root,
+            "2000-01-01T00:00:00Z",
+            &["backend/docs".to_owned()],
+            &apps,
+        );
+        let status = |area: &str| {
+            r["areas"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["area"] == area)
+                .unwrap_or_else(|| panic!("{area}: {r}"))["codemap"]
+                .clone()
+        };
+        // An app's code is read; a folder the app leaves out is not, nor a
+        // folder of the workspace that belongs to no app.
+        assert_eq!(status("backend/app/Models  *.php"), "read");
+        assert_eq!(status("apps/web/src/pages  *.vue"), "read");
+        assert_eq!(status("backend/docs  *.php"), "not_scanned");
+        assert_eq!(status("docs/adr"), "not_scanned");
     }
 
     #[test]
@@ -1146,7 +1240,7 @@ mod tests {
             "Bash",
             &json!({ "command": "grep -rn x app" }),
         );
-        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[]);
+        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[], &[]);
         assert_eq!(r["searches"], 4, "{r}");
         assert_eq!(r["sessions"], 2, "{r}");
         let areas = r["areas"].as_array().unwrap();
@@ -1199,14 +1293,14 @@ mod tests {
         assert!(issue(&r, "resources/views", 30, None).is_err());
         assert!(issue(&r, "*.md", 30, None).is_err());
         set_sent(data.path(), root, "*.css", "https://example.test/1").unwrap();
-        let again = report(data.path(), root, "2000-01-01T00:00:00Z", &[]);
+        let again = report(data.path(), root, "2000-01-01T00:00:00Z", &[], &[]);
         assert_eq!(
             again["file_types"]["*.css"]["issue"], "https://example.test/1",
             "{again}"
         );
 
         set_ignored(data.path(), root, "resources/views", true).unwrap();
-        let folder = report(data.path(), root, "2000-01-01T00:00:00Z", &[]);
+        let folder = report(data.path(), root, "2000-01-01T00:00:00Z", &[], &[]);
         assert!(
             folder["set_aside"]
                 .as_array()
@@ -1217,7 +1311,7 @@ mod tests {
         );
         set_ignored(data.path(), root, "resources/views", false).unwrap();
         set_ignored(data.path(), root, "resources/css *.css", true).unwrap();
-        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[]);
+        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[], &[]);
         assert!(
             r["areas"]
                 .as_array()
@@ -1227,7 +1321,7 @@ mod tests {
         );
         assert_eq!(r["set_aside"][0]["area"], "resources/css  *.css", "{r}");
         set_ignored(data.path(), root, "resources/css  *.css", false).unwrap();
-        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[]);
+        let r = report(data.path(), root, "2000-01-01T00:00:00Z", &[], &[]);
         assert_eq!(r["set_aside"].as_array().unwrap().len(), 0, "{r}");
     }
 }

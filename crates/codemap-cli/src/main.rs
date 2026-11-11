@@ -160,8 +160,10 @@ enum Command {
         note: Option<String>,
         /// Fill the log from past Claude Code sessions (default folder:
         /// ~/.claude/projects), for the time before the hook noted searches.
+        // A string, not a path: with no folder given the value is empty,
+        // which a path argument refuses.
         #[arg(long, value_name = "FOLDER", num_args = 0..=1, default_missing_value = "")]
-        backfill: Option<PathBuf>,
+        backfill: Option<String>,
         /// Empty the log (every project's).
         #[arg(long)]
         clear: bool,
@@ -447,7 +449,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ignore.as_deref(),
             unignore.as_deref(),
             send.as_deref().map(|s| (s, note.as_deref())),
-            backfill.as_deref(),
+            backfill.as_deref().map(Path::new),
             *clear,
         ),
         Command::Baseline { project, out } => cmd_baseline(&cli, project, out.as_deref()),
@@ -564,7 +566,7 @@ fn cmd_usage(
 fn other_indexes(p: &codemap_mcp::Project, data_dir: &Path) -> Vec<codemap_mcp::Project> {
     let mut ids: Vec<String> = Vec::new();
     if p.app.is_some() {
-        if let Ok(id) = paths::resolve_project_id(None, &p.root) {
+        if let Ok(id) = paths::resolve_project_id_in(None, &p.root, data_dir) {
             ids.push(id);
         }
     } else if let (Some(parent), Some(dir)) = (p.root.parent(), p.root.file_name()) {
@@ -579,7 +581,7 @@ fn other_indexes(p: &codemap_mcp::Project, data_dir: &Path) -> Vec<codemap_mcp::
                 }
             })
             .collect();
-        if let Ok(ws) = paths::resolve_project_id(None, parent) {
+        if let Ok(ws) = paths::resolve_project_id_in(None, parent, data_dir) {
             ids.push(format!("{ws}-{dir}"));
         }
     }
@@ -1036,8 +1038,8 @@ impl Project {
                 index_path: None,
             });
         }
-        let id = paths::resolve_project_id(cli.project_id.as_deref(), &root)?;
         let data_dir = paths::resolve_data_dir(cli.data_dir.clone())?;
+        let id = paths::resolve_project_id_in(cli.project_id.as_deref(), &root, &data_dir)?;
         let projects = codemap_mcp::workspace::projects(&root, config, &data_dir, &id)?;
         for p in &projects {
             tracing::debug!(id = p.id, index = %p.index_path.display(), app = ?p.app, "resolved project");
@@ -1381,7 +1383,8 @@ fn hook_edited(cli: &Cli) -> Option<String> {
     // Only the kinds of file the check reads: anything else costs nothing.
     let name = file.file_name()?.to_string_lossy().to_lowercase();
     if ![
-        ".php", ".vue", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts",
+        ".php", ".vue", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts", ".swift",
+        ".kt", ".kts", ".rs",
     ]
     .iter()
     .any(|e| name.ends_with(e))
@@ -1478,6 +1481,9 @@ fn hook_edited(cli: &Cli) -> Option<String> {
             _ => return None,
         }
     };
+    // Another process may be indexing (a first index takes a while): the
+    // assistant is not kept waiting for it.
+    codemap_mcp::refresh::set_turn_wait(5_000);
     let (store, _) = p.refresh_as(false, "hook").ok()?;
     let found = codemap_mcp::edits::check_edit(&store, &p.mcp(), &rel, &before, &now);
     let data_dir = paths::resolve_data_dir(cli.data_dir.clone()).ok()?;
@@ -1556,9 +1562,40 @@ fn cmd_gaps(
             "added {searches} searches from {sessions} past sessions that used codemap (last {days} days, every project)"
         );
     }
-    let config = Config::load(&root).unwrap_or_default();
-    let unscanned = codemap_core::scan::unscanned_folders(&root, &config);
-    let report = gaps::report(&data_dir, &root, &since, &unscanned);
+    // A workspace is read app by app: what is scanned is each app's own
+    // answer, and a folder that is no app's is read by none.
+    let apps: Vec<(String, Vec<String>)> = Project::resolve(cli, project)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| {
+            let rel = p.root.strip_prefix(&root).ok()?;
+            let name = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            (!name.is_empty()).then(|| {
+                (
+                    name,
+                    codemap_core::scan::unscanned_folders(&p.root, &p.config),
+                )
+            })
+        })
+        .collect();
+    let unscanned: Vec<String> = if apps.is_empty() {
+        let config = Config::load(&root).unwrap_or_default();
+        codemap_core::scan::unscanned_folders(&root, &config)
+    } else {
+        apps.iter()
+            .flat_map(|(app, folders)| {
+                folders
+                    .iter()
+                    .map(move |f| format!("{app}/{}", f.trim_end_matches('/')))
+            })
+            .collect()
+    };
+    let app_names: Vec<String> = apps.into_iter().map(|(name, _)| name).collect();
+    let report = gaps::report(&data_dir, &root, &since, &unscanned, &app_names);
     if let Some((what, note)) = send {
         let projects = Project::resolve(cli, project)?;
         if let Some(why) = projects
@@ -1567,10 +1604,19 @@ fn cmd_gaps(
         {
             anyhow::bail!("sending is off: {why}");
         }
-        let issue = match gaps::issue(&report, what, days, note) {
+        let mut issue = match gaps::issue(&report, what, days, note) {
             Ok(i) => i,
             Err(why) => anyhow::bail!("{why}"),
         };
+        // A second send from the project that reported it is not "another
+        // project": the comment says so.
+        if gaps::sent(&data_dir, &root).contains_key(&issue.kind) {
+            issue.again = issue.again.replacen(
+                "Seen in another project:",
+                "Seen again in the same project:",
+                1,
+            );
+        }
         println!(
             "This goes to https://github.com/{}/issues (counts only, never your folders, file names or search text):\n\nTitle: {}\n\n{}",
             codemap_core::updates::REPO,
@@ -1771,6 +1817,14 @@ fn cmd_reports(
             "This goes to https://github.com/{}/issues (only the made-up example, never your code):\n\nTitle: {title}\n\n{body}",
             codemap_core::updates::REPO
         );
+        // The person decides, at a keyboard: a piped "y" is not a person.
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() {
+            println!(
+                "Not sent: confirming needs a terminal. Run this command yourself to send it."
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
         print!("Send? y/n ");
         use std::io::Write as _;
         std::io::stdout().flush()?;

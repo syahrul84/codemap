@@ -12,6 +12,7 @@ use serde_json::Value;
 pub const HTTP_KERNEL: &str = "Illuminate\\Foundation\\Http\\Kernel";
 pub const ROUTE_SERVICE_PROVIDER: &str =
     "Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider";
+pub const SERVICE_PROVIDER: &str = "Illuminate\\Support\\ServiceProvider";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +51,10 @@ pub struct Detection {
     pub with_routing: bool,
     pub kernels: Vec<ClassRef>,
     pub route_providers: Vec<ClassRef>,
+    /// The project's other service providers: one of them may register
+    /// routes itself (`Route::group(…)` in `AppServiceProvider::boot()`).
+    #[serde(default)]
+    pub service_providers: Vec<ClassRef>,
 }
 
 impl Detection {
@@ -58,6 +63,7 @@ impl Detection {
         let providers: Vec<&str> = self
             .route_providers
             .iter()
+            .chain(&self.service_providers)
             .map(|p| p.file.as_str())
             .collect();
         format!(
@@ -200,6 +206,10 @@ pub fn detect(root: &Path, store: &Store) -> Result<Detection> {
             p.fqn, p.file, p.line
         ));
     }
+    d.service_providers = symbols::descendants(store.conn(), &[SERVICE_PROVIDER])?
+        .into_iter()
+        .filter(|p| !d.route_providers.iter().any(|r| r.fqn == p.fqn))
+        .collect();
     let legacy = !d.kernels.is_empty() || !d.route_providers.is_empty();
 
     d.layout = match (d.with_routing, legacy) {

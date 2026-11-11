@@ -711,4 +711,47 @@ fn gaps_lists_where_searches_went_around_codemap() {
         history.path().to_str().unwrap(),
     ]);
     assert_eq!(r["searches"], 4, "{r}");
+
+    // A resumed session repeats the earlier calls under its own name: the
+    // same call (by its id) is one search.
+    let call = |session: &str| {
+        serde_json::json!({
+            "type": "assistant", "sessionId": session, "cwd": root,
+            "timestamp": "2020-01-02T00:00:00.000Z",
+            "message": { "content": [
+                { "type": "tool_use", "id": "toolu_1", "name": "mcp__codemap__get_symbol", "input": { "name": "Order" } },
+                { "type": "tool_use", "id": "toolu_2", "name": "Bash", "input": { "command": "grep -rn total app/Models" } },
+            ] },
+        })
+        .to_string()
+    };
+    std::fs::write(history.path().join("first.jsonl"), call("first")).unwrap();
+    std::fs::write(history.path().join("resumed.jsonl"), call("resumed")).unwrap();
+    let r = gaps(&[
+        "--days",
+        "3650",
+        "--backfill",
+        history.path().to_str().unwrap(),
+    ]);
+    assert_eq!(r["searches"], 5, "{r}");
+
+    // With no folder it reads `~/.claude/projects` (the home folder comes
+    // from `HOME` on Unix; Windows asks the system, which a test cannot set).
+    if cfg!(unix) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".claude/projects")).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(["--data-dir", data.path().to_str().unwrap(), "gaps"])
+            .arg("--project")
+            .arg(&root)
+            .args(["--backfill", "--json"])
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }

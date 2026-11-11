@@ -198,6 +198,8 @@ pub struct Evaluator<'r> {
     /// Every file read while evaluating (relative paths).
     pub files: BTreeSet<String>,
     stack: Vec<PathBuf>,
+    /// For `'prefix' => config('passport.path', 'oauth')`.
+    config: crate::config_php::ConfigReader,
 }
 
 impl<'r> Evaluator<'r> {
@@ -208,6 +210,7 @@ impl<'r> Evaluator<'r> {
             warnings: Vec::new(),
             files: BTreeSet::new(),
             stack: Vec::new(),
+            config: crate::config_php::ConfigReader::new(root),
         }
     }
 
@@ -607,7 +610,10 @@ impl<'r> Evaluator<'r> {
                     match text(obj, f.src) {
                         "$this" => (Root::This, Vec::new()),
                         "$router" | "$route" => (Root::Route, Vec::new()),
-                        _ => return None,
+                        // `$admin = Route::middleware('auth');` then
+                        // `$admin->get(…)`: the chain goes on from what the
+                        // variable was given.
+                        _ => self.flatten(assigned_before(obj, f.src)?, f)?,
                     }
                 } else {
                     self.flatten(obj, f)?
@@ -615,6 +621,18 @@ impl<'r> Evaluator<'r> {
                 calls.push(call);
                 Some((root, calls))
             }
+            // `$admin = $onOwnHost ? $admin->domain($host) : $admin->prefix('admin');`
+            // either way it is the same registrar: the fallback branch is read.
+            "conditional_expression" => ["alternative", "body"]
+                .iter()
+                .filter_map(|side| n.child_by_field_name(side))
+                .find_map(|side| self.flatten(side, f)),
+            "parenthesized_expression" => self.flatten(named_children(n).into_iter().next()?, f),
+            "variable_name" => match text(n, f.src) {
+                "$this" => None,
+                "$router" | "$route" => Some((Root::Route, Vec::new())),
+                _ => self.flatten(assigned_before(n, f.src)?, f),
+            },
             "scoped_call_expression" => {
                 let scope = text(n.child_by_field_name("scope")?, f.src);
                 let is_route = scope.trim_start_matches('\\') == "Route"
@@ -627,9 +645,12 @@ impl<'r> Evaluator<'r> {
 
     fn chain(&mut self, n: Node<'_>, g: &Group, f: &mut FileCtx<'_>) {
         let Some((root, calls)) = self.flatten(n, f) else {
+            self.package_registrar(n, g, f);
             return;
         };
-        let line = start_line(calls[0].node);
+        // The line of this statement: a chain that goes on from a variable
+        // has its first call on an earlier line.
+        let line = start_line(n);
         if root == Root::This {
             // RouteServiceProvider: `$this->routes(fn)`, `$this->loadRoutesFrom(path)`.
             let call = &calls[0];
@@ -652,6 +673,11 @@ impl<'r> Evaluator<'r> {
         let Some(i) = calls.iter().position(|c| is_registration(&c.name)) else {
             return; // Route::pattern(), Route::bind(), Route::macro(), ...
         };
+        // `$home = Route::get('/', …);` registered the route where it was
+        // written; `$home->name('home')` later is not a second route.
+        if calls[i].node.end_byte() <= n.start_byte() {
+            return;
+        }
         let mut group = g.clone();
         let mut unknown = Vec::new();
         for c in &calls[..i] {
@@ -671,6 +697,68 @@ impl<'r> Evaluator<'r> {
             }
             _ => self.verb_call(reg, post, group, f, line, unknown),
         }
+    }
+
+    /// `Mcp::web('/mcp/admin', AdminServer::class)->name('mcp.admin')` in a
+    /// route file: a package's own call that registers a route. Which verbs
+    /// it answers is the package's business, so the route is kept as
+    /// answering any; its path, name and middleware are as written.
+    fn package_registrar(&mut self, n: Node<'_>, g: &Group, f: &mut FileCtx<'_>) -> Option<()> {
+        if !f.rel.starts_with("routes/") {
+            return None;
+        }
+        let mut calls = Vec::new();
+        let mut node = n;
+        while node.kind() != "scoped_call_expression" {
+            if !matches!(
+                node.kind(),
+                "member_call_expression" | "nullsafe_member_call_expression"
+            ) {
+                return None;
+            }
+            calls.push(self.call(node, f)?);
+            node = node.child_by_field_name("object")?;
+        }
+        calls.reverse();
+        let scope = node.child_by_field_name("scope")?;
+        if !matches!(scope.kind(), "name" | "qualified_name")
+            || matches!(text(scope, f.src), "self" | "static" | "parent")
+        {
+            return None;
+        }
+        let class = f
+            .scope
+            .resolve_class(text(scope, f.src))
+            .unwrap_or_else(|| text(scope, f.src).to_owned());
+        let reg = self.call(node, f)?;
+        // A path, written as one: `'/mcp/admin'`.
+        let uri = match reg.arg(0, "").map(|a| self.eval(a, f)) {
+            Some(Val::Str(u)) if u.starts_with('/') && u.len() > 1 => u,
+            _ => return None,
+        };
+        let served = match reg.arg(1, "").map(|a| self.eval(a, f)) {
+            Some(Val::Class(c)) => format!("({c})"),
+            _ => String::new(),
+        };
+        let mut group = g.clone();
+        // What the package's own methods mean is not known; `name`,
+        // `middleware`, `prefix` and `domain` mean what they always do.
+        let mut ignored = Vec::new();
+        for c in &calls {
+            self.apply_attr(&mut group, c, f, &mut ignored);
+        }
+        let r = RouteDef {
+            // The verbs the package's method registers, read from its code
+            // when it is installed; any verb otherwise.
+            methods: package_verbs(self.root, &class, &reg.name).unwrap_or_else(|| strings(ANY)),
+            uri: join_uri(&group.prefix, &uri),
+            name: (!group.as_.is_empty()).then(|| group.as_.clone()),
+            action_kind: ActionKind::Controller,
+            action_raw: Some(format!("{class}::{}{served}", reg.name)),
+            ..RouteDef::default()
+        };
+        self.finish(r, &group, f, start_line(n), &[], None);
+        Some(())
     }
 
     /// Applies a registrar attribute (`prefix`, `name`, `middleware`, ...).
@@ -901,7 +989,8 @@ impl<'r> Evaluator<'r> {
             .or_else(|| (!unknown.is_empty()).then(|| unknown_reason(unknown)))
             .or(reason)
             .or(r.unresolved_reason);
-        if g.conditional {
+        // A package's own route file is not the project's to fix.
+        if g.conditional && !f.rel.starts_with("vendor/") {
             self.warn(
                 Some(&f.rel),
                 Some(line),
@@ -1329,6 +1418,31 @@ impl<'r> Evaluator<'r> {
                     .child_by_field_name("function")
                     .map(|c| text(c, f.src).trim_start_matches('\\'))
                     .unwrap_or("");
+                if fname == "config" {
+                    let args: Vec<Node<'t>> = n
+                        .child_by_field_name("arguments")
+                        .map(|a| {
+                            named_children(a)
+                                .into_iter()
+                                .filter_map(|a| named_children(a).into_iter().next())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if let Some(Val::Str(key)) = args.first().map(|a| self.eval(*a, f)) {
+                        if let Some(set) = self
+                            .config
+                            .get(&key)
+                            .and_then(|v| v.value.as_str().map(str::to_owned))
+                        {
+                            return Val::Str(set);
+                        }
+                        // Not set in the project: the default the call gives.
+                        if let Some(default) = args.get(1) {
+                            return self.eval(*default, f);
+                        }
+                    }
+                    return Val::Dynamic("config()".into());
+                }
                 let base = match fname {
                     "base_path" => "",
                     "app_path" => "app",
@@ -1545,6 +1659,7 @@ fn assigned_before<'t>(var: Node<'t>, src: &[u8]) -> Option<Node<'t>> {
             )
             && text(l, src) == name
             && r.end_byte() <= var.start_byte()
+            && !in_other_branch(n, var)
             && best.is_none_or(|b| n.start_byte() > b.start_byte())
         {
             best = Some(r);
@@ -1552,6 +1667,121 @@ fn assigned_before<'t>(var: Node<'t>, src: &[u8]) -> Option<Node<'t>> {
         stack.extend(named_children(n));
     }
     best
+}
+
+/// The verbs a package's method registers (`Mcp::web` → `POST`): the method
+/// of that name in the package's own folder, read for `Route::post(…)` and
+/// the like. The route the method hands back (`$route = Router::post(…)`,
+/// `return Route::get(…)`) is the one a name and middleware are put on, so
+/// its verb is the answer when there is one; else every verb found. `None`
+/// when the package is not installed or the method registers nothing.
+fn package_verbs(root: &Path, class: &str, method: &str) -> Option<Vec<String>> {
+    let map = std::fs::read_to_string(root.join("vendor/composer/autoload_psr4.php")).ok()?;
+    // 'Laravel\\Mcp\\' => array($vendorDir . '/laravel/mcp/src'),
+    let mut dir: Option<(usize, PathBuf)> = None;
+    for line in map.lines() {
+        let line = line.trim();
+        let Some((prefix, dirs)) = line.strip_prefix('\'').and_then(|r| r.split_once("' =>"))
+        else {
+            continue;
+        };
+        let prefix = prefix.replace("\\\\", "\\");
+        if !class.starts_with(&prefix) || !dirs.contains("$vendorDir") {
+            continue;
+        }
+        let Some(sub) = dirs.split('\'').nth(1) else {
+            continue;
+        };
+        if dir.as_ref().is_none_or(|(len, _)| prefix.len() < *len) {
+            // The shortest prefix: the package's whole source folder.
+            dir = Some((
+                prefix.len(),
+                root.join("vendor").join(sub.trim_start_matches('/')),
+            ));
+        }
+    }
+    let (_, dir) = dir?;
+    let needle = format!("function {method}(");
+    let (mut primary, mut all) = (Vec::new(), Vec::new());
+    let mut stack = vec![dir];
+    let mut read = 0;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().is_none_or(|x| x != "php") || read > 600 {
+                continue;
+            }
+            read += 1;
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            for (at, _) in text.match_indices(&needle) {
+                let body = &text[at + needle.len()..];
+                let body = &body[..body.find("function ").unwrap_or(body.len())];
+                for line in body.lines() {
+                    let l = line.trim().to_lowercase();
+                    for verb in ["get", "post", "put", "patch", "delete", "options", "any"] {
+                        for registrar in ["route::", "router::", "->router->"] {
+                            let call = format!("{registrar}{verb}(");
+                            if !l.contains(&call) {
+                                continue;
+                            }
+                            let verb = verb.to_uppercase();
+                            if l.starts_with("return ") || l.contains(&format!("= {call}")) {
+                                primary.push(verb.clone());
+                            }
+                            all.push(verb);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut verbs = if primary.is_empty() { all } else { primary };
+    verbs.sort();
+    verbs.dedup();
+    if verbs.is_empty() {
+        return None;
+    }
+    if verbs.iter().any(|v| v == "ANY") {
+        return Some(strings(ANY));
+    }
+    if verbs.iter().any(|v| v == "GET") && !verbs.iter().any(|v| v == "HEAD") {
+        verbs.insert(1.min(verbs.len()), "HEAD".into());
+    }
+    Some(verbs)
+}
+
+/// Whether `assignment` sits in one branch of an `if` and `var` in another:
+/// `if ($own) { $r = $r->domain($host); } else { $r = $r->prefix('admin'); }`.
+/// What the `if` branch assigned is not what the `else` branch reads.
+fn in_other_branch(assignment: Node<'_>, var: Node<'_>) -> bool {
+    let holds = |n: Node<'_>| n.start_byte() <= var.start_byte() && var.end_byte() <= n.end_byte();
+    let mut branch = assignment;
+    while let Some(parent) = branch.parent() {
+        let is_branch = matches!(branch.kind(), "else_clause" | "else_if_clause")
+            || (parent.kind() == "if_statement"
+                && parent.child_by_field_name("body").map(|b| b.id()) == Some(branch.id()));
+        if is_branch {
+            // The whole `if`, from its first branch to its last.
+            let mut whole = parent;
+            while whole.kind() != "if_statement" {
+                match whole.parent() {
+                    Some(p) => whole = p,
+                    None => break,
+                }
+            }
+            if holds(whole) && !holds(branch) {
+                return true;
+            }
+        }
+        branch = parent;
+    }
+    false
 }
 
 #[cfg(test)]
