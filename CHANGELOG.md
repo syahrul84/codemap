@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-19
+
 From a day of real use on a Vue 3 app and its Laravel API (documentation and test writing with several AI workers):
 
 - The search hook no longer refuses a search codemap cannot answer. A search that only names files that are not code (`grep -n echo package.json`, `--include=*.json`, `-g '*.yml'`, `find . -name '*.conf'`, `.env.example`, `.gitignore`, a Dockerfile, the Grep tool's `glob` / `type`, the Glob tool's pattern) or only a folder or file the index holds nothing of (generated documentation, build output) goes through without a codemap call first, also after `cd folder &&`. It is still noted for `codemap gaps`. A search that names code and other files together, or no file at all, is treated as before. Quotes are read properly now: `grep "a|b" file` is one search, not a pipe.
