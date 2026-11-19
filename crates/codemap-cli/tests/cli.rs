@@ -437,6 +437,81 @@ fn search_hook_refuses_until_codemap_was_used() {
     assert_eq!(run("check", ""), "");
 }
 
+/// A search codemap cannot answer needs no codemap call first: files that
+/// are not code, and folders the index holds nothing of.
+#[test]
+fn search_hook_lets_through_what_codemap_cannot_answer() {
+    use std::io::Write as _;
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let (src, dst) = (entry.path(), to.join(entry.file_name()));
+            if src.is_dir() {
+                copy(&src, &dst);
+            } else {
+                std::fs::copy(&src, &dst).unwrap();
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    copy(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/laravel11-slim"),
+        dir.path(),
+    );
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("document/assets")).unwrap();
+    std::fs::write(root.join("document/index.html"), "<p>guide</p>").unwrap();
+    std::fs::write(root.join("document/assets/app.js"), "var built = 1").unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let scanned = codemap(&[
+        "--data-dir",
+        data_dir,
+        "scan",
+        "--project",
+        root.to_str().unwrap(),
+    ]);
+    assert!(scanned.status.success());
+    let check = |command: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_codemap"))
+            .args(["--data-dir", data_dir, "hook", "check"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let call = serde_json::json!({
+            "session_id": "fresh", "tool_name": "Bash", "cwd": root,
+            "tool_input": { "command": command },
+        });
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(call.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // No codemap call has happened in this session.
+    assert!(check("grep -rn Customer app/").contains("deny"));
+    assert!(check("grep -rn Customer .").contains("deny"));
+    for passes in [
+        "grep -n laravel composer.json",
+        "grep -rn APP_ --include=*.env .",
+        "find . -name '*.yml'",
+        "grep -rn guide document/",
+        "grep -n built document/assets/app.js",
+        "cd document && grep -rn guide assets",
+    ] {
+        assert_eq!(check(passes), "", "{passes}");
+    }
+    // What passed is still noted as a search that went around codemap.
+    let log = std::fs::read_to_string(data.path().join("hooks.jsonl")).unwrap();
+    assert_eq!(log.matches("search_allowed").count(), 6, "{log}");
+    assert_eq!(log.matches("search_refused").count(), 2, "{log}");
+}
+
 /// #34: `codemap setup` writes the rule block and hook pair, `--check` sees
 /// them, `--remove` takes them out and leaves the rest of the files alone.
 #[test]

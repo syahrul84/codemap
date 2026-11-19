@@ -36,9 +36,12 @@ before creating any class, method or helper and reuse what exists. Call get_sche
 queries, migrations or model code; never assume column names. Prefer get_symbol over reading whole \
 files. For Vue, Nuxt, React, SwiftUI or Compose code, or a Blade template, call get_component before using or changing a \
 component, list_pages for screens, api_usage for HTTP calls, and search_symbol for composables and \
-stores; Swift, Kotlin and Rust types and members go through the same tools. Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true, re-check files directly. found: false means it does not exist \
+stores; Swift, Kotlin and Rust types and members go through the same tools. Before adding, upgrading or removing a dependency, call project_overview with packages: \"all\" or package: \"name\" (what is installed, what uses it). Call verify with every class, method, route, table and column your change relies on before finishing. After editing, call find_usages with git_changes: true (or changed_files) for one summary of what the change affects and the exact commands to run only the affected tests. If the project is a workspace (several apps), every tool takes an optional `app`; without it, all apps are searched. If a response has stale: true the index is being updated (its warning says how far along): ask again in a few seconds, or re-check files directly. found: false means it does not exist \
 in the project, unless the answer lists not_scanned folders (code that is not indexed). If an answer turns out wrong after you checked the files, report it once with \
 report_wrong_answer (pass its meta.call_id), then carry on.";
+
+/// Why a refresh starts without a tool call asking for it.
+const HEAD_MOVED: &str = "git's HEAD moved (a branch switch, pull or rebase)";
 
 /// One indexed project (the root, or one app of a workspace).
 struct App {
@@ -126,6 +129,11 @@ struct Shared {
     /// Held while a refresh runs, so a call never answers "fresh" from an
     /// index that is still being updated (e.g. by the start-up warm-up).
     gate: tokio::sync::Mutex<()>,
+    /// Why the refresh that is running (or ran last) started, when not for
+    /// a tool call.
+    refresh_cause: Mutex<Option<&'static str>>,
+    /// Where git's `HEAD` was when last looked at.
+    head: Mutex<Option<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -171,6 +179,8 @@ impl CodemapServer {
                 last_check: Mutex::new(None),
                 interval,
                 gate: tokio::sync::Mutex::new(()),
+                refresh_cause: Mutex::new(None),
+                head: Mutex::new(None),
             }),
             tool_router: {
                 // Every session that loads the tools pays for their schemas:
@@ -189,9 +199,99 @@ impl CodemapServer {
         })
     }
 
+    /// Where the refresh that is running stands, for an answer that did not
+    /// wait for it: `step 3 of 5 (frontend code), 412 changed files, 3.1 s so far`.
+    fn progress(&self) -> String {
+        let parts: Vec<String> = self
+            .shared
+            .apps
+            .iter()
+            .filter_map(|a| {
+                let p = codemap_core::progress::of(&a.project.index_path)?;
+                Some(match &a.project.app {
+                    Some(app) if self.shared.apps.len() > 1 => format!("{app}: {}", p.text()),
+                    _ => p.text(),
+                })
+            })
+            .collect();
+        let why = *lock(&self.shared.refresh_cause);
+        match (parts.is_empty(), why) {
+            (true, None) => String::new(),
+            (true, Some(why)) => format!(" ({why})"),
+            (false, None) => format!(" ({})", parts.join("; ")),
+            (false, Some(why)) => format!(" ({why}: {})", parts.join("; ")),
+        }
+    }
+
     /// Re-indexes changed files if the last check is older than the interval,
     /// or waits for a refresh that is already running.
     pub async fn freshness(&self) -> Freshness {
+        self.refresh_index(None).await
+    }
+
+    /// Watches git's `HEAD` of every app and re-indexes as soon as it moves
+    /// (a branch switch, a pull, a rebase), so the first call after it finds
+    /// the index ready or well on its way instead of starting the work.
+    async fn watch_head(&self) {
+        if self.head().is_none() {
+            return; // Not a git repository: nothing to watch.
+        }
+        let every = self.shared.interval.max(Duration::from_secs(1));
+        loop {
+            tokio::time::sleep(every).await;
+            // While git is still at it (a rebase replays commits one by
+            // one) the files are not settled: wait for it to finish.
+            if !matches!(self.head(), Some((_, false))) || !self.head_moved() {
+                continue;
+            }
+            let reindexed = self.refresh_index(Some(HEAD_MOVED)).await.reindexed_files;
+            if reindexed > 0 {
+                self.shared.generation.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// What git's `HEAD` points at in every app (read from git's files),
+    /// and whether git is in the middle of something. `None` outside git.
+    fn head(&self) -> Option<(String, bool)> {
+        let states: Vec<_> = self
+            .shared
+            .apps
+            .iter()
+            .filter_map(|a| codemap_core::git::head_state(&a.project.root))
+            .collect();
+        (!states.is_empty()).then(|| {
+            (
+                states
+                    .iter()
+                    .map(|s| s.marker.as_str())
+                    .collect::<Vec<_>>()
+                    .join("|"),
+                states.iter().any(|s| s.busy),
+            )
+        })
+    }
+
+    /// Whether `HEAD` is somewhere else than when this was last asked (by
+    /// the watcher or by a call); the first time only notes where it is.
+    fn head_moved(&self) -> bool {
+        let Some((now, _)) = self.head() else {
+            return false;
+        };
+        let mut seen = lock(&self.shared.head);
+        let moved = seen.as_ref().is_some_and(|s| *s != now);
+        *seen = Some(now);
+        moved
+    }
+
+    /// `cause`: a refresh started for a reason of its own (git's `HEAD`
+    /// moved), now and without a time budget; `None` for a tool call.
+    async fn refresh_index(&self, cause: Option<&'static str>) -> Freshness {
+        let forced = cause.is_some();
+        // A call right after a branch switch does not wait for the next
+        // check: the old branch's index would answer as if it were current.
+        let head_moved = !forced && self.head_moved();
+        let cause = cause.or(head_moved.then_some(HEAD_MOVED));
         let never_indexed = self.shared.apps.iter().any(|a| {
             lock(&a.reader)
                 .get_meta(meta_keys::INDEXED_AT)
@@ -202,7 +302,10 @@ impl CodemapServer {
         let (due, first_check) = {
             let mut last = lock(&self.shared.last_check);
             let first = last.is_none();
-            let due = never_indexed || last.is_none_or(|t| t.elapsed() >= self.shared.interval);
+            let due = forced
+                || head_moved
+                || never_indexed
+                || last.is_none_or(|t| t.elapsed() >= self.shared.interval);
             if due {
                 *last = Some(Instant::now());
             }
@@ -216,8 +319,9 @@ impl CodemapServer {
             return match tokio::time::timeout(REFRESH_BUDGET, self.shared.gate.lock()).await {
                 Ok(_) => Freshness::default(),
                 Err(_) => stale(format!(
-                    "re-indexing is still running after {} ms; answering from the previous index",
-                    REFRESH_BUDGET.as_millis()
+                    "re-indexing is still running after {} ms{}; answering from the previous index. Ask again in a few seconds for an answer from the new one",
+                    REFRESH_BUDGET.as_millis(),
+                    self.progress()
                 )),
             };
         }
@@ -225,10 +329,17 @@ impl CodemapServer {
         let shared = self.shared.clone();
         let task = tokio::spawn(async move {
             let _gate = shared.gate.lock().await;
+            *lock(&shared.refresh_cause) = cause;
             let worker = shared.clone();
             tokio::task::spawn_blocking(move || {
                 // Backends first: frontends read their routes when linking.
-                let trigger = if first_check { "startup" } else { "call" };
+                let trigger = if forced {
+                    "git"
+                } else if first_check {
+                    "startup"
+                } else {
+                    "call"
+                };
                 // All apps side by side: indexing an app reads only its own
                 // files (frontends read backend routes when answering).
                 let mut total = 0;
@@ -273,7 +384,7 @@ impl CodemapServer {
         });
         // The very first index must be complete: an empty index would answer
         // "not found" for code that exists.
-        let outcome = if never_indexed {
+        let outcome = if never_indexed || forced {
             Ok(task.await)
         } else {
             tokio::time::timeout(REFRESH_BUDGET, task).await
@@ -290,8 +401,9 @@ impl CodemapServer {
                 "re-index crashed ({e}); answering from the previous index"
             )),
             Err(_) => stale(format!(
-                "re-indexing takes longer than {} ms; answering from the previous index",
-                REFRESH_BUDGET.as_millis()
+                "re-indexing takes longer than {} ms{}; answering from the previous index. Ask again in a few seconds for an answer from the new one",
+                REFRESH_BUDGET.as_millis(),
+                self.progress()
             )),
         }
     }
@@ -554,7 +666,7 @@ fn stale(warning: String) -> Freshness {
 impl CodemapServer {
     #[tool(
         name = "project_overview",
-        description = "Use first in every session to understand the project before reading files (about 1-2k tokens instead of opening a dozen): framework and version (Laravel, Vue / Nuxt, Next.js / React, Swift, Android, Rust), layout, counts, route files, key directories, main namespaces, models, screens, crates or modules, names AI assistants often got wrong here (`often_mistaken`), index health."
+        description = "Use first in every session to understand the project before reading files (about 1-2k tokens instead of opening a dozen): framework and version (Laravel, Vue / Nuxt, Next.js / React, Swift, Android, Rust), layout, counts, route files, key directories, main namespaces, models, screens, crates or modules, names AI assistants often got wrong here (`often_mistaken`), index health. Instead of reading composer.json, package.json and lock files, pass `packages: \"all\"` for every direct composer and npm dependency with its installed version and whether anything uses it (`\"unused\"`: those nothing references), or `package: \"name\"` for one (also one installed only because another needs it): the files that use it, the config, Docker, process-manager and script lines that name it, what requires it."
     )]
     pub async fn project_overview(
         &self,
@@ -1059,6 +1171,11 @@ pub async fn serve(projects: Vec<Project>) -> anyhow::Result<()> {
     let warm = server.clone();
     tokio::spawn(async move {
         warm.freshness().await;
+    });
+    // And keep it current across branch switches, before anyone asks.
+    let watch = server.clone();
+    tokio::spawn(async move {
+        watch.watch_head().await;
     });
     let service = server.serve(rmcp::transport::stdio()).await?;
     tracing::info!("MCP server ready on stdio");

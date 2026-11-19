@@ -22,7 +22,7 @@ const END: &str = "<!-- codemap:end -->";
 const RULES: &str = r#"# codemap first
 The `codemap` MCP server indexes this code. It is the first stop for every question about the code, before grep, rg, find, sed -n, cat or reading files.
 - Load the tools at the start of a coding task: they may be deferred (in Claude Code, one ToolSearch `select:` call for the `mcp__codemap*__` tools you need).
-- `project_overview` once per task. `search_symbol`, `get_symbol` and `get_component` instead of grepping. `get_schema` before any query, migration or database script. `api_usage` for frontend calls. `find_usages` before renaming or removing, and with `git_changes: true` after a change for what it affects and the tests to run. `verify` everything a change relies on before finishing.
+- `project_overview` once per task (with `packages: "all"` or `package: "name"`: what is installed and what uses it, before adding or removing a dependency). `search_symbol`, `get_symbol` and `get_component` instead of grepping. `get_schema` before any query, migration or database script. `api_usage` for frontend calls. `find_usages` before renaming or removing, and with `git_changes: true` after a change for what it affects and the tests to run. `verify` everything a change relies on before finishing.
 - grep and file reads come after codemap: to read a whole file, when codemap answers `found: false` or `stale: true`, or for things it does not index (logs, server output, remote config, build output).
 - If the server is not connected, use the CLI: `codemap query --project <path> <tool> '<json>'`.
 - A wrong answer: `report_wrong_answer` once, then carry on.
@@ -33,7 +33,9 @@ const REFUSAL: &str = "codemap first: use the codemap MCP tools before searching
 (search_symbol, get_symbol, get_component, get_schema, find_usages, api_usage, verify); \
 load them first if they are deferred (ToolSearch select:mcp__codemap...). Run this search \
 again after a codemap call when it answers found:false or stale:true, or for things codemap \
-does not index (logs, server output, build output). CLI: codemap query --project <path> <tool> '<json>'.";
+does not index (logs, server output, build output). A search that only names files that are not \
+code (json, env, yaml, config, markdown) or a folder outside the index is never refused. \
+CLI: codemap query --project <path> <tool> '<json>'.";
 
 /// Searches that are never code searches: other machines, containers, logs,
 /// git history, dependencies, build output, temp folders.
@@ -487,8 +489,36 @@ pub fn counts(data_dir: &Path, since: &str) -> Value {
     json!(c)
 }
 
-/// Is this a search of the project's code (not of logs, history, other machines)?
+/// What a tool call is to the search hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Search {
+    /// Not a search of the project's files (or one of logs, history, other
+    /// machines, an allowed path).
+    No,
+    /// A search that may look at the project's code.
+    Code,
+    /// A search that only names files codemap does not read as code (JSON,
+    /// env, YAML, config, Markdown) or folders the index holds nothing of:
+    /// codemap cannot answer it.
+    NotCode,
+}
+
+/// Is this a search of the project's files (not of logs, history, other machines)?
 pub fn is_code_search(tool: &str, input: &Value, allow: &[String]) -> bool {
+    search_kind(tool, input, allow, None, &|_| None) != Search::No
+}
+
+/// What kind of search a tool call is. `cwd` is the session's folder (paths
+/// in the search are relative to it); `indexed` says whether the index holds
+/// a file or anything under a folder.
+pub fn search_kind(
+    tool: &str,
+    input: &Value,
+    allow: &[String],
+    cwd: Option<&Path>,
+    indexed: crate::targets::Indexed<'_>,
+) -> Search {
+    use crate::targets::{self, Token};
     let allowed = |text: &str| {
         SKIP.iter().any(|s| text.contains(s))
             || allow.iter().any(|a| {
@@ -496,52 +526,106 @@ pub fn is_code_search(tool: &str, input: &Value, allow: &[String]) -> bool {
                 !a.is_empty() && text.contains(a)
             })
     };
+    let kind = |no_code: bool| {
+        if no_code {
+            Search::NotCode
+        } else {
+            Search::Code
+        }
+    };
     match tool {
         "Grep" | "Glob" => {
-            let text = [
-                input["path"].as_str().unwrap_or(""),
-                input["glob"].as_str().unwrap_or(""),
-                input["pattern"]
-                    .as_str()
-                    .filter(|_| tool == "Glob")
-                    .unwrap_or(""),
-            ]
-            .join(" ");
-            !allowed(&text)
+            let path = input["path"].as_str().filter(|p| !p.is_empty());
+            let glob = input["glob"].as_str().unwrap_or("");
+            let pattern = input["pattern"]
+                .as_str()
+                .filter(|_| tool == "Glob")
+                .unwrap_or("");
+            if allowed(&[path.unwrap_or(""), glob, pattern].join(" ")) {
+                return Search::No;
+            }
+            let file_type = input["type"].as_str().map(targets::type_as_pattern);
+            let patterns: Vec<&str> = [glob, pattern]
+                .into_iter()
+                .chain(file_type.as_deref())
+                .filter(|p| !p.is_empty())
+                .collect();
+            kind(targets::tool_search_names_no_code(
+                &patterns, path, cwd, indexed,
+            ))
         }
         "Bash" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            // `cmd | grep x` filters the output of `cmd`: not a search, unless
-            // it is recursive (`| xargs grep -r`).
-            let searches = cmd
-                .split([';', '\n'])
-                .flat_map(|c| c.split("&&").flat_map(|c| c.split("||")))
-                .any(|command| {
-                    command.split('|').enumerate().any(|(stage, seg)| {
-                        let mut words = seg.split_whitespace().skip_while(|w| {
-                            w.contains('=') || matches!(*w, "sudo" | "command" | "xargs")
+            if allowed(cmd) {
+                return Search::No;
+            }
+            // Commands (`;`, `&&`, `||`, a new line), each a pipeline.
+            let mut found = Search::No;
+            let mut base = cwd.map(Path::to_path_buf);
+            let tokens = targets::tokens(cmd);
+            for command in tokens.split(|t| *t == Token::End) {
+                for (stage, seg) in command.split(|t| *t == Token::Pipe).enumerate() {
+                    let mut words = seg
+                        .iter()
+                        .filter_map(|t| match t {
+                            Token::Word(w) => Some(w),
+                            _ => None,
+                        })
+                        .skip_while(|w| {
+                            (w.contains('=') && !w.starts_with('-'))
+                                || matches!(w.as_str(), "sudo" | "command" | "xargs")
                         });
-                        let first = words.next().unwrap_or("");
-                        let first = first.rsplit(['/', '\\']).next().unwrap_or(first);
-                        let tool = matches!(
-                            first,
-                            "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "find" | "fd"
-                        ) || (first == "git"
-                            && seg.split_whitespace().nth(1) == Some("grep"));
-                        let recursive = seg.split_whitespace().any(|w| {
-                            w == "--recursive"
-                                || (w.starts_with('-')
-                                    && !w.starts_with("--")
-                                    && (w.contains('r') || w.contains('R')))
-                        });
-                        tool && (stage == 0
-                            || recursive
-                            || matches!(first, "rg" | "find" | "fd" | "ag" | "ack"))
-                    })
-                });
-            searches && !allowed(cmd)
+                    let first = words.next().map(String::as_str).unwrap_or("");
+                    let mut args: Vec<String> = words.cloned().collect();
+                    // `cd x && grep …`: what follows runs there.
+                    if first == "cd" && stage == 0 {
+                        base = match (&base, args.first()) {
+                            (Some(b), Some(d)) if !d.starts_with('~') => Some(b.join(d)),
+                            _ => None,
+                        };
+                        continue;
+                    }
+                    let first = first.rsplit(['/', '\\']).next().unwrap_or(first);
+                    let mut program = first;
+                    let tool = matches!(
+                        first,
+                        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "find" | "fd"
+                    ) || (first == "git"
+                        && args.first().map(String::as_str) == Some("grep"));
+                    if !tool {
+                        continue;
+                    }
+                    if first == "git" {
+                        args.remove(0);
+                        program = "grep";
+                    }
+                    // `cmd | grep x` filters the output of `cmd`: not a
+                    // search, unless it is recursive (`| xargs grep -r`).
+                    let recursive = args.iter().any(|w| {
+                        w == "--recursive"
+                            || (w.starts_with('-')
+                                && !w.starts_with("--")
+                                && (w.contains('r') || w.contains('R')))
+                    });
+                    if !(stage == 0
+                        || recursive
+                        || matches!(first, "rg" | "find" | "fd" | "ag" | "ack"))
+                    {
+                        continue;
+                    }
+                    if targets::shell_search_names_no_code(program, &args, base.as_deref(), indexed)
+                    {
+                        if found == Search::No {
+                            found = Search::NotCode;
+                        }
+                    } else {
+                        found = Search::Code;
+                    }
+                }
+            }
+            found
         }
-        _ => false,
+        _ => Search::No,
     }
 }
 
@@ -556,7 +640,11 @@ fn recently_used(data_dir: &Path, session: &str, window: Duration) -> bool {
 
 /// `codemap hook check|used`, called by the AI app with the tool call as JSON
 /// on stdin. Never fails: errors let the call through.
-pub fn hook(action: &str, data_dir: Option<PathBuf>) {
+pub fn hook(
+    action: &str,
+    data_dir: Option<PathBuf>,
+    indexed: &dyn Fn(&Path, &Path) -> Option<bool>,
+) {
     let _ = (|| -> Option<()> {
         let mut input = String::new();
         std::io::stdin().read_to_string(&mut input).ok()?;
@@ -578,11 +666,34 @@ pub fn hook(action: &str, data_dir: Option<PathBuf>) {
                     .and_then(|c| codemap_core::Config::load(c).ok())
                     .map(|c| c.agent)
                     .unwrap_or_default();
-                if !is_code_search(tool, &v["tool_input"], &agent.allow_search) {
+                // By what the search names alone first: cheap, and enough
+                // for most calls.
+                let by_name = search_kind(
+                    tool,
+                    &v["tool_input"],
+                    &agent.allow_search,
+                    cwd.as_deref(),
+                    &|_| None,
+                );
+                if by_name == Search::No {
                     return None;
                 }
                 let window = Duration::from_secs(60 * agent.search_window_minutes.unwrap_or(30));
-                if recently_used(&data_dir, &session, window) {
+                // A search codemap cannot answer (files that are not code, a
+                // folder outside the index) needs no codemap call first. The
+                // index is only asked when the search would be refused.
+                let passes = recently_used(&data_dir, &session, window)
+                    || by_name == Search::NotCode
+                    || cwd.as_deref().is_some_and(|cwd| {
+                        search_kind(
+                            tool,
+                            &v["tool_input"],
+                            &agent.allow_search,
+                            Some(cwd),
+                            &|p| indexed(cwd, p),
+                        ) == Search::NotCode
+                    });
+                if passes {
                     log(&data_dir, "search_allowed", &session);
                     // A search codemap did not answer: where it looked.
                     crate::gaps::record(
@@ -641,6 +752,78 @@ mod tests {
         assert!(!grep("vendor/laravel"));
         assert!(!grep("docs/guide.md"));
         assert!(!is_code_search("Read", &json!({}), &[]));
+    }
+
+    #[test]
+    fn searches_codemap_cannot_answer_are_told_apart() {
+        let kind = |tool: &str, input: Value| search_kind(tool, &input, &[], None, &|_| None);
+        let bash = |c: &str| kind("Bash", json!({ "command": c }));
+        // Files that are not code.
+        assert_eq!(bash("grep -n laravel-echo package.json"), Search::NotCode);
+        assert_eq!(
+            bash("grep -rn 'pusher|echo' --include=*.json ."),
+            Search::NotCode
+        );
+        assert_eq!(bash("cat composer.json | grep scripts"), Search::No);
+        assert_eq!(
+            bash("rg -n PUSHER .env.example docker-compose.yml"),
+            Search::NotCode
+        );
+        assert_eq!(bash("find . -name '*.conf'"), Search::NotCode);
+        assert_eq!(
+            bash("grep -n x .gitignore && grep -rn Order app/"),
+            Search::Code
+        );
+        assert_eq!(
+            bash("grep -rn Order app/ ; grep -n x .gitignore"),
+            Search::Code
+        );
+        assert_eq!(bash("grep -rn Order app/"), Search::Code);
+        assert_eq!(bash("grep -rn 'a|b' src"), Search::Code);
+        assert_eq!(bash("ls"), Search::No);
+        assert_eq!(
+            kind("Grep", json!({ "pattern": "x", "glob": "*.json" })),
+            Search::NotCode
+        );
+        assert_eq!(
+            kind("Grep", json!({ "pattern": "x", "type": "yaml" })),
+            Search::NotCode
+        );
+        assert_eq!(
+            kind("Grep", json!({ "pattern": "x", "path": "package.json" })),
+            Search::NotCode
+        );
+        assert_eq!(kind("Grep", json!({ "pattern": "x" })), Search::Code);
+        assert_eq!(
+            kind("Grep", json!({ "pattern": "x", "glob": "*.vue" })),
+            Search::Code
+        );
+        assert_eq!(
+            kind("Glob", json!({ "pattern": "**/*.yml" })),
+            Search::NotCode
+        );
+        assert_eq!(
+            kind("Glob", json!({ "pattern": "src/**/*.ts" })),
+            Search::Code
+        );
+        // A folder the index holds nothing of, in the folder a `cd` moved to.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("web/document")).unwrap();
+        std::fs::create_dir_all(dir.path().join("web/src")).unwrap();
+        let src = dir.path().join("web/src");
+        let at = |c: &str| {
+            search_kind(
+                "Bash",
+                &json!({ "command": c }),
+                &[],
+                Some(dir.path()),
+                &|p| Some(p.starts_with(&src)),
+            )
+        };
+        assert_eq!(at("cd web && grep -rn foo document/"), Search::NotCode);
+        assert_eq!(at("grep -rn foo web/document"), Search::NotCode);
+        assert_eq!(at("cd web && grep -rn foo src"), Search::Code);
+        assert_eq!(at("grep -rn foo document/"), Search::Code);
     }
 
     #[test]

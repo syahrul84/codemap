@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR: &str = "js";
 
 /// Bump when per-file output changes; every JS/TS/Vue file is then re-parsed.
-pub const JS_EXTRACTOR_VERSION: i64 = 38;
+pub const JS_EXTRACTOR_VERSION: i64 = 39;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TagUse {
@@ -654,6 +654,7 @@ fn merge(mut a: ScriptFacts, b: ScriptFacts) -> ScriptFacts {
             a.member_calls.push(n);
         }
     }
+    a.helper_calls.extend(b.helper_calls);
     a.db_tables.extend(b.db_tables);
     a.url_templates.extend(b.url_templates);
     for t in b.types {
@@ -710,6 +711,35 @@ pub fn module_symbols(path: &str, facts: &ModuleFacts) -> Vec<NewSymbol> {
                         is_final: false,
                         start_line: m.line,
                         end_line: m.line,
+                        doc_summary: None,
+                        meta: SymbolMeta::default(),
+                    });
+                }
+            }
+            // The functions of an object or class (`ordersApi.cancel`). The
+            // parts of a Vuex module are told by its store symbol already.
+            DeclKind::Const | DeclKind::Let | DeclKind::Class
+                if d.members.iter().any(|m| m.method)
+                    && !(facts.script.vuex_module.is_some()
+                        && matches!(
+                            d.name.as_str(),
+                            "state" | "getters" | "mutations" | "actions" | "modules"
+                        )) =>
+            {
+                let parent = format!("{path}#{}", d.name);
+                for m in d.members.iter().filter(|m| m.method) {
+                    out.push(NewSymbol {
+                        kind: SymbolKind::Method,
+                        name: m.name.clone(),
+                        fqn: format!("{parent}.{}", m.name),
+                        parent_fqn: Some(parent.clone()),
+                        signature: m.signature.clone(),
+                        visibility: local.then(|| "private".to_owned()),
+                        is_static: false,
+                        is_abstract: false,
+                        is_final: false,
+                        start_line: m.line,
+                        end_line: m.end_line.max(m.line),
                         doc_summary: None,
                         meta: SymbolMeta::default(),
                     });

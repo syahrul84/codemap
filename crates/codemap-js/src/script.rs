@@ -117,6 +117,10 @@ struct Analyzer<'s, 'a> {
     assigns: Vec<(String, String, Vec<String>, u32)>,
     /// Calls to plain functions: `(name, start, end, scope)`.
     fn_calls: Vec<(String, u32, u32, (u32, u32))>,
+    /// Every call of a plain name or of a method on a plain name: `(name,
+    /// line)`; those an import binds or the file declares become
+    /// `helper_calls`.
+    ident_calls: Vec<(String, u32)>,
     /// Return values built from a binding: `(returned path, root, path, start)`.
     returns: Vec<(String, String, Vec<String>, u32)>,
     /// Calls (span start, end) whose result is returned as is (`return api.get(…)`).
@@ -227,6 +231,7 @@ where
             chains: Vec::new(),
             assigns: Vec::new(),
             fn_calls: Vec::new(),
+            ident_calls: Vec::new(),
             returns: Vec::new(),
             direct_returns: HashSet::new(),
             prop_bindings: Vec::new(),
@@ -600,8 +605,60 @@ where
                     name: key.static_name()?.to_string(),
                     signature: self.compact(span, 120),
                     line: self.line(span.start),
+                    ..crate::facts::Member::default()
                 })
             })
+            .collect()
+    }
+
+    /// The functions of an object literal: `{ cancel(id) {…}, list: () => … }`.
+    fn object_methods(&self, o: &ObjectExpression<'a>) -> Vec<crate::facts::Member> {
+        o.properties
+            .iter()
+            .filter_map(|p| {
+                let ObjectPropertyKind::ObjectProperty(p) = p else {
+                    return None;
+                };
+                let params = match strip_ts(&p.value) {
+                    Expression::FunctionExpression(f) => f.params.span,
+                    Expression::ArrowFunctionExpression(f) => f.params.span,
+                    _ => return None,
+                };
+                let name = p.key.static_name()?.to_string();
+                Some(crate::facts::Member {
+                    signature: format!("{name}{}", self.compact(params, MAX_SIG)),
+                    name,
+                    line: self.line(p.span.start),
+                    end_line: self.line(p.span.end),
+                    method: true,
+                })
+            })
+            .take(400)
+            .collect()
+    }
+
+    /// The methods of a class (not its constructor or accessors).
+    fn class_methods(&self, c: &Class<'a>) -> Vec<crate::facts::Member> {
+        c.body
+            .body
+            .iter()
+            .filter_map(|el| {
+                let ClassElement::MethodDefinition(m) = el else {
+                    return None;
+                };
+                if m.kind != MethodDefinitionKind::Method {
+                    return None;
+                }
+                let name = m.key.static_name()?.to_string();
+                Some(crate::facts::Member {
+                    signature: format!("{name}{}", self.compact(m.value.params.span, MAX_SIG)),
+                    name,
+                    line: self.line(m.span.start),
+                    end_line: self.line(m.span.end),
+                    method: true,
+                })
+            })
+            .take(400)
             .collect()
     }
 
@@ -636,6 +693,10 @@ where
                         c.span,
                         outer.start,
                     );
+                    let members = self.class_methods(c);
+                    if let Some(d) = self.facts.decls.last_mut() {
+                        d.members = members;
+                    }
                 }
             }
             Declaration::VariableDeclaration(v) => {
@@ -680,6 +741,14 @@ where
                         d.span.start
                     };
                     self.push_decl(&id.name, k, exported, sig, d.span, doc_at);
+                    // An object of functions (`ordersApi = { cancel() {…} }`):
+                    // each is a name to find and to follow calls into.
+                    if let Some(Expression::ObjectExpression(o)) = d.init.as_ref().map(strip_ts) {
+                        let members = self.object_methods(o);
+                        if let Some(d) = self.facts.decls.last_mut() {
+                            d.members = members;
+                        }
+                    }
                 }
             }
             Declaration::TSInterfaceDeclaration(i) => {
@@ -1682,6 +1751,37 @@ where
                         + &self.eval_str(&b.right, subst, depth + 1)?,
                 )
             }
+            // `contracts.approver.endpoint`: a value inside a constant object.
+            member @ Expression::StaticMemberExpression(_) => {
+                let value = self.const_member(member, 0)?;
+                self.eval_str(value, &[], depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// The value at a path inside a top-level constant object
+    /// (`contracts.approver.endpoint` with `const contracts = { approver: { endpoint: '…' } }`).
+    fn const_member(&self, e: &Expression<'_>, depth: u8) -> Option<&'a Expression<'a>> {
+        if depth > 6 {
+            return None;
+        }
+        match strip_ts(e) {
+            Expression::Identifier(id) => self.consts.get(id.name.as_str()).copied(),
+            Expression::StaticMemberExpression(m) => {
+                let object = self.const_member(&m.object, depth + 1)?;
+                let Expression::ObjectExpression(o) = strip_ts(object) else {
+                    return None;
+                };
+                o.properties.iter().find_map(|p| match p {
+                    ObjectPropertyKind::ObjectProperty(p)
+                        if p.key.static_name().as_deref() == Some(m.property.name.as_str()) =>
+                    {
+                        Some(&p.value)
+                    }
+                    _ => None,
+                })
+            }
             _ => None,
         }
     }
@@ -2077,6 +2177,10 @@ where
                 Some(v) => out.push((true, v)),
                 None => out.push((false, id.name.to_string())),
             },
+            member @ Expression::StaticMemberExpression(_) => match self.eval_str(member, &[], 0) {
+                Some(v) => out.push((true, v)),
+                None => out.push((false, self.compact(member.span(), 40))),
+            },
             other => out.push((false, self.compact(other.span(), 40))),
         }
         Some(())
@@ -2326,7 +2430,7 @@ where
         c: &CallExpression<'a>,
         url_expr: &Expression<'a>,
         method: Option<String>,
-    ) {
+    ) -> bool {
         let at = c.span.start;
         let mut best: Option<WrapperFn> = self
             .wrappers
@@ -2347,25 +2451,29 @@ where
             }
         }
         let Some((key, params, defaults, _)) = best else {
-            return;
+            return false;
         };
         let mut parts = Vec::new();
         if self.url_parts(url_expr, &mut parts, 0).is_none()
             || !parts
                 .iter()
                 .any(|(is_static, t)| !is_static && params.contains(t))
-            || self.facts.url_templates.len() >= 200
         {
-            return;
+            return false;
         }
-        self.facts.url_templates.push(UrlTemplate {
-            key,
-            params,
-            defaults,
-            parts,
-            method,
-            line: self.line(at),
-        });
+        // The callers' arguments fill it in (also past the limit, where the
+        // template itself is not kept).
+        if self.facts.url_templates.len() < 200 {
+            self.facts.url_templates.push(UrlTemplate {
+                key,
+                params,
+                defaults,
+                parts,
+                method,
+                line: self.line(at),
+            });
+        }
+        true
     }
 
     fn record_api_call<'b>(&mut self, c: &'b CallExpression<'a>) {
@@ -2427,7 +2535,7 @@ where
             .clone()
             .map(|m| either(method.as_deref(), m))
             .or(method.clone());
-        self.record_url_template(c, url_expr, spoofed);
+        let from_params = self.record_url_template(c, url_expr, spoofed);
         // Through a project wrapper: keep the arguments to fill in its URL.
         let args: Vec<Option<Vec<(bool, String)>>> = if trusted {
             Vec::new()
@@ -2445,32 +2553,74 @@ where
         };
         // `ENDPOINT[kind]`: no text of its own, but known values.
         let mut options: Vec<String> = Vec::new();
-        let parsed = self.url_of(url_expr, trusted).or_else(|| {
-            let opts = self
-                .string_options(url_expr, 0)?
+        let mut parsed = self.url_of(url_expr, trusted);
+        if parsed.is_none()
+            && let Some(opts) = self.string_options(url_expr, 0)
+        {
+            let opts: Vec<String> = opts
                 .into_iter()
                 .filter(|o| trusted || o.contains('/'))
-                .collect::<Vec<_>>();
-            let first = opts.first()?.clone();
-            options = opts;
-            Some((first, false, false))
-        });
-        let Some((url, base_var, optional_tail)) = parsed else {
+                .collect();
+            if let Some(first) = opts.first().cloned() {
+                options = opts;
+                parsed = Some((first, false, false));
+            }
+        }
+        // `id === 'new' ? base : `${base}/${id}``: each branch is a URL.
+        if parsed.is_none()
+            && let Expression::ConditionalExpression(c) = strip_ts(url_expr)
+            && let (Some(a), Some(b)) = (
+                self.url_of(&c.consequent, trusted),
+                self.url_of(&c.alternate, trusted),
+            )
+            && !a.1
+            && !b.1
+        {
+            if a.0 != b.0 {
+                options = vec![a.0.clone(), b.0];
+            }
+            parsed = Some((a.0, false, false));
+        }
+        // A URL no text of which is readable (`api.get(pathFor(kind))`): the
+        // call is kept as one whose endpoint is unknown, unless its callers
+        // fill the URL in, or the callee is not surely an HTTP client.
+        let dynamic = parsed.is_none();
+        if dynamic
+            && (from_params
+                || !trusted
+                || matches!(
+                    strip_ts(url_expr),
+                    Expression::ObjectExpression(_)
+                        | Expression::ArrayExpression(_)
+                        | Expression::NumericLiteral(_)
+                        | Expression::BooleanLiteral(_)
+                        | Expression::NullLiteral(_)
+                        | Expression::StringLiteral(_)
+                        | Expression::TemplateLiteral(_)
+                ))
+        {
             return;
-        };
+        }
+        let (url, base_var, optional_tail) = parsed.unwrap_or_default();
         // Laravel method spoofing: `api.post(url, { …, _method: 'PUT' })`,
         // also through a variable, an assignment or a helper's object.
         let method = found.map(|m| either(method.as_deref(), m)).or(method);
         let external =
             (url.starts_with("http://") || url.starts_with("https://") || url.starts_with("//"))
                 && !url.contains("localhost");
-        let url = normalize_url(&url);
+        let url = if dynamic {
+            "/{}".to_owned()
+        } else {
+            normalize_url(&url)
+        };
         let (prefixes, prefix_note) = if base_var {
             self.prefix_options(url_expr)
         } else {
             (Vec::new(), None)
         };
-        let (variants, variants_loose) = if options.len() > 1 {
+        let (variants, variants_loose) = if dynamic {
+            (Vec::new(), false)
+        } else if options.len() > 1 {
             (options.iter().map(|o| normalize_url(o)).collect(), false)
         } else if base_var {
             (Vec::new(), false)
@@ -2511,6 +2661,7 @@ where
             base_var,
             optional_tail,
             external,
+            dynamic,
             line: self.line(c.span.start),
             args,
             type_arg: c
@@ -2614,6 +2765,69 @@ where
     /// Fills `reads`, `stored_as` and `returned` from what the visitor saw.
     fn finish_api_calls(&mut self) {
         let calls = std::mem::take(&mut self.calls);
+        // A call whose URL is built at run time counts when its client is
+        // one for sure: a well-known one, or one this file calls with a
+        // readable URL (`client.get(key)` on a cache is not an HTTP call).
+        const SURE: &[&str] = &[
+            "axios",
+            "$axios",
+            "$fetch",
+            "ofetch",
+            "api",
+            "$http",
+            "apiClient",
+            "apiFetch",
+            "useFetch",
+            "useLazyFetch",
+            "useApi",
+        ];
+        let client = |via: &str| -> String {
+            let obj = via.rsplit_once('.').map_or(via, |(o, _)| o);
+            obj.rsplit('.').next().unwrap_or(obj).to_owned()
+        };
+        let proven: HashSet<String> = calls
+            .iter()
+            .filter(|(c, ..)| !c.dynamic)
+            .map(|(c, ..)| client(&c.via))
+            .collect();
+        let calls: Vec<_> = calls
+            .into_iter()
+            .filter(|(c, ..)| {
+                !c.dynamic || {
+                    let root = client(&c.via);
+                    SURE.contains(&root.as_str()) || proven.contains(&root)
+                }
+            })
+            .collect();
+        let ident_calls = std::mem::take(&mut self.ident_calls);
+        for (name, line) in ident_calls {
+            if self.facts.helper_calls.len() >= 800 {
+                break;
+            }
+            let root = name.split('.').next().unwrap_or(&name);
+            let bound = self
+                .facts
+                .imports
+                .iter()
+                .any(|i| !i.type_only && i.binds(root))
+                || self.facts.decls.iter().any(|d| {
+                    d.name == root
+                        && if root.len() == name.len() {
+                            d.kind == DeclKind::Function
+                        } else {
+                            d.members.iter().any(|m| m.method)
+                        }
+                });
+            if bound
+                && !self
+                    .facts
+                    .helper_calls
+                    .iter()
+                    .any(|c| c.name == name && c.line == line)
+            {
+                self.facts.helper_calls.push(NamedLine { name, line });
+            }
+        }
         for (mut call, start, end, scope) in calls {
             let (reads, stored, returned) = self.flow(start, end, scope);
             call.reads = reads;
@@ -2790,6 +3004,14 @@ where
             if !self.facts.member_calls.contains(&n) {
                 self.facts.member_calls.push(n);
             }
+            if let Expression::Identifier(obj) = mm.object.without_parentheses()
+                && self.ident_calls.len() < 8000
+            {
+                self.ident_calls.push((
+                    format!("{}.{}", obj.name, mm.property.name),
+                    self.line(c.span.start),
+                ));
+            }
         }
         // A body that spoofs its method, passed to a project function.
         if !is_api && self.facts.spoof_calls.len() < 2000 {
@@ -2816,6 +3038,12 @@ where
                     }
                 }
             }
+        }
+        if let Expression::Identifier(id) = c.callee.without_parentheses()
+            && self.ident_calls.len() < 8000
+        {
+            self.ident_calls
+                .push((id.name.to_string(), self.line(c.span.start)));
         }
         if !is_api
             && let Expression::Identifier(id) = c.callee.without_parentheses()
@@ -4649,7 +4877,9 @@ impl<'a> Analyzer<'_, 'a> {
             parts.push(prop(args[0], "data"));
             parts.push(prop(args[0], "params"));
         } else if verb_style {
-            let with_body = matches!(method, Some("POST" | "PUT" | "PATCH"));
+            // `POST|PATCH`: a POST that is sometimes spoofed still has a body.
+            let with_body =
+                method.is_some_and(|m| m.split('|').any(|x| matches!(x, "POST" | "PUT" | "PATCH")));
             let options = if with_body { args.get(2) } else { args.get(1) };
             if with_body {
                 parts.push(args.get(1).map(|b| Ok(*b)));
@@ -4816,6 +5046,23 @@ impl<'a> Analyzer<'_, 'a> {
     /// decided by the argument when the helper sets it under a parameter.
     /// `?PUT`: only on some paths.
     fn spoof_of(&self, e: &Expression<'a>) -> Option<String> {
+        let found = self.spoof_from(e);
+        // A helper handed a verb (`payload(record, isNew ? undefined : 'PATCH')`)
+        // sets it on the body it builds, on some paths at least.
+        if found.is_none()
+            && let Expression::CallExpression(c) = strip_ts(e)
+        {
+            return c
+                .arguments
+                .iter()
+                .filter_map(|a| a.as_expression())
+                .find_map(|a| verb_literal(a, 0))
+                .map(|v| format!("?{v}"));
+        }
+        found
+    }
+
+    fn spoof_from(&self, e: &Expression<'a>) -> Option<String> {
         if let Some(m) = spoofed_method(e, 0) {
             return Some(m);
         }
@@ -5209,13 +5456,46 @@ fn spoofed_method(e: &Expression<'_>, depth: u8) -> Option<String> {
                 string_value(&p.value).map(|m| m.to_ascii_uppercase())
             }
             ObjectPropertyKind::ObjectProperty(p) => spoofed_method(&p.value, depth + 1),
-            ObjectPropertyKind::SpreadProperty(_) => None,
+            // `...(isNew ? {} : { _method: 'PATCH' })`, `...(editing && { _method: 'PUT' })`:
+            // set on some paths.
+            ObjectPropertyKind::SpreadProperty(sp) => {
+                let found = match strip_ts(&sp.argument) {
+                    Expression::ConditionalExpression(c) => {
+                        spoofed_method(&c.consequent, depth + 1)
+                            .or_else(|| spoofed_method(&c.alternate, depth + 1))
+                    }
+                    Expression::LogicalExpression(l) => spoofed_method(&l.right, depth + 1),
+                    _ => None,
+                };
+                found.map(|m| {
+                    if m.starts_with('?') {
+                        m
+                    } else {
+                        format!("?{m}")
+                    }
+                })
+            }
         }),
         Expression::CallExpression(c) => c
             .arguments
             .iter()
             .filter_map(|a| a.as_expression())
             .find_map(|a| spoofed_method(a, depth + 1)),
+        _ => None,
+    }
+}
+
+/// `'PATCH'`, or a choice holding one (`isNew ? undefined : 'PATCH'`): a
+/// verb Laravel takes from the body.
+fn verb_literal(e: &Expression<'_>, depth: u8) -> Option<String> {
+    match strip_ts(e) {
+        Expression::StringLiteral(s) => {
+            let v = s.value.to_ascii_uppercase();
+            matches!(v.as_str(), "PUT" | "PATCH" | "DELETE").then_some(v)
+        }
+        Expression::ConditionalExpression(c) if depth < 2 => {
+            verb_literal(&c.consequent, depth + 1).or_else(|| verb_literal(&c.alternate, depth + 1))
+        }
         _ => None,
     }
 }

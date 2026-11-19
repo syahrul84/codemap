@@ -50,6 +50,9 @@ pub struct CallRow {
     /// project wrapper).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sends: Option<codemap_js::facts::Sent>,
+    /// The whole URL is built at run time (see `ApiCall::dynamic`).
+    #[serde(default)]
+    pub dynamic: bool,
 }
 
 /// Segments that wrap a payload rather than name a field.
@@ -861,11 +864,147 @@ pub fn rows(
                 base_var,
                 optional_tail,
                 external: c.external,
+                dynamic: c.dynamic && !via_wrapper,
                 fields,
             });
         }
     }
     out
+}
+
+/// The name a function has as a symbol (`path#name`; a default export is
+/// named after its file).
+fn function_fqn(path: &str, name: &str) -> String {
+    if name == "default" {
+        let stem = path.rsplit('/').next().unwrap_or(path);
+        let stem = stem.split('.').next().unwrap_or(stem);
+        format!("{path}#{stem}")
+    } else {
+        format!("{path}#{name}")
+    }
+}
+
+/// Which helper of the project each piece of code runs: `(file id, the
+/// helper's symbol name, line)`. The helper is a function (`src/api.ts#fetchOrders`)
+/// or a function in an object or class (`src/api.ts#ordersApi.cancel`), in
+/// this file or behind an import; following these from a screen leads to
+/// the HTTP calls it makes through its helpers.
+pub fn helper_uses(
+    modules: &[Module],
+    by_path: &HashMap<&str, &Module>,
+    resolver: &Resolver<'_>,
+    uses: &[Use],
+) -> Vec<(i64, String, u32)> {
+    let flow = Flow::new(modules, by_path, resolver, uses);
+    let mut out = Vec::new();
+    for m in modules.iter().filter(|m| !is_test_file(&m.path)) {
+        let s = &m.facts.script;
+        let mut seen: HashSet<(String, u32)> = HashSet::new();
+        let calls = s
+            .helper_calls
+            .iter()
+            .chain(&s.composables)
+            .chain(&s.unbound_calls);
+        for c in calls {
+            let target = match c.name.split_once('.') {
+                None => flow
+                    .resolve_fn(m, &c.name)
+                    .map(|(t, f)| function_fqn(&t.path, &f)),
+                Some((obj, member)) => flow.resolve_member(m, obj, member),
+            };
+            if let Some(target) = target
+                && seen.insert((target.clone(), c.line))
+            {
+                out.push((m.file_id, target, c.line));
+            }
+        }
+    }
+    out
+}
+
+impl<'m> Flow<'m> {
+    /// The symbol `obj.member()` in `m` runs: a function of an object or
+    /// class declared here or imported, or (through `import * as obj`) a
+    /// function the other file exports.
+    fn resolve_member(&self, m: &'m Module, obj: &str, member: &str) -> Option<String> {
+        if let Some(hit) = Self::member_of(m, obj, member) {
+            return Some(hit);
+        }
+        let imp = m
+            .facts
+            .script
+            .imports
+            .iter()
+            .find(|i| !i.type_only && !i.dynamic && i.binds(obj))?;
+        let Resolved::File(p) = self.resolver.resolve(&m.path, &imp.source) else {
+            return None;
+        };
+        let target = self.by_path.get(p.as_str())?;
+        if imp.namespace.as_deref() == Some(obj) {
+            return self
+                .find_export(target, member, 0)
+                .map(|(t, f)| function_fqn(&t.path, &f));
+        }
+        let exported = if imp.default.as_deref() == Some(obj) {
+            "default"
+        } else {
+            imp.named.iter().find(|(_, l)| l == obj)?.0.as_str()
+        };
+        self.find_member_export(target, exported, member, 0)
+    }
+
+    /// `name.member` when `t` declares `name` with that function in it.
+    fn member_of(t: &Module, name: &str, member: &str) -> Option<String> {
+        t.facts
+            .script
+            .decls
+            .iter()
+            .find(|d| {
+                (d.name == name || (name == "default" && d.default_export))
+                    && d.members.iter().any(|x| x.method && x.name == member)
+            })
+            .map(|d| format!("{}#{}.{member}", t.path, d.name))
+    }
+
+    fn find_member_export(
+        &self,
+        t: &'m Module,
+        name: &str,
+        member: &str,
+        depth: u8,
+    ) -> Option<String> {
+        if depth > 3 {
+            return None;
+        }
+        if let Some(hit) = Self::member_of(t, name, member) {
+            return Some(hit);
+        }
+        for r in &t.facts.script.reexports {
+            if r.exported != name && r.local != "*" {
+                continue;
+            }
+            let local = if r.local == "*" {
+                name
+            } else {
+                r.local.as_str()
+            };
+            let next = match &r.from {
+                Some(from) => match self.resolver.resolve(&t.path, from) {
+                    Resolved::File(p) => self.by_path.get(p.as_str()).copied(),
+                    _ => None,
+                },
+                // `export { api as ordersApi }`: the local name, here.
+                None if local != name => Some(t),
+                None => None,
+            };
+            if let Some(t2) = next
+                && let Some(hit) = self.find_member_export(t2, local, member, depth + 1)
+            {
+                return Some(hit);
+            }
+        }
+        None
+    }
 }
 
 pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
@@ -882,7 +1021,9 @@ pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
             r.url,
             r.raw,
             r.via,
-            i64::from(r.base_var) | (i64::from(r.optional_tail) << 1),
+            i64::from(r.base_var)
+                | (i64::from(r.optional_tail) << 1)
+                | (i64::from(r.dynamic) << 2),
             r.external,
             (!r.fields.is_empty()).then(|| serde_json::to_string(&r.fields).unwrap_or_default()),
             (!r.typed.is_empty()).then(|| serde_json::to_string(&r.typed).unwrap_or_default()),
@@ -916,6 +1057,7 @@ pub fn load(conn: &rusqlite::Connection) -> Result<Vec<CallRow>> {
             via: r.get(5)?,
             base_var: r.get::<_, i64>(6)? & 1 == 1,
             optional_tail: r.get::<_, i64>(6)? & 2 == 2,
+            dynamic: r.get::<_, i64>(6)? & 4 == 4,
             external: r.get(7)?,
             fields: r
                 .get::<_, Option<String>>(8)?

@@ -297,6 +297,118 @@ async fn edits_are_picked_up_before_answering() {
     client.cancel().await.unwrap();
 }
 
+/// A branch switch is picked up without anyone asking: the server watches
+/// git's `HEAD` and re-indexes in the background, so the next call finds
+/// the index ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_switch_is_indexed_before_the_next_call() {
+    let project = tempfile::tempdir().unwrap();
+    copy_dir(&fixture("laravel11-upgraded"), project.path());
+    std::fs::write(
+        project.path().join(".codemap.toml"),
+        "[freshness]\ncheck_interval_ms = 1000\n",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    git(&["checkout", "-q", "-b", "refunds"]);
+    std::fs::create_dir_all(project.path().join("app/Services")).unwrap();
+    std::fs::write(
+        project.path().join("app/Services/RefundService.php"),
+        "<?php\nnamespace App\\Services;\n\nclass RefundService\n{\n    public function refund(int $invoiceId): void {}\n}\n",
+    )
+    .unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "refunds"]);
+    git(&["checkout", "-q", "-"]);
+
+    let data = tempfile::tempdir().unwrap();
+    let client = connect(project.path(), data.path()).await;
+    let before = call(
+        &client,
+        "search_symbol",
+        json!({ "query": "RefundService" }),
+    )
+    .await;
+    assert_eq!(before["data"]["found"], false);
+
+    // Switch branches and ask nothing: the index gets the class by itself.
+    git(&["checkout", "-q", "refunds"]);
+    fn index_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                index_files(&p, out);
+            } else if p.extension().is_some_and(|e| e == "db") {
+                out.push(p);
+            }
+        }
+    }
+    let mut indexes = Vec::new();
+    index_files(data.path(), &mut indexes);
+    assert_eq!(indexes.len(), 1, "{indexes:?}");
+    let has_class = || {
+        rusqlite::Connection::open_with_flags(
+            &indexes[0],
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .and_then(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM symbols WHERE name = 'RefundService'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .is_ok_and(|n| n > 0)
+    };
+    let started = std::time::Instant::now();
+    while !has_class() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the branch switch was not indexed in the background"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // The call that follows has nothing left to re-index.
+    let after = call(
+        &client,
+        "search_symbol",
+        json!({ "query": "RefundService" }),
+    )
+    .await;
+    assert_eq!(after["data"]["found"], true);
+    assert!(after["meta"].get("reindexed_files").is_none(), "{after}");
+    assert!(after["meta"].get("stale").is_none());
+
+    // And a call made right after a switch (sooner than the next check is
+    // due) does not answer from the branch that was left.
+    git(&["checkout", "-q", "-"]);
+    let back = call(
+        &client,
+        "search_symbol",
+        json!({ "query": "RefundService" }),
+    )
+    .await;
+    assert_eq!(back["data"]["found"], false, "{back}");
+    assert!(back["meta"].get("stale").is_none(), "{back}");
+    client.cancel().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn first_call_never_claims_fresh_while_warm_up_runs() {
     let project = tempfile::tempdir().unwrap();

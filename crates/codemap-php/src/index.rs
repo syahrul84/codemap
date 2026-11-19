@@ -50,6 +50,11 @@ pub fn refresh(
     opts: ScanOptions,
 ) -> Result<RefreshReport> {
     let scan = scan(store, root, config, opts)?;
+    codemap_core::progress::step(
+        store.path(),
+        "reading PHP",
+        Some(scan.reparsed + scan.removed),
+    );
     let php = index_pending(store, root)?;
     Ok(RefreshReport { scan, php })
 }

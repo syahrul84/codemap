@@ -334,7 +334,24 @@ pub fn build(
     reg.pages.extend(crate::next::pages(d, modules));
     reg.next_handlers = crate::next::handlers(d, modules);
     reg.api_calls = crate::api::rows(modules, &by_path, &resolver, &reg.uses);
+    for (file_id, target, line) in crate::api::helper_uses(modules, &by_path, &resolver, &reg.uses)
+    {
+        reg.refs.push((file_id, "js_helper", target, line));
+    }
     for m in modules {
+        // Imports of packages (types too): which code uses a dependency.
+        let mut packages: HashSet<(String, u32)> = HashSet::new();
+        for imp in &m.facts.script.imports {
+            if let Resolved::Package(name) = resolver.resolve(&m.path, &imp.source)
+                && !name.is_empty()
+                && !name.starts_with(['.', '~', '#', '/'])
+                && !name.starts_with("@/")
+                && !name.contains(':')
+                && packages.insert((name.clone(), imp.line))
+            {
+                reg.refs.push((m.file_id, "package", name, imp.line));
+            }
+        }
         for imp in m.facts.script.imports.iter().filter(|i| !i.type_only) {
             let Resolved::File(target) = resolver.resolve(&m.path, &imp.source) else {
                 continue;
@@ -366,7 +383,15 @@ pub fn build(
                 .push((m.file_id, "js_call", c.name.clone(), c.line));
         }
         for n in &m.facts.script.member_calls {
-            reg.refs.push((m.file_id, "js_member", n.clone(), 0));
+            // The line of its first call, when it is a helper's.
+            let line = m
+                .facts
+                .script
+                .helper_calls
+                .iter()
+                .find(|c| c.name == *n)
+                .map_or(0, |c| c.line);
+            reg.refs.push((m.file_id, "js_member", n.clone(), line));
         }
         // Template calls to names the component's script does not define or
         // import: auto-imported helpers (`{{ formatMyr(x) }}`).

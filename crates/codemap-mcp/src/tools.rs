@@ -180,7 +180,22 @@ pub fn call(
     fresh: Freshness,
 ) -> ToolResult<Envelope<Value>> {
     let out: Output = match name {
-        "project_overview" => project_overview(store, project, parse(args)?)?.into(),
+        "project_overview" => {
+            let p: OverviewParams = parse(args)?;
+            // The packages the project installs, instead of the overview.
+            if p.packages.is_some() || p.package.is_some() {
+                crate::packages::list_packages(
+                    store,
+                    project,
+                    crate::packages::PackagesQuery {
+                        name: p.package,
+                        unused: p.packages.as_deref() == Some("unused"),
+                    },
+                )?
+            } else {
+                project_overview(store, project, p)?.into()
+            }
+        }
         "search_symbol" => {
             let p: SearchParams = parse(args)?;
             let brief = !matches!(p.detail, DetailParam::Full);
@@ -545,9 +560,44 @@ pub struct OverviewParams {
     /// Workspace app (`backend`, …); omit to search all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// `all`: the composer and npm packages instead of the overview, one
+    /// line each. `unused`: only those nothing references.
+    #[serde(
+        default,
+        deserialize_with = "packages_choice",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<PackagesChoice>")]
+    pub packages: Option<String>,
+    /// One package (`laravel-echo-server`, `barryvdh/laravel-dompdf`), or
+    /// part of a name: the files that use it and where it is wired up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
     /// `brief` (default) or `full`.
     #[serde(default)]
     pub detail: DetailParam,
+}
+
+/// `packages`: which packages to list.
+#[derive(JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum PackagesChoice {
+    All,
+    Unused,
+}
+
+/// `"all"`, `"unused"`, or `true` (all) and `false` (none).
+fn packages_choice<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Bool(true) => Some("all".into()),
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "" | "false" | "no" | "none" => None,
+            "unused" => Some("unused".into()),
+            _ => Some("all".into()),
+        },
+        _ => None,
+    })
 }
 
 /// A flag given as `true`, `"true"`, `1` or `"yes"`: AI apps sometimes send
@@ -1187,7 +1237,20 @@ fn candidates(store: &Store, name: &str) -> ToolResult<Vec<SymbolRecord>> {
                 )?);
             }
         }
+        if out.is_empty() {
+            out = object_members(store, class, member)?;
+        }
         return Ok(out);
+    }
+    // `ordersApi.cancel`: a function of a JS object or class, or a field of
+    // a TypeScript type (`file#ordersApi.cancel`).
+    if let Some((object, member)) = name.rsplit_once('.')
+        && !name.contains(['#', '/'])
+    {
+        let out = object_members(store, object, member)?;
+        if !out.is_empty() {
+            return Ok(out);
+        }
     }
     // Short name: class-likes, functions, components, composables and stores
     // (members need `Class::member`).
@@ -1203,6 +1266,19 @@ fn candidates(store: &Store, name: &str) -> ToolResult<Vec<SymbolRecord>> {
                         | SymbolKind::Composable
                         | SymbolKind::Store
                 )
+        })
+        .collect())
+}
+
+/// Members named `member` whose owner is the JS / TS name `object`
+/// (`path#object.member`).
+fn object_members(store: &Store, object: &str, member: &str) -> ToolResult<Vec<SymbolRecord>> {
+    let owner = format!("#{object}");
+    Ok(symbols::all_named(store.conn(), member)?
+        .into_iter()
+        .filter(|s| {
+            matches!(s.kind, SymbolKind::Method | SymbolKind::Property)
+                && s.parent_fqn.as_deref().is_some_and(|p| p.ends_with(&owner))
         })
         .collect())
 }

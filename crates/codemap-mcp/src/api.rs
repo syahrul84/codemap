@@ -604,6 +604,11 @@ impl<'b> Matcher<'b> {
         if c.external || framework_endpoint(&c.url) {
             return Outcome::External;
         }
+        // The whole URL is built at run time: the call is there, its
+        // endpoint is anyone's guess.
+        if c.dynamic {
+            return Outcome::Unresolved(Vec::new());
+        }
         // A variable prefix with known values (`kind === 'x' ? 'area/x' : 'area'`):
         // try each full URL; the call reaches every route they match.
         if expandable(c) {
@@ -805,7 +810,12 @@ impl<'b> Matcher<'b> {
 }
 
 pub fn call_label(c: &CallRow) -> String {
-    format!("{} {}", c.method.as_deref().unwrap_or("?"), c.url)
+    let method = c.method.as_deref().unwrap_or("?");
+    if c.dynamic {
+        // No URL to show: the expression that builds it.
+        return format!("{method} `{}`", c.raw);
+    }
+    format!("{method} {}", c.url)
 }
 
 /// Fields named by the read paths (`data.data.name` → `name`).
@@ -1474,10 +1484,15 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
     let status = p.status.as_deref().unwrap_or("all");
     let mut summary: BTreeMap<&str, usize> = BTreeMap::new();
     let mut rows = Vec::new();
+    // With `file`: also the calls it makes through helpers in other files.
+    let through = match p.file.as_deref() {
+        Some(f) => through_helpers(store, f, &calls)?,
+        None => HashMap::new(),
+    };
     let in_file = |c: &&CallRow| {
-        p.file
-            .as_deref()
-            .is_none_or(|f| c.file == f || c.file.contains(f))
+        p.file.as_deref().is_none_or(|f| {
+            c.file == f || c.file.contains(f) || through.contains_key(&(c.file.clone(), c.line))
+        })
     };
     {
         let mut needed: HashSet<(usize, usize)> = HashSet::new();
@@ -1709,6 +1724,14 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                     "via": c.via,
                     "status": label,
                 });
+                if let Some(helper) = p
+                    .file
+                    .as_deref()
+                    .filter(|f| c.file != *f && !c.file.contains(f))
+                    .and_then(|_| through.get(&(c.file.clone(), c.line)))
+                {
+                    v["through"] = json!(helper);
+                }
                 if let Some(f) = &dead {
                     v["in_unused_function"] = json!(f);
                 }
@@ -2033,8 +2056,95 @@ fn shape_summary(shape: &ResponseShape) -> String {
     )
 }
 
+/// A place the walk through helpers has reached: `(file, the helper's
+/// lines, how the start file reaches it, steps taken)`.
+type Reached = (String, Option<(u32, u32)>, String, u8);
+
+/// The HTTP calls the files matching `file` make through helpers (a function
+/// or an object's method, in another file or behind several): `(file, line)`
+/// of the call → the helper as the file names it and where it calls it.
+/// Follows what each helper itself runs, a few steps deep.
+fn through_helpers(
+    store: &Store,
+    file: &str,
+    calls: &[CallRow],
+) -> R<HashMap<(String, u32), String>> {
+    const DEPTH: u8 = 4;
+    const MAX_FILES: usize = 10;
+    let conn = store.conn();
+    let starts: Vec<String> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT path FROM files WHERE (path = ?1 OR instr(path, ?1) > 0)
+             AND lang IN ('vue', 'js', 'ts') ORDER BY path LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![file, MAX_FILES as i64 + 1], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut out: HashMap<(String, u32), String> = HashMap::new();
+    if starts.is_empty() || starts.len() > MAX_FILES {
+        return Ok(out);
+    }
+    let mut by_file: HashMap<&str, Vec<&CallRow>> = HashMap::new();
+    for c in calls {
+        by_file.entry(c.file.as_str()).or_default().push(c);
+    }
+    let mut edges = conn.prepare_cached(
+        "SELECT r.target, r.line FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE f.path = ?1 AND r.kind = 'js_helper' ORDER BY r.line",
+    )?;
+    for start in &starts {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut queue: std::collections::VecDeque<Reached> =
+            std::collections::VecDeque::from([(start.clone(), None, String::new(), 0)]);
+        while let Some((at, span, label, depth)) = queue.pop_front() {
+            let inside = |line: u32| span.is_none_or(|(a, b)| line >= a && line <= b);
+            if depth > 0 && at != *start {
+                for c in by_file.get(at.as_str()).into_iter().flatten() {
+                    if inside(c.line) {
+                        out.entry((c.file.clone(), c.line))
+                            .or_insert_with(|| label.clone());
+                    }
+                }
+            }
+            if depth >= DEPTH {
+                continue;
+            }
+            let found: Vec<(String, u32)> = edges
+                .query_map([&at], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            for (target, line) in found {
+                if !inside(line) || !seen.insert(target.clone()) {
+                    continue;
+                }
+                let Some(sym) = codemap_core::symbols::by_fqn(conn, &target)?
+                    .into_iter()
+                    .next()
+                else {
+                    continue;
+                };
+                let label = if depth == 0 {
+                    format!(
+                        "{} ({start}:{line})",
+                        target.rsplit('#').next().unwrap_or(&target)
+                    )
+                } else {
+                    label.clone()
+                };
+                queue.push_back((sym.file, Some((sym.line, sym.end_line)), label, depth + 1));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Why a call could not be tied to one route.
 fn unresolved_why(c: &CallRow, candidates: &[String]) -> String {
+    if c.dynamic {
+        return format!(
+            "the URL is built at run time by `{}`, so the endpoint cannot be read from the code",
+            c.raw
+        );
+    }
     let start = if c.base_var {
         "starts with a variable"
     } else {

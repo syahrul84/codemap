@@ -1,0 +1,50 @@
+{
+  "packages": [
+    {
+      "name": "laravel/framework",
+      "version": "v11.30.0",
+      "autoload": { "psr-4": { "Illuminate\\": "src/Illuminate/" } }
+    },
+    {
+      "name": "papyrus/pdf",
+      "version": "v2.1.4",
+      "require": { "php": "^8.1", "papyrus/fonts": "^1.0" },
+      "autoload": { "psr-4": { "Papyrus\\Pdf\\": "src/" } },
+      "extra": { "laravel": { "aliases": { "PDF": "Papyrus\\Pdf\\Facade" } } }
+    },
+    {
+      "name": "papyrus/fonts",
+      "version": "1.0.2",
+      "autoload": { "psr-4": { "Papyrus\\Fonts\\": "src/" } }
+    },
+    {
+      "name": "sheetgen/sheetgen",
+      "version": "1.5.17",
+      "autoload": { "classmap": ["src/SheetGen.php"] }
+    },
+    {
+      "name": "beacon/laravel-beacon",
+      "version": "v3.0.1",
+      "autoload": { "psr-4": { "Beacon\\": "src/" } },
+      "extra": { "laravel": { "providers": ["Beacon\\BeaconServiceProvider"] } }
+    },
+    {
+      "name": "quill/quill",
+      "version": "v4.0.0",
+      "autoload": { "psr-4": { "Quill\\": "src/" } }
+    },
+    {
+      "name": "lantern/spare",
+      "version": "1.0.0",
+      "autoload": { "psr-4": { "Lantern\\Spare\\": "src/" } }
+    }
+  ],
+  "packages-dev": [
+    {
+      "name": "swiftrun/swiftrun",
+      "version": "v7.2.0",
+      "autoload": { "psr-4": { "SwiftRun\\": "src/" } },
+      "bin": ["bin/swiftrun"]
+    }
+  ]
+}

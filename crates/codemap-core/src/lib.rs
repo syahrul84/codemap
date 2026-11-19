@@ -8,6 +8,7 @@ pub mod error;
 pub mod git;
 pub mod logging;
 pub mod paths;
+pub mod progress;
 pub mod scan;
 pub mod store;
 pub mod symbols;

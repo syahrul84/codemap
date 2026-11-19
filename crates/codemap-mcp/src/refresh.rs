@@ -96,8 +96,13 @@ pub fn refresh(
     // reading can be the one written last, which then stays until another
     // file changes.
     let _turn = take_turn(store)?;
+    // Where it stands, for a caller that stops waiting.
+    let index = store.path().map(Path::to_path_buf);
+    let _running = codemap_core::progress::begin(index.as_deref());
     let base = codemap_laravel::refresh(store, root, config, opts)?;
+    codemap_core::progress::step(index.as_deref(), "frontend code", None);
     let vue = codemap_vue::refresh(store, root, &base.scan, opts.full)?;
+    codemap_core::progress::step(index.as_deref(), "Swift, Kotlin and Rust", None);
     let swift = codemap_swift::refresh(store, root, &base.scan, opts.full)?;
     let android = codemap_android::refresh(store, root, &base.scan, opts.full)?;
     let rust = codemap_rust::refresh(store, root, &base.scan, opts.full)?;

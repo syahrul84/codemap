@@ -659,6 +659,16 @@ pub fn reads_file(name: &str) -> bool {
     lang_for(Path::new(name)).is_some()
 }
 
+/// Whether a file with this name is source code codemap reads (PHP, Vue,
+/// JS / TS, Swift, Kotlin, Java, Rust): not data or resources (JSON, SQL,
+/// strings files, Android XML) and not a type codemap does not read at all.
+pub fn is_code_file(name: &str) -> bool {
+    matches!(
+        lang_for(Path::new(name)),
+        Some("php" | "vue" | "js" | "ts" | "swift" | "kotlin" | "java" | "rust")
+    )
+}
+
 fn lang_for(path: &Path) -> Option<&'static str> {
     let name = path.file_name()?.to_str()?;
     match name {

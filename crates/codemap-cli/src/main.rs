@@ -11,6 +11,7 @@ use serde::Serialize;
 
 mod gaps;
 mod setup;
+mod targets;
 mod update;
 
 #[derive(Debug, Parser)]
@@ -379,7 +380,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Hook { action } => {
-            setup::hook(action, paths::resolve_data_dir(cli.data_dir.clone()).ok());
+            setup::hook(
+                action,
+                paths::resolve_data_dir(cli.data_dir.clone()).ok(),
+                &|cwd, path| index_holds(&cli, cwd, path),
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Map { project, out } => cmd_map(&cli, project, out),
@@ -1364,6 +1369,67 @@ fn cmd_misses(cli: &Cli, project: &Path, json: bool, clear: bool) -> anyhow::Res
         println!("    {}", s("idea"));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether the index of the session's project holds `path` (a file) or any
+/// file under it (a folder). `None` when that cannot be told: no index yet,
+/// or a path outside the project (it may be another project's code).
+fn index_holds(cli: &Cli, cwd: &Path, path: &Path) -> Option<bool> {
+    let path = path.canonicalize().ok()?;
+    let home = dirs::home_dir();
+    for dir in cwd.ancestors().take(4) {
+        if home.as_deref() == Some(dir) || dir.parent().is_none() {
+            break;
+        }
+        let Ok(projects) = Project::resolve(cli, dir) else {
+            continue;
+        };
+        if !projects.iter().any(|p| p.index_path.is_file()) {
+            continue;
+        }
+        let root = dir.canonicalize().ok()?;
+        if !path.starts_with(&root) {
+            return None;
+        }
+        // The app the path is in; a folder above an app holds that app.
+        let Some(p) = projects
+            .iter()
+            .filter(|p| path.starts_with(&p.root))
+            .max_by_key(|p| p.root.components().count())
+        else {
+            return Some(projects.iter().any(|p| p.root.starts_with(&path)));
+        };
+        if !p.index_path.is_file() {
+            return None;
+        }
+        let rel = path
+            .strip_prefix(&p.root)
+            .ok()?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if rel.is_empty() {
+            return Some(true);
+        }
+        let conn = rusqlite::Connection::open_with_flags(
+            &p.index_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()?;
+        // The file itself, or the first path under the folder (`/` sorts
+        // just before `0`).
+        return conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM files
+                 WHERE (path = ?1 OR (path >= ?1 || '/' AND path < ?1 || '0'))
+                   AND lang NOT IN ('json', 'sql'))",
+                [&rel],
+                |r| r.get::<_, bool>(0),
+            )
+            .ok();
+    }
+    None
 }
 
 /// `codemap hook edited`: after the AI app edited a file (the tool call as

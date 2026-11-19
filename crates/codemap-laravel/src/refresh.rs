@@ -294,6 +294,7 @@ pub fn refresh(
     opts: ScanOptions,
 ) -> Result<RefreshReport> {
     let base = codemap_php::refresh(store, root, config, opts)?;
+    codemap_core::progress::step(store.path(), "routes, models and database tables", None);
     let t = Instant::now();
     let changed = opts.full || base.scan.reparsed + base.scan.removed > 0;
     let detection_current = get_meta(store.conn(), meta_keys::DETECTION_VERSION)?.as_deref()

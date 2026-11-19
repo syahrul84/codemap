@@ -13,6 +13,7 @@ pub mod leftovers;
 pub mod livedata;
 pub mod map;
 pub mod misses;
+pub mod packages;
 mod php_functions;
 pub mod precise;
 pub mod refresh;

@@ -486,7 +486,11 @@ pub fn call(
             }
         }
         merged
-    } else if tool == "project_overview" || results.len() == 1 {
+    } else if (tool == "project_overview"
+        && args.get("packages").is_none()
+        && args.get("package").is_none())
+        || results.len() == 1
+    {
         if results.len() == 1 {
             let (app, e) = results.remove(0);
             meta = e.meta;

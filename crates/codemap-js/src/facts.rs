@@ -7,6 +7,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScriptFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -34,6 +38,11 @@ pub struct ScriptFacts {
     /// method counts as used.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub member_calls: Vec<String>,
+    /// Calls of a function or an object's method that an `import` binds or
+    /// the file declares (`fetchOrders`, `ordersApi.cancel`), once per name
+    /// and line: which helper a piece of code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub helper_calls: Vec<NamedLine>,
     /// `$emit('x')` / `emit('x')` calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub emitted: Vec<NamedLine>,
@@ -176,12 +185,19 @@ pub struct Decl {
     pub members: Vec<Member>,
 }
 
-/// A field or method of an interface or object type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A field or method of an interface or object type, or a function in an
+/// object literal or class (`ordersApi = { cancel(id) {…} }`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
     pub signature: String,
     pub line: u32,
+    /// Last line of a function member's body.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub end_line: u32,
+    /// A function with a body (not a field of a type).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub method: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +522,10 @@ pub struct ApiCall {
     /// Absolute URL to another host.
     #[serde(default, skip_serializing_if = "is_false")]
     pub external: bool,
+    /// The whole URL is built at run time (`api.get(pathFor(kind))`): the
+    /// call is known, its endpoint is not. `raw` holds the expression.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dynamic: bool,
     pub line: u32,
     /// Property paths read from the result in the same function (heuristic).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

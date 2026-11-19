@@ -20,6 +20,64 @@ pub fn info(root: &Path) -> GitInfo {
     GitInfo { commit, dirty }
 }
 
+/// What `HEAD` points at, read from git's files (no git process, so it can
+/// be asked every few seconds).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadState {
+    /// Changes when a branch is switched, a commit is made, or a pull,
+    /// rebase or reset moves the branch.
+    pub marker: String,
+    /// Git is in the middle of something (a rebase, a merge, a checkout
+    /// writing files): the working tree is not settled yet.
+    pub busy: bool,
+}
+
+/// The state of `HEAD` for the repository `root` is in (its own, or a
+/// folder above; a worktree's or a submodule's `.git` file is followed).
+/// `None` outside a repository.
+pub fn head_state(root: &Path) -> Option<HeadState> {
+    let dot_git = root
+        .ancestors()
+        .take(8)
+        .map(|d| d.join(".git"))
+        .find(|p| p.exists())?;
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        // `gitdir: /path/to/.git/worktrees/name` (relative to the file's folder).
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+        dot_git.parent()?.join(target)
+    };
+    // A worktree keeps `HEAD` in its own folder and the branches in the
+    // main repository's.
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|c| git_dir.join(c.trim()))
+        .unwrap_or_else(|| git_dir.clone());
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    let at = match head.strip_prefix("ref: ") {
+        // The branch's commit, or (packed) when the packed list last changed.
+        Some(name) => std::fs::read_to_string(common.join(name))
+            .map(|c| c.trim().to_owned())
+            .or_else(|_| {
+                std::fs::metadata(common.join("packed-refs"))
+                    .and_then(|m| m.modified())
+                    .map(|t| format!("{t:?}"))
+            })
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    let busy = ["index.lock", "rebase-merge", "rebase-apply", "MERGE_HEAD"]
+        .iter()
+        .any(|f| git_dir.join(f).exists());
+    Some(HeadState {
+        marker: format!("{head} {at}"),
+        busy,
+    })
+}
+
 /// `HEAD` commit only (fast: no working-tree scan).
 pub fn head(root: &Path) -> Option<String> {
     git(root, &["rev-parse", "HEAD"])
@@ -325,5 +383,45 @@ mod tests {
             remote_url(root).as_deref(),
             Some("git@example.test:acme/api.git")
         );
+    }
+
+    #[test]
+    fn head_state_changes_with_the_branch_and_its_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(head_state(root), None);
+        run(root, &["init", "-q"]);
+        std::fs::create_dir(root.join("app")).unwrap();
+        std::fs::write(root.join("app/a.php"), "<?php\n").unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-q", "-m", "init"]);
+        let first = head_state(root).unwrap();
+        assert!(!first.busy);
+        // Asked again, and from a folder inside the repository: the same.
+        assert_eq!(head_state(root), Some(first.clone()));
+        assert_eq!(head_state(&root.join("app")), Some(first.clone()));
+        // A new branch at the same commit, then a commit on it.
+        run(root, &["checkout", "-q", "-b", "feature"]);
+        let switched = head_state(root).unwrap();
+        assert_ne!(switched.marker, first.marker);
+        std::fs::write(root.join("app/a.php"), "<?php // changed\n").unwrap();
+        run(root, &["commit", "-q", "-am", "more"]);
+        let committed = head_state(root).unwrap();
+        assert_ne!(committed.marker, switched.marker);
+        // Back on the first branch: what it was.
+        run(root, &["checkout", "-q", "-"]);
+        assert_eq!(head_state(root).unwrap().marker, first.marker);
+        // Git in the middle of something.
+        std::fs::write(root.join(".git/index.lock"), "").unwrap();
+        assert!(head_state(root).unwrap().busy);
+        std::fs::remove_file(root.join(".git/index.lock")).unwrap();
+        // A worktree has its own HEAD.
+        let other = tempfile::tempdir().unwrap();
+        let tree = other.path().join("tree");
+        run(
+            root,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "feature"],
+        );
+        assert_eq!(head_state(&tree).unwrap().marker, committed.marker);
     }
 }
