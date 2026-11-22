@@ -1,0 +1,4 @@
+[[links]]
+name = "backend"
+path = "../backend"
+api_base = "/api"

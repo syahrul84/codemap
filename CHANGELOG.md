@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+From an issue filed after a day on 0.1.14 ([#37](https://github.com/syahrul84/codemap/issues/37)): an endpoint looked unused although a page calls it, because the URL is not written in the call.
+
+- `api_usage` follows a URL to where it is written:
+  - a constant of the function (`const endpoint = editing ? `orders/${id}` : 'orders'`, then `api.post(endpoint, …)`): each value is a URL of the call, checked like one written in it, so a value without a route is named;
+  - a table of definitions (`api.get(`${contracts[kind].endpoint}/${id}`)`, also through `const contract = contracts[kind]`): the call reaches the route of every definition. A definition that has no such route is not reported as missing: the call may never use it;
+  - a default (`endpoint || contracts[kind].endpoint`);
+  - a helper of the file (`api.get(extensionEndpoint(permitId, id))`, `api.get(endpoints.detail(id))`): what the function returns, its own parameters left open.
+
+  Such a call was listed as `unresolved`, or left out altogether when the URL also held a parameter (`…/${id}`), so `api_usage` with `endpoint` answered with no callers for a route a page does call.
+- `api_usage` names the routes a call may reach when its URL comes from an object the callers hand in (`api.get(contract.endpoint)`, `contract` a parameter): every URL the file's own objects keep under that property (`endpoint: 'reports/sales'`) is tried. The call stays `unresolved`, with those routes in `could_be`; a route lists it under `possible_callers` (`, 1 possible` on the one-line form), apart from its `callers`. Only definitions of the same file are looked at.
+- A call that reaches several routes lists them all (`routes`, the first 12, with `routes_total` when there are more) instead of the first one. What one of those routes returns or accepts is not held against a call that picks its URL from a table.
+- A URL that is a template with nothing readable in it (`api.get(`${base}${path}`)`) is listed as `unresolved`, like any other URL built at run time. It was left out.
+
 ## [0.1.14] - 2026-11-19
 
 From a day of real use on a Vue 3 app and its Laravel API (documentation and test writing with several AI workers):

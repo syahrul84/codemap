@@ -526,6 +526,16 @@ pub struct ApiCall {
     /// call is known, its endpoint is not. `raw` holds the expression.
     #[serde(default, skip_serializing_if = "is_false")]
     pub dynamic: bool,
+    /// The URL is not written in the call: it is one of `variants`, read
+    /// from a table of definitions or a default (`contracts[kind].endpoint`).
+    /// `url` is only the first of them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub picked: bool,
+    /// `variants` are every URL the file holds under the property the call
+    /// reads (`contract.endpoint`, `contract` handed in by the callers):
+    /// routes the call may reach, not ones it surely does.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub guess: bool,
     pub line: u32,
     /// Property paths read from the result in the same function (heuristic).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -53,6 +53,12 @@ pub struct CallRow {
     /// The whole URL is built at run time (see `ApiCall::dynamic`).
     #[serde(default)]
     pub dynamic: bool,
+    /// The URL is one of `variants` (see `ApiCall::picked`).
+    #[serde(default)]
+    pub picked: bool,
+    /// `variants` are a guess by a property's name (see `ApiCall::guess`).
+    #[serde(default)]
+    pub guess: bool,
 }
 
 /// Segments that wrap a payload rather than name a field.
@@ -865,6 +871,8 @@ pub fn rows(
                 optional_tail,
                 external: c.external,
                 dynamic: c.dynamic && !via_wrapper,
+                picked: c.picked && !via_wrapper,
+                guess: c.guess && !via_wrapper,
                 fields,
             });
         }
@@ -1032,8 +1040,14 @@ pub fn store(tx: &rusqlite::Transaction<'_>, rows: &[CallRow]) -> Result<()> {
                 || !r.variants.is_empty()
                 || r.in_member.is_some())
             .then(|| {
-                serde_json::json!({ "values": r.prefixes, "note": r.prefix_note, "variants": r.variants, "loose": r.variants_loose, "member": r.in_member })
-                    .to_string()
+                let mut v = serde_json::json!({ "values": r.prefixes, "note": r.prefix_note, "variants": r.variants, "loose": r.variants_loose, "member": r.in_member });
+                if r.picked {
+                    v["picked"] = serde_json::json!(true);
+                }
+                if r.guess {
+                    v["guess"] = serde_json::json!(true);
+                }
+                v.to_string()
             }),
             r.sends
                 .as_ref()
@@ -1072,6 +1086,8 @@ pub fn load(conn: &rusqlite::Connection) -> Result<Vec<CallRow>> {
             variants: Vec::new(),
             in_member: None,
             variants_loose: false,
+            picked: false,
+            guess: false,
             sends: r
                 .get::<_, Option<String>>(11)?
                 .and_then(|j| serde_json::from_str(&j).ok()),
@@ -1089,6 +1105,8 @@ pub fn load(conn: &rusqlite::Connection) -> Result<Vec<CallRow>> {
                 row.prefix_note = v["note"].as_str().map(str::to_owned);
                 row.in_member = v["member"].as_str().map(str::to_owned);
                 row.variants_loose = v["loose"].as_bool().unwrap_or(false);
+                row.picked = v["picked"].as_bool().unwrap_or(false);
+                row.guess = v["guess"].as_bool().unwrap_or(false);
                 row.variants = v["variants"]
                     .as_array()
                     .into_iter()

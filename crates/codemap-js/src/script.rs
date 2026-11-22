@@ -162,6 +162,128 @@ struct Analyzer<'s, 'a> {
     /// Constants anywhere (also inside functions) holding a small choice of
     /// strings: `const prefix = kind === 'x' ? '/area/x' : '/area'`.
     local_options: HashMap<String, Vec<String>>,
+    /// Constants declared inside functions, by name: the function they sit
+    /// in, where the declaration ends, and the URLs the value can be (`None`:
+    /// not known, which still hides an outer one of the same name).
+    locals: HashMap<String, Vec<ScopedChoices>>,
+    /// Constants declared inside functions that hold one of the file's
+    /// definition objects (`const contract = contracts[kind]`).
+    local_objs: HashMap<String, Vec<ScopedObjects<'a>>>,
+    /// URL-like strings in the file's top-level objects, by the property
+    /// that holds them (`endpoint` → every `endpoint: 'admin/…'`).
+    url_props: HashMap<String, Vec<String>>,
+    /// The declaration being visited is a `const`.
+    decl_const: bool,
+}
+
+/// The most URLs one call is expanded into.
+const MAX_CHOICES: usize = 24;
+/// The most URLs taken by a property's name alone.
+const MAX_GUESSES: usize = 64;
+
+/// A constant of a function: `(function span, end of the declaration, value)`.
+type Scoped<T> = ((u32, u32), u32, T);
+/// The URLs a constant of a function can be.
+type ScopedChoices = Scoped<Option<Choices>>;
+/// The definition objects a constant of a function can be.
+type ScopedObjects<'a> = Scoped<Vec<&'a ObjectExpression<'a>>>;
+
+/// The URLs an expression can be, `{}` standing for a part that is not known.
+#[derive(Debug, Clone, Default)]
+struct Choices {
+    urls: Vec<String>,
+    /// Picked out of a table of definitions or a default: each is a URL the
+    /// code holds, not one this call is sure to use.
+    loose: bool,
+    /// Taken by a property's name alone (`contract.endpoint`, with
+    /// `contract` handed in by the callers).
+    guess: bool,
+}
+
+impl Choices {
+    fn one(url: impl Into<String>) -> Self {
+        Choices {
+            urls: vec![url.into()],
+            ..Choices::default()
+        }
+    }
+
+    fn add(&mut self, other: Choices) {
+        for u in other.urls {
+            if !self.urls.contains(&u) {
+                self.urls.push(u);
+            }
+        }
+        self.loose |= other.loose;
+        self.guess |= other.guess;
+    }
+
+    /// Each of these followed by each of `next`; `None` past the limit.
+    fn then(mut self, next: &Choices) -> Option<Choices> {
+        let guess = self.guess || next.guess;
+        let limit = if guess { MAX_GUESSES } else { MAX_CHOICES };
+        if self.urls.len() * next.urls.len() > limit {
+            return None;
+        }
+        // Two parts chosen on their own may not belong together.
+        if self.urls.len() > 1 && next.urls.len() > 1 {
+            self.loose = true;
+        }
+        self.urls = self
+            .urls
+            .iter()
+            .flat_map(|a| next.urls.iter().map(move |b| format!("{a}{b}")))
+            .collect();
+        self.loose |= next.loose;
+        self.guess = guess;
+        Some(self)
+    }
+}
+
+/// The values a function body returns, also from its `if`, `switch` and
+/// `try` blocks (not from functions inside it).
+fn returns_in<'a>(body: &'a [Statement<'a>], out: &mut Vec<&'a Expression<'a>>) {
+    for s in body {
+        match s {
+            Statement::ReturnStatement(r) => {
+                if let Some(e) = &r.argument {
+                    out.push(e);
+                }
+            }
+            Statement::BlockStatement(b) => returns_in(&b.body, out),
+            Statement::IfStatement(i) => {
+                returns_in(std::slice::from_ref(&i.consequent), out);
+                if let Some(alt) = &i.alternate {
+                    returns_in(std::slice::from_ref(alt), out);
+                }
+            }
+            Statement::SwitchStatement(sw) => {
+                for case in &sw.cases {
+                    returns_in(&case.consequent, out);
+                }
+            }
+            Statement::TryStatement(t) => {
+                returns_in(&t.block.body, out);
+                if let Some(f) = &t.finalizer {
+                    returns_in(&f.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A string that can be a URL path: `admin/orders`, `/api/orders/{id}`.
+fn url_like(s: &str) -> bool {
+    (3..=200).contains(&s.len())
+        && s.contains('/')
+        && !s.starts_with(['.', '#', '@'])
+        && !s.starts_with("//")
+        && !s.contains("://")
+        && s.chars().any(|c| c.is_ascii_lowercase())
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | '{' | '}' | ':')
+        })
 }
 
 /// A small URL builder: `(id, suffix = '') => \`/outlets/${id}${suffix}\``.
@@ -245,6 +367,10 @@ where
             copied_spans: Vec::new(),
             bodies: HashMap::new(),
             local_options: HashMap::new(),
+            locals: HashMap::new(),
+            local_objs: HashMap::new(),
+            url_props: HashMap::new(),
+            decl_const: false,
         }
     }
 
@@ -287,6 +413,7 @@ where
         for stmt in &program.body {
             self.collect_names(stmt);
         }
+        self.collect_url_props();
         // Pass 2: top-level declarations, imports and exports.
         let mut default_export: Option<&'a ExportDefaultDeclarationKind<'a>> = None;
         let mut named_export_locals: HashSet<String> = HashSet::new();
@@ -2581,6 +2708,49 @@ where
             }
             parsed = Some((a.0, false, false));
         }
+        // The URL, or its start, is held somewhere else: a constant of the
+        // function, a table of definitions (`contracts[kind].endpoint`), a
+        // default. Every value it can have.
+        let (mut prefixes, mut prefix_note) = match &parsed {
+            Some((_, true, _)) => self.prefix_options(url_expr),
+            _ => (Vec::new(), None),
+        };
+        // Not when its values are already known another way (a parameter
+        // typed as a choice of strings): those stay as they are.
+        let unknown_start = match &parsed {
+            None => true,
+            Some((url, base_var, _)) => {
+                options.is_empty()
+                    && ((*base_var && prefixes.is_empty())
+                        || (!*base_var
+                            && url.trim_start_matches('/').starts_with("{}")
+                            && self.url_variants(url_expr).0.is_empty()))
+            }
+        };
+        let mut picked = false;
+        let mut guess = false;
+        let mut chosen = false;
+        if unknown_start && let Some(found) = self.url_choices(url_expr, trusted) {
+            chosen = true;
+            match &parsed {
+                // Nothing was readable before: the call is these URLs.
+                None => {
+                    picked = found.loose;
+                    guess = found.guess;
+                    parsed = Some((found.urls[0].clone(), false, false));
+                    options = found.urls;
+                }
+                // The tail was readable: the URLs are tried first, and the
+                // tail decides when none of them has a route.
+                Some(_) => {
+                    picked = !found.guess;
+                    guess = found.guess;
+                    options = found.urls;
+                    prefixes.clear();
+                    prefix_note = None;
+                }
+            }
+        }
         // A URL no text of which is readable (`api.get(pathFor(kind))`): the
         // call is kept as one whose endpoint is unknown, unless its callers
         // fill the URL in, or the callee is not surely an HTTP client.
@@ -2596,8 +2766,14 @@ where
                         | Expression::BooleanLiteral(_)
                         | Expression::NullLiteral(_)
                         | Expression::StringLiteral(_)
-                        | Expression::TemplateLiteral(_)
                 ))
+        {
+            return;
+        }
+        // `${a}${b}` with nothing in it to read is kept; an empty template is not.
+        if dynamic
+            && let Expression::TemplateLiteral(t) = strip_ts(url_expr)
+            && t.expressions.is_empty()
         {
             return;
         }
@@ -2613,13 +2789,15 @@ where
         } else {
             normalize_url(&url)
         };
-        let (prefixes, prefix_note) = if base_var {
-            self.prefix_options(url_expr)
-        } else {
-            (Vec::new(), None)
-        };
         let (variants, variants_loose) = if dynamic {
             (Vec::new(), false)
+        } else if chosen {
+            let loose = picked || guess;
+            if loose || options.len() > 1 {
+                (options.clone(), loose)
+            } else {
+                (Vec::new(), false)
+            }
         } else if options.len() > 1 {
             (options.iter().map(|o| normalize_url(o)).collect(), false)
         } else if base_var {
@@ -2662,6 +2840,8 @@ where
             optional_tail,
             external,
             dynamic,
+            picked,
+            guess,
             line: self.line(c.span.start),
             args,
             type_arg: c
@@ -3747,6 +3927,13 @@ where
         self.fn_stack.pop();
     }
 
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        let before = self.decl_const;
+        self.decl_const = it.kind == VariableDeclarationKind::Const;
+        walk::walk_variable_declaration(self, it);
+        self.decl_const = before;
+    }
+
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
         if let BindingPattern::BindingIdentifier(id) = &it.id
             && let Some(init) = it.init.as_ref()
@@ -3766,6 +3953,32 @@ where
             && let Some(opts) = self.string_options(init, 0)
         {
             self.local_options.insert(id.name.to_string(), opts);
+        }
+        // A constant inside a function holding a URL (or one of the file's
+        // definition objects), for the call that uses it; any other value
+        // hides an outer one of the same name.
+        if let BindingPattern::BindingIdentifier(id) = &it.id
+            && !self.scopes.is_empty()
+        {
+            let name = id.name.as_str();
+            let scope = self.scope();
+            let fixed = self.decl_const;
+            let init = it.init.as_ref().filter(|_| fixed);
+            let urls = init.and_then(|init| self.choices(init, 0));
+            if urls.is_some() || self.locals.contains_key(name) {
+                self.locals
+                    .entry(name.to_owned())
+                    .or_default()
+                    .push((scope, it.span.end, urls));
+            }
+            let objects = init.and_then(|init| self.objs_of(init, 0));
+            if objects.is_some() || self.local_objs.contains_key(name) {
+                self.local_objs.entry(name.to_owned()).or_default().push((
+                    scope,
+                    it.span.end,
+                    objects.unwrap_or_default(),
+                ));
+            }
         }
         // A request body built in a variable, kept for the call that sends it;
         // any other value hides an outer one of the same name.
@@ -4216,6 +4429,410 @@ impl<'a> Analyzer<'_, 'a> {
             _ => format!("`{text}` is not a fixed choice of strings"),
         };
         format!("prefix not expanded: {why}")
+    }
+
+    /// URL-like strings in the file's top-level objects, by the property
+    /// that holds them: what `contract.endpoint` can be when `contract` is
+    /// handed in from elsewhere.
+    fn collect_url_props(&mut self) {
+        let mut inits: Vec<&'a Expression<'a>> = self.consts.values().copied().collect();
+        inits.sort_by_key(|e| e.span().start);
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        for init in inits {
+            self.url_props_in(init, 0, &mut out);
+        }
+        self.url_props = out;
+    }
+
+    fn url_props_in(
+        &self,
+        e: &'a Expression<'a>,
+        depth: u8,
+        out: &mut HashMap<String, Vec<String>>,
+    ) {
+        if depth > 5 {
+            return;
+        }
+        match strip_ts(e) {
+            Expression::ObjectExpression(o) => {
+                for p in &o.properties {
+                    let ObjectPropertyKind::ObjectProperty(p) = p else {
+                        continue;
+                    };
+                    match strip_ts(&p.value) {
+                        Expression::ObjectExpression(_)
+                        | Expression::ArrayExpression(_)
+                        | Expression::CallExpression(_) => {
+                            self.url_props_in(&p.value, depth + 1, out);
+                        }
+                        v => {
+                            if let Some(k) = p.key.static_name()
+                                && let Some(s) = self.eval_str(v, &[], 0)
+                                && url_like(&s)
+                            {
+                                // One past the limit is kept, to tell "too many".
+                                let list = out.entry(k.to_string()).or_default();
+                                if !list.contains(&s) && list.len() <= MAX_GUESSES {
+                                    list.push(s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Expression::ArrayExpression(a) => {
+                for el in &a.elements {
+                    if let Some(x) = el.as_expression() {
+                        self.url_props_in(x, depth + 1, out);
+                    }
+                }
+            }
+            // `defineContracts({ … })`, `Object.freeze({ … })`.
+            Expression::CallExpression(c) => {
+                for a in &c.arguments {
+                    if let Some(x) = a.as_expression() {
+                        self.url_props_in(x, depth + 1, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The constant `name` declared in a function around `pos`, before it.
+    /// `None` when there is none, or a parameter of the same name sits
+    /// between the two.
+    fn local_at<'b, T>(
+        &self,
+        list: Option<&'b Vec<Scoped<T>>>,
+        name: &str,
+        pos: u32,
+    ) -> Option<&'b T> {
+        let (_, declared, value) = list?
+            .iter()
+            .filter(|((start, end), declared, _)| *start <= pos && pos < *end && *declared <= pos)
+            .max_by_key(|(_, declared, _)| *declared)?;
+        let hidden = self
+            .param_index
+            .iter()
+            .any(|(n, _, (at, _))| n == name && *declared < *at && *at <= pos);
+        (!hidden).then_some(value)
+    }
+
+    /// The objects an expression can be, among the file's top-level
+    /// constants: `contracts` itself, `contracts[kind]` (each of its
+    /// values), `contracts.orders`, a local constant holding one of those.
+    fn objs_of(&self, e: &Expression<'a>, depth: u8) -> Option<Vec<&'a ObjectExpression<'a>>> {
+        if depth > 5 {
+            return None;
+        }
+        let found: Vec<&'a Expression<'a>> = match strip_ts(e) {
+            Expression::Identifier(id) => {
+                let name = id.name.as_str();
+                if let Some(objs) = self.local_at(self.local_objs.get(name), name, id.span.start) {
+                    return (!objs.is_empty()).then(|| objs.clone());
+                }
+                vec![*self.consts.get(name)?]
+            }
+            Expression::StaticMemberExpression(m) => {
+                self.props_of(&m.object, Some(m.property.name.as_str()), depth)?
+            }
+            Expression::ComputedMemberExpression(m) => {
+                let key = match strip_ts(&m.expression) {
+                    Expression::StringLiteral(k) => Some(k.value.as_str()),
+                    _ => None,
+                };
+                self.props_of(&m.object, key, depth)?
+            }
+            Expression::ConditionalExpression(c) => {
+                let mut a = self.objs_of(&c.consequent, depth + 1)?;
+                a.extend(self.objs_of(&c.alternate, depth + 1)?);
+                return Some(a);
+            }
+            _ => return None,
+        };
+        let mut out = Vec::new();
+        for v in found {
+            match strip_ts(v) {
+                Expression::ObjectExpression(o) => out.push(&**o),
+                other => out.extend(self.objs_of(other, depth + 1)?),
+            }
+        }
+        (!out.is_empty() && out.len() <= MAX_GUESSES).then_some(out)
+    }
+
+    /// The values of property `key` (of every property, without a key) in
+    /// the objects `e` can be. An object that has no such property is left
+    /// out; one that may get it from a spread makes the answer unknown.
+    fn props_of(
+        &self,
+        e: &Expression<'a>,
+        key: Option<&str>,
+        depth: u8,
+    ) -> Option<Vec<&'a Expression<'a>>> {
+        let mut out = Vec::new();
+        for o in self.objs_of(e, depth + 1)? {
+            let mut spread = false;
+            let mut found = false;
+            for p in &o.properties {
+                let ObjectPropertyKind::ObjectProperty(p) = p else {
+                    spread = true;
+                    continue;
+                };
+                if key.is_none_or(|k| p.key.static_name().as_deref() == Some(k)) {
+                    found = true;
+                    out.push(&p.value);
+                }
+            }
+            if spread && (key.is_none() || !found) {
+                return None;
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Every URL `e` can be, following constants declared in the function,
+    /// tables of definitions (`contracts[kind].endpoint`), conditions and
+    /// defaults (`a || b`). A part that is not known is `{}`.
+    fn choices(&self, e: &Expression<'a>, depth: u8) -> Option<Choices> {
+        if depth > 5 {
+            return None;
+        }
+        let e = strip_ts(e);
+        if let Some(s) = self.eval_str(e, &[], 0) {
+            return Some(Choices::one(s));
+        }
+        let unknown = || Choices::one("{}");
+        let out = match e {
+            Expression::TemplateLiteral(t) => {
+                let mut out = Choices::one("");
+                for (i, q) in t.quasis.iter().enumerate() {
+                    let text = q.value.cooked.unwrap_or(q.value.raw);
+                    out = out.then(&Choices::one(text.as_str()))?;
+                    let Some(x) = t.expressions.get(i) else {
+                        continue;
+                    };
+                    let part = match self.choices(x, depth + 1) {
+                        Some(c) => c,
+                        None => {
+                            // `/orders${qs}`: a query string, not a path.
+                            let tail = t.quasis.get(i + 1).is_none_or(|n| n.value.raw.is_empty())
+                                && i + 1 == t.expressions.len();
+                            let name = self.compact(x.span(), 40).to_ascii_lowercase();
+                            if tail
+                                && !text.ends_with('/')
+                                && (name.contains('?')
+                                    || name.contains("query")
+                                    || name == "qs"
+                                    || name.contains("params")
+                                    || name.contains("search"))
+                            {
+                                continue;
+                            }
+                            unknown()
+                        }
+                    };
+                    out = out.then(&part)?;
+                }
+                out
+            }
+            Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
+                let left = self.choices(&b.left, depth + 1).unwrap_or_else(unknown);
+                let right = self.choices(&b.right, depth + 1).unwrap_or_else(unknown);
+                left.then(&right)?
+            }
+            Expression::ConditionalExpression(c) => {
+                let a = self.choices(&c.consequent, depth + 1);
+                let b = self.choices(&c.alternate, depth + 1);
+                match (a, b) {
+                    (Some(mut a), Some(b)) => {
+                        a.add(b);
+                        a
+                    }
+                    // One branch is not readable: the other is still a URL
+                    // the call can have.
+                    (Some(mut x), None) | (None, Some(mut x)) => {
+                        x.add(unknown());
+                        x.loose = true;
+                        x
+                    }
+                    (None, None) => return None,
+                }
+            }
+            // `endpoint || contracts[kind].endpoint`: the default is one of them.
+            Expression::LogicalExpression(l)
+                if matches!(l.operator, LogicalOperator::Or | LogicalOperator::Coalesce) =>
+            {
+                let mut right = self.choices(&l.right, depth + 1)?;
+                match self.choices(&l.left, depth + 1).filter(|c| !c.guess) {
+                    Some(left) => right.add(left),
+                    None => right.loose = true,
+                }
+                right
+            }
+            Expression::Identifier(id) => {
+                let name = id.name.as_str();
+                match self.local_at(self.locals.get(name), name, id.span.start) {
+                    Some(known) => known.clone()?,
+                    None => Choices {
+                        urls: self.string_options(e, 0)?,
+                        ..Choices::default()
+                    },
+                }
+            }
+            Expression::StaticMemberExpression(_) | Expression::ComputedMemberExpression(_) => {
+                if let Some(c) = self.table_choices(e, depth) {
+                    c
+                } else if let Some(urls) = self.string_options(e, 0) {
+                    Choices {
+                        loose: urls.len() > 1,
+                        urls,
+                        guess: false,
+                    }
+                } else {
+                    self.named_choices(e)?
+                }
+            }
+            Expression::CallExpression(c) => match self.string_options(e, 0) {
+                Some(urls) => Choices {
+                    urls,
+                    ..Choices::default()
+                },
+                // A helper of this file that builds the URL: what it returns,
+                // its own parameters left open.
+                None => {
+                    let mut out = Choices::default();
+                    for r in self.returned_exprs(c)? {
+                        match self.choices(r, depth + 1) {
+                            Some(found) => out.add(found),
+                            None => {
+                                out.add(unknown());
+                                out.loose = true;
+                            }
+                        }
+                    }
+                    out
+                }
+            },
+            _ => return None,
+        };
+        (!out.urls.is_empty() && out.urls.len() <= MAX_GUESSES).then_some(out)
+    }
+
+    /// What a helper of this file returns, for `helper(…)` and
+    /// `endpoints.detail(…)`: the expression of an arrow, or of each
+    /// `return` of a function.
+    fn returned_exprs(&self, c: &CallExpression<'a>) -> Option<Vec<&'a Expression<'a>>> {
+        let values: Vec<&'a Expression<'a>> = match c.callee.without_parentheses() {
+            Expression::Identifier(id) => {
+                if let Some(f) = self.functions.get(id.name.as_str()) {
+                    let mut out = Vec::new();
+                    returns_in(&f.body.as_ref()?.statements, &mut out);
+                    return (!out.is_empty()).then_some(out);
+                }
+                vec![*self.consts.get(id.name.as_str())?]
+            }
+            Expression::StaticMemberExpression(m) => {
+                self.props_of(&m.object, Some(m.property.name.as_str()), 0)?
+            }
+            _ => return None,
+        };
+        let mut out = Vec::new();
+        for v in values {
+            match strip_ts(v) {
+                Expression::ArrowFunctionExpression(a) => match a.get_expression() {
+                    Some(e) => out.push(e),
+                    None => {
+                        if let ArrowFunctionBody::FunctionBody(b) = &a.body {
+                            returns_in(&b.statements, &mut out);
+                        }
+                    }
+                },
+                Expression::FunctionExpression(f) => {
+                    returns_in(&f.body.as_ref()?.statements, &mut out);
+                }
+                _ => return None,
+            }
+        }
+        (!out.is_empty() && out.len() <= 8).then_some(out)
+    }
+
+    /// `contracts[kind].endpoint`, `contract.endpoint` with `contract` one of
+    /// the file's definition objects: that property in each of them.
+    fn table_choices(&self, e: &Expression<'a>, depth: u8) -> Option<Choices> {
+        let (object, key) = match e {
+            Expression::StaticMemberExpression(m) => (&m.object, Some(m.property.name.as_str())),
+            Expression::ComputedMemberExpression(m) => (
+                &m.object,
+                match strip_ts(&m.expression) {
+                    Expression::StringLiteral(k) => Some(k.value.as_str()),
+                    _ => None,
+                },
+            ),
+            _ => return None,
+        };
+        let objects = self.objs_of(object, 0)?;
+        let mut out = Choices::default();
+        for v in self.props_of(object, key, 0)? {
+            // All of them, or none: one unknown value makes the set unknown.
+            out.add(self.choices(v, depth + 1)?);
+            if out.urls.len() > MAX_CHOICES {
+                return None;
+            }
+        }
+        out.loose |= objects.len() > 1 || key.is_none();
+        Some(out)
+    }
+
+    /// `contract.endpoint` with `contract` not known here: every URL the
+    /// file's objects hold under `endpoint`.
+    fn named_choices(&self, e: &Expression<'a>) -> Option<Choices> {
+        let Expression::StaticMemberExpression(m) = e else {
+            return None;
+        };
+        let mut root = &m.object;
+        loop {
+            root = match strip_ts(root) {
+                Expression::StaticMemberExpression(inner) => &inner.object,
+                Expression::ComputedMemberExpression(inner) => &inner.object,
+                Expression::Identifier(_) => break,
+                _ => return None,
+            };
+        }
+        let urls = self.url_props.get(m.property.name.as_str())?;
+        (urls.len() <= MAX_GUESSES).then(|| Choices {
+            urls: urls.clone(),
+            loose: true,
+            guess: true,
+        })
+    }
+
+    /// The URLs a call's first argument can be when it is not written out
+    /// in the call: only those that start with a known word.
+    fn url_choices(&self, e: &Expression<'a>, trusted: bool) -> Option<Choices> {
+        let mut found = self.choices(e, 0)?;
+        let mut urls: Vec<String> = Vec::new();
+        for u in std::mem::take(&mut found.urls) {
+            let u = u.split(['?', '#']).next().unwrap_or("");
+            if u.contains(char::is_whitespace) || u.contains("://") || u.starts_with("//") {
+                return None;
+            }
+            let url = normalize_url(u);
+            let known_start = url
+                .split('/')
+                .find(|s| !s.is_empty())
+                .is_some_and(|s| !s.contains("{}") && !s.starts_with(['.', '#']));
+            if !known_start || (!trusted && !u.contains('/')) {
+                // A value that says nothing: the others are then not all of them.
+                found.loose = true;
+                continue;
+            }
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        found.urls = urls;
+        (!found.urls.is_empty()).then_some(found)
     }
 
     /// The strings an expression can be: literals, a condition between

@@ -4,7 +4,7 @@ const base = 'assets'
 const contracts = { lookups: { categories: 'lookups/categories' } } as const
 
 function familyPath(family: string, id: unknown) {
-  return `${base}/${id}/${family}`
+  return [base, id, family].filter(Boolean).join('/')
 }
 
 function assetForm(record: Record<string, unknown>, method?: 'PATCH') {

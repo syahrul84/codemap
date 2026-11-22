@@ -295,6 +295,15 @@ fn is_placeholder(url: &str) -> bool {
     })
 }
 
+/// The most routes listed for a call that reaches several.
+const MAX_ROUTES_SHOWN: usize = 12;
+
+/// The call's `url` is only the first of its values (nothing of the URL
+/// was written in the call itself).
+fn first_is_url(c: &CallRow) -> bool {
+    (c.picked || c.guess) && c.variants.first() == Some(&c.url)
+}
+
 /// A call whose URL is one of a few known full URLs.
 fn expandable(c: &CallRow) -> bool {
     !c.variants.is_empty() || (c.base_var && !c.prefixes.is_empty())
@@ -601,12 +610,83 @@ impl<'b> Matcher<'b> {
     }
 
     pub fn outcome(&self, c: &CallRow) -> Outcome {
+        self.outcome_with(c, true)
+    }
+
+    /// `closest: false` skips the search for look-alike routes of a URL
+    /// that has none (for one value among many, where only a match counts).
+    fn outcome_with(&self, c: &CallRow, closest: bool) -> Outcome {
         if c.external || framework_endpoint(&c.url) {
             return Outcome::External;
         }
         // The whole URL is built at run time: the call is there, its
         // endpoint is anyone's guess.
         if c.dynamic {
+            return Outcome::Unresolved(Vec::new());
+        }
+        // The URL is read from somewhere else (`contracts[kind].endpoint`,
+        // `contract.endpoint`): the call reaches the routes its values
+        // name. Never a missing route: a value may be one this call never
+        // uses.
+        if c.picked || c.guess {
+            // A guess next to a tail written in the call: the tail decides
+            // when it names one route, as it did before.
+            if c.guess
+                && !first_is_url(c)
+                && let found @ Outcome::Matched(_) = self.outcome(&CallRow {
+                    guess: false,
+                    variants: Vec::new(),
+                    variants_loose: false,
+                    ..c.clone()
+                })
+            {
+                return found;
+            }
+            // Each value as a plain call; what the call reads and sends
+            // plays no part in finding its route.
+            let plain = CallRow {
+                picked: false,
+                guess: false,
+                base_var: false,
+                variants_loose: false,
+                variants: Vec::new(),
+                prefixes: Vec::new(),
+                fields: Vec::new(),
+                typed: Vec::new(),
+                sends: None,
+                ..c.clone()
+            };
+            let mut all: Vec<(usize, usize)> = Vec::new();
+            for url in &c.variants {
+                let one = CallRow {
+                    url: url.clone(),
+                    ..plain.clone()
+                };
+                if let Outcome::Matched(v) = self.outcome_with(&one, false) {
+                    for h in v {
+                        if !all.contains(&h) {
+                            all.push(h);
+                        }
+                    }
+                }
+            }
+            // By a property's name alone: routes it may reach.
+            if c.guess {
+                return Outcome::Unresolved(all);
+            }
+            if !all.is_empty() {
+                return Outcome::Matched(all);
+            }
+            // The tail was written in the call: it decides, as it did
+            // before the values were read.
+            if !first_is_url(c) {
+                return self.outcome(&CallRow {
+                    picked: false,
+                    variants: Vec::new(),
+                    variants_loose: false,
+                    ..c.clone()
+                });
+            }
             return Outcome::Unresolved(Vec::new());
         }
         // A variable prefix with known values (`kind === 'x' ? 'area/x' : 'area'`):
@@ -745,8 +825,10 @@ impl<'b> Matcher<'b> {
         if !wrong_method.is_empty() {
             wrong_method.truncate(3);
             Outcome::MethodMismatch(wrong_method)
-        } else {
+        } else if closest {
             Outcome::NotFound(self.closest(c))
+        } else {
+            Outcome::NotFound(Vec::new())
         }
     }
 
@@ -811,8 +893,8 @@ impl<'b> Matcher<'b> {
 
 pub fn call_label(c: &CallRow) -> String {
     let method = c.method.as_deref().unwrap_or("?");
-    if c.dynamic {
-        // No URL to show: the expression that builds it.
+    if c.dynamic || first_is_url(c) {
+        // No one URL to show: the expression that builds it.
         return format!("{method} `{}`", c.raw);
     }
     format!("{method} {}", c.url)
@@ -1386,11 +1468,22 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
         // Every call is matched once, not once per route.
         let wanted: HashSet<(usize, usize)> = targets.iter().copied().collect();
         let mut callers_of: HashMap<(usize, usize), Vec<&CallRow>> = HashMap::new();
+        // Calls that may reach it: the URL is handed in, and one of the
+        // values it can have names this route.
+        let mut maybe_of: HashMap<(usize, usize), Vec<&CallRow>> = HashMap::new();
         for c in &calls {
-            if let Outcome::Matched(v) = matcher.outcome(c) {
-                for t in v.into_iter().filter(|t| wanted.contains(t)) {
-                    callers_of.entry(t).or_default().push(c);
+            match matcher.outcome(c) {
+                Outcome::Matched(v) => {
+                    for t in v.into_iter().filter(|t| wanted.contains(t)) {
+                        callers_of.entry(t).or_default().push(c);
+                    }
                 }
+                Outcome::Unresolved(v) if c.guess => {
+                    for t in v.into_iter().filter(|t| wanted.contains(t)) {
+                        maybe_of.entry(t).or_default().push(c);
+                    }
+                }
+                _ => {}
             }
         }
         // Part of a path that many routes share: one line per route. The
@@ -1410,11 +1503,15 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                 .map(|(t, action)| {
                     let r = &backends[t.0].routes[t.1];
                     format!(
-                        "{}  → {}  {}  · {} caller(s)",
+                        "{}  → {}  {}  · {} caller(s){}",
                         matcher.route_label(*t).replace("GET|HEAD", "GET"),
                         action.strip_prefix(namespace.as_str()).unwrap_or(action),
                         r.location().unwrap_or_default(),
-                        callers_of.get(t).map_or(0, Vec::len)
+                        callers_of.get(t).map_or(0, Vec::len),
+                        match maybe_of.get(t).map_or(0, Vec::len) {
+                            0 => String::new(),
+                            n => format!(", {n} possible"),
+                        }
                     )
                 })
                 .collect();
@@ -1456,14 +1553,31 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                     v
                 })
                 .collect();
-            list.push(json!({
+            let mut entry = json!({
                 "route": matcher.route_label(t),
                 "name": r.name,
                 "action": r.action_label(),
                 "defined_at": r.location(),
                 "returns": shape,
                 "callers": callers,
-            }));
+            });
+            if let Some(maybe) = maybe_of.get(&t) {
+                entry["possible_callers"] = json!(
+                    maybe
+                        .iter()
+                        .map(|c| json!({
+                            "at": format!("{}:{}", c.file, c.line),
+                            "call": format!("{} {}", c.via, c.raw),
+                            "why": format!(
+                                "`{}` is handed in from elsewhere; this route is one of the {} URL(s) the file keeps under that property",
+                                c.raw,
+                                c.variants.len()
+                            ),
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
+            list.push(entry);
         }
         data["found"] = json!(total > 0);
         data["endpoints"] = json!(list);
@@ -1539,8 +1653,11 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
             continue;
         }
         // Fields the call's TypeScript type requires but the endpoint never sends.
+        // One of several routes (`contracts[kind].endpoint`): what one of
+        // them returns or takes says nothing about this call.
+        let several = c.picked && routes_hit.len() > 1;
         let typed_missing: Vec<String> = match &o {
-            Outcome::Matched(v) if !c.typed.is_empty() => shapes
+            Outcome::Matched(v) if !c.typed.is_empty() && !several => shapes
                 .get(&matcher, v[0])
                 .map(|s| {
                     let as_read = CallRow {
@@ -1564,14 +1681,14 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
         let (typed_missing, typed_unread): (Vec<String>, Vec<String>) =
             typed_missing.into_iter().partition(|m| is_read(m));
         let missing_fields = match &o {
-            Outcome::Matched(v) if !c.fields.is_empty() => shapes
+            Outcome::Matched(v) if !c.fields.is_empty() && !several => shapes
                 .get(&matcher, v[0])
                 .map(|s| not_returned(c, &s))
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
         let accepted = match &o {
-            Outcome::Matched(v) if c.sends.is_some() => shapes.accepts(&matcher, v[0]),
+            Outcome::Matched(v) if c.sends.is_some() && !several => shapes.accepts(&matcher, v[0]),
             _ => None,
         };
         let PayloadCheck {
@@ -1744,13 +1861,33 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                     );
                 }
                 match label {
+                    // Read from a table, a constant or a helper: every
+                    // route its values reach.
+                    "matched" if !c.variants.is_empty() && routes.len() > 1 => {
+                        v["route"] = json!(routes.first());
+                        v["routes"] =
+                            json!(routes.iter().take(MAX_ROUTES_SHOWN).collect::<Vec<_>>());
+                        if routes.len() > MAX_ROUTES_SHOWN {
+                            v["routes_total"] = json!(routes.len());
+                        }
+                        if c.picked {
+                            v["note"] = json!(format!(
+                                "the URL is read from `{}`: one of these, by its value at run time",
+                                c.raw
+                            ));
+                        }
+                    }
                     "matched" => v["route"] = json!(routes.first()),
                     "missing" => v["closest"] = json!(routes),
                     "method_mismatch" => v["path_exists_as"] = json!(routes),
                     "unresolved" => {
                         v["why"] = json!(unresolved_why(c, &routes));
                         if !routes.is_empty() {
-                            v["could_be"] = json!(routes);
+                            v["could_be"] =
+                                json!(routes.iter().take(MAX_ROUTES_SHOWN).collect::<Vec<_>>());
+                        }
+                        if routes.len() > MAX_ROUTES_SHOWN {
+                            v["could_be_total"] = json!(routes.len());
                         }
                     }
                     _ => {}
@@ -1842,7 +1979,12 @@ pub fn api_usage(store: &Store, project: &Project, p: ApiUsageParams) -> R<ApiOu
                     "unresolved" => {
                         s.push_str(&format!("  → unclear: {}", unresolved_why(c, &routes)));
                         if !routes.is_empty() {
-                            s.push_str(&format!("; could be {}", routes.join(" | ")));
+                            let shown: Vec<&str> =
+                                routes.iter().take(4).map(String::as_str).collect();
+                            s.push_str(&format!("; could be {}", shown.join(" | ")));
+                            if routes.len() > shown.len() {
+                                s.push_str(&format!(" (+{} more)", routes.len() - shown.len()));
+                            }
                         }
                     }
                     _ => {}
@@ -2139,6 +2281,35 @@ fn through_helpers(
 
 /// Why a call could not be tied to one route.
 fn unresolved_why(c: &CallRow, candidates: &[String]) -> String {
+    if c.guess {
+        return format!(
+            "the URL is `{}`, handed in from elsewhere: it may be any of the {} URL(s) this file keeps under that property{}",
+            c.raw,
+            c.variants.len(),
+            if candidates.is_empty() {
+                ", none of which has a route with this method"
+            } else {
+                " (`could_be`: the routes they reach)"
+            }
+        );
+    }
+    if c.picked {
+        return format!(
+            "the URL is `{}`, one of {} value(s) ({}), and none has a route with this method{}",
+            c.raw,
+            c.variants.len(),
+            c.variants
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+            match candidates.len() {
+                0 => String::new(),
+                n => format!("; its tail fits {n} route(s) (`could_be`)"),
+            }
+        );
+    }
     if c.dynamic {
         return format!(
             "the URL is built at run time by `{}`, so the endpoint cannot be read from the code",

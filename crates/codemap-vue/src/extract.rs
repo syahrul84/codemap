@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const EXTRACTOR: &str = "js";
 
 /// Bump when per-file output changes; every JS/TS/Vue file is then re-parsed.
-pub const JS_EXTRACTOR_VERSION: i64 = 39;
+pub const JS_EXTRACTOR_VERSION: i64 = 40;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TagUse {
