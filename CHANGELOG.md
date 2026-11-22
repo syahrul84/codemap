@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-22
+
 From an issue filed after a day on 0.1.14 ([#37](https://github.com/syahrul84/codemap/issues/37)): an endpoint looked unused although a page calls it, because the URL is not written in the call.
 
 - `api_usage` follows a URL to where it is written:
