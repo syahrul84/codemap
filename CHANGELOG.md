@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+From two reports filed from a Laravel API with 5,600 routes ([#38](https://github.com/syahrul84/codemap/issues/38), [#39](https://github.com/syahrul84/codemap/issues/39)).
+
+- A route written with its method in another letter case (`Route::POST('reports/export-pdf', …)`, `Route::Get(…)`, `->Middleware('auth')`, `->Group(…)`, `route::delete(…)`) is read like any other: PHP calls a method whatever case its name is written in, and the app serves the route. It was left out, so `verify` answered `not_found` for a route that exists and `list_routes` did not list it. Route files are read again on the first call after the update.
+- The release check (`verify` with `release_check: true`) is several times faster on a large Laravel project, and no longer slows down with the size of the branch. On the API the report came from, measured in Docker with the same answers before and after: 12 s → 2.5 s on a branch with 1,800 changed files, 24 s → 3 s on one with 9,700 (most of them pages of text and images). What it did over and over, it now does once:
+  - config keys: the packages' own config files (`vendor/*/*/config/*.php`) were looked for again for every `config('…')` the app reads, thousands of times; they are listed once;
+  - settings: every symbol of the project was loaded again for each place a setting is saved; a project without admin pages for its settings now skips the step, and others ask for the classes of the one file;
+  - unused code: whether a class is used was answered by counting every use of it, where finding the first is enough; a changed file is only read when one of its symbols needs its text;
+  - deleted names: what a changed file declared before was read with one `git show` per file; one git process now reads them all;
+  - tests on live data: a test file whose path already rules it out is not read.
+- A slow answer says where its time went. The report codemap files by itself for an answer slower than 5 s (`codemap reports`) names the steps (`answered in 6.2 s with nothing to re-index (unused code 4.0 s, settings 2.0 s)`) and how long the call waited for its turn behind other calls, so the report says what to speed up. An answer that waited a second or more for its turn says so in `meta.warnings`: one server answers one call at a time, so calls made together wait for each other. `codemap query` logs the steps of an answer that takes over a second.
+
 ## [0.1.15] - 2026-11-22
 
 From an issue filed after a day on 0.1.14 ([#37](https://github.com/syahrul84/codemap/issues/37)): an endpoint looked unused although a page calls it, because the URL is not written in the call.

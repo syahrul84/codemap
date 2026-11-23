@@ -111,6 +111,41 @@ struct Answer {
 const KEPT_ANSWERS: usize = 50;
 /// An answer slower than this (after the first index) is reported.
 const SLOW: Duration = Duration::from_secs(5);
+/// An answer that waited this long for its turn says so.
+const QUEUED_NOTED: Duration = Duration::from_secs(1);
+
+/// How long an answer took, and where the time went.
+struct Took {
+    /// From the call being ready to run to its answer.
+    all: Duration,
+    /// Of that, waiting for the calls before it.
+    queued: Duration,
+    /// The steps of the tool's own work, longest first.
+    steps: Vec<(&'static str, Duration)>,
+}
+
+impl Took {
+    /// What the report of a slow answer says: the wait and the work apart,
+    /// and the steps the work went to, so the report names what to speed up.
+    fn text(&self) -> String {
+        let mut text = format!(
+            "answered in {:.1} s with nothing to re-index",
+            self.all.as_secs_f64()
+        );
+        if self.queued >= Duration::from_millis(100) {
+            text.push_str(&format!(
+                ": {:.1} s waiting for its turn behind other calls, {:.1} s of work",
+                self.queued.as_secs_f64(),
+                self.all.saturating_sub(self.queued).as_secs_f64()
+            ));
+        }
+        let steps = codemap_core::timing::text(&self.steps);
+        if !steps.is_empty() {
+            text.push_str(&format!(" ({steps})"));
+        }
+        text
+    }
+}
 
 struct Shared {
     apps: Vec<App>,
@@ -425,23 +460,28 @@ impl CodemapServer {
         let call_args = args.clone();
         let (reindexed, was_stale) = (fresh.reindexed_files, fresh.stale);
         let result = tokio::task::spawn_blocking(move || {
+            // One call reads the index at a time: a call made while another
+            // is being answered waits here for its turn.
             let guards: Vec<_> = shared.apps.iter().map(|a| lock(&a.reader)).collect();
+            let queued = started.elapsed();
             let apps: Vec<(&Store, &Project)> = guards
                 .iter()
                 .zip(&shared.apps)
                 .map(|(g, a)| (&**g, &a.project))
                 .collect();
             let asked = args.clone();
+            codemap_core::timing::start();
             let result = crate::workspace::call(&apps, name, args, fresh);
+            let steps = codemap_core::timing::finish();
             // Names the AI asked for that do not exist go to its mistakes log.
             if let Ok(env) = &result {
                 let projects: Vec<&Project> = shared.apps.iter().map(|a| &a.project).collect();
                 crate::misses::record(&projects, name, &asked, &env.data);
             }
-            result
+            (result, queued, steps)
         })
         .await;
-        let result = match result {
+        let (result, queued, steps) = match result {
             Ok(r) => r,
             Err(e) => {
                 self.record_call(
@@ -463,12 +503,22 @@ impl CodemapServer {
             Ok(mut envelope) => {
                 let id = format!("c{}", self.shared.next_call.fetch_add(1, Ordering::SeqCst));
                 envelope.meta.call_id = Some(id.clone());
+                if queued >= QUEUED_NOTED {
+                    envelope.meta.warnings.push(format!(
+                        "this answer waited {:.1} s for its turn: this server answers one call at a time, and another call was still being answered",
+                        queued.as_secs_f64()
+                    ));
+                }
                 self.after_answer(
                     &id,
                     name,
                     &call_args,
                     &envelope,
-                    started.elapsed(),
+                    Took {
+                        all: started.elapsed(),
+                        queued,
+                        steps,
+                    },
                     reindexed,
                     was_stale,
                 );
@@ -585,7 +635,7 @@ impl CodemapServer {
         tool: &str,
         args: &serde_json::Value,
         env: &codemap_core::envelope::Envelope<serde_json::Value>,
-        took: Duration,
+        took: Took,
         reindexed: usize,
         stale: bool,
     ) {
@@ -637,16 +687,13 @@ impl CodemapServer {
                 .entry(key(&m.kind, &m.item))
                 .or_insert((id.to_owned(), generation));
         }
-        if took > SLOW && reindexed == 0 {
+        if took.all > SLOW && reindexed == 0 {
             self.auto_report(
                 tool,
                 args,
                 "slow",
                 tool,
-                &format!(
-                    "answered in {:.1} s with nothing to re-index",
-                    took.as_secs_f64()
-                ),
+                &took.text(),
                 serde_json::Value::Null,
             );
         }
@@ -1181,6 +1228,49 @@ pub async fn serve(projects: Vec<Project>) -> anyhow::Result<()> {
     tracing::info!("MCP server ready on stdio");
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod took_tests {
+    use super::{Duration, Took};
+
+    /// The report of a slow answer says where the time went: waiting for
+    /// its turn, and which steps of the work.
+    #[test]
+    fn a_slow_answer_says_where_the_time_went() {
+        let secs = Duration::from_secs_f64;
+        let work_only = Took {
+            all: secs(6.2),
+            queued: secs(0.01),
+            steps: vec![
+                ("unused code", secs(4.0)),
+                ("settings", secs(2.0)),
+                ("copy rules", secs(0.02)),
+            ],
+        };
+        assert_eq!(
+            work_only.text(),
+            "answered in 6.2 s with nothing to re-index (unused code 4.0 s, settings 2.0 s)"
+        );
+        let mostly_waiting = Took {
+            all: secs(12.6),
+            queued: secs(9.1),
+            steps: vec![("unused code", secs(3.4))],
+        };
+        assert_eq!(
+            mostly_waiting.text(),
+            "answered in 12.6 s with nothing to re-index: 9.1 s waiting for its turn behind other calls, 3.5 s of work (unused code 3.4 s)"
+        );
+        let no_steps = Took {
+            all: secs(5.5),
+            queued: Duration::ZERO,
+            steps: Vec::new(),
+        };
+        assert_eq!(
+            no_steps.text(),
+            "answered in 5.5 s with nothing to re-index"
+        );
+    }
 }
 
 #[cfg(test)]

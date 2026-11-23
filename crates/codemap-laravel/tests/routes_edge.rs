@@ -206,3 +206,58 @@ fn resource_where_constraints_apply_to_every_route() {
             .all(|r| r.extra.wheres.get("group").map(String::as_str) == Some("[0-9]+"))
     );
 }
+
+/// PHP calls a method whatever case its name is written in, so a route file
+/// may say `Route::POST(...)`: it is the same route as `Route::post(...)`.
+#[test]
+fn method_names_are_read_in_any_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    common::write(
+        root,
+        "composer.lock",
+        r#"{"packages":[{"name":"laravel/framework","version":"v11.0.0"}]}"#,
+    );
+    common::write(
+        root,
+        "routes/web.php",
+        r#"<?php
+use App\Http\Controllers\ReportController;
+use Illuminate\Support\Facades\Route;
+
+Route::POST('reports/summary/export-pdf', [ReportController::class, 'exportPdf']);
+Route::Get('reports/summary', [ReportController::class, 'summary'])->Name('reports.summary');
+route::delete('reports/{report}', [ReportController::class, 'destroy']);
+Route::PREFIX('admin')->MIDDLEWARE('auth')->Group(function () {
+    Route::Match(['GET', 'POST'], 'search', [ReportController::class, 'search']);
+    Route::APIRESOURCE('notes', ReportController::class)->ONLY(['index']);
+});
+"#,
+    );
+    let (store, _) = indexed(root);
+    let all = routes(&store);
+    assert_eq!(all.len(), 5, "{all:#?}");
+
+    let export = one(&all, "reports/summary/export-pdf");
+    assert_eq!(export.methods, ["POST"]);
+    assert_eq!(export.action_kind, ActionKind::Controller);
+    assert_eq!(
+        export.controller_fqn.as_deref(),
+        Some("App\\Http\\Controllers\\ReportController")
+    );
+    assert_eq!(export.controller_method.as_deref(), Some("exportPdf"));
+
+    let summary = one(&all, "reports/summary");
+    assert_eq!(summary.methods, ["GET", "HEAD"]);
+    assert_eq!(summary.name.as_deref(), Some("reports.summary"));
+
+    assert_eq!(one(&all, "reports/{report}").methods, ["DELETE"]);
+
+    let search = one(&all, "admin/search");
+    assert_eq!(search.methods, ["GET", "POST", "HEAD"]);
+    assert_eq!(search.middleware, ["web", "auth"]);
+
+    let notes = one(&all, "admin/notes");
+    assert_eq!(notes.methods, ["GET", "HEAD"]);
+    assert!(notes.unresolved_reason.is_none(), "{notes:#?}");
+}

@@ -301,14 +301,14 @@ pub fn describe(store: &Store, root: &Path, prefix: Option<&str>, detail: Detail
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    let page_for = |writer_file: &str| -> Option<String> {
+    let page_of = |writer_file: &str| -> Option<String> {
         if let Some((url, _)) = admin.iter().find(|(_, f)| f == writer_file) {
             return Some(url.clone());
         }
-        let classes: Vec<String> = symbols::all(conn)
+        let classes: Vec<String> = symbols::in_file(conn, writer_file)
             .ok()?
             .into_iter()
-            .filter(|s| s.file == writer_file && s.kind.is_class_like())
+            .filter(|s| s.kind.is_class_like())
             .map(|s| s.fqn)
             .collect();
         for (url, page_file) in &admin {
@@ -327,6 +327,22 @@ pub fn describe(store: &Store, root: &Path, prefix: Option<&str>, detail: Detail
             }
         }
         None
+    };
+    // Asked once per file that writes a setting: a project writes settings
+    // in many places, mostly from the same few files.
+    let asked: std::cell::RefCell<BTreeMap<String, Option<String>>> = Default::default();
+    let page_for = |writer_file: &str| -> Option<String> {
+        if admin.is_empty() {
+            return None;
+        }
+        if let Some(known) = asked.borrow().get(writer_file) {
+            return known.clone();
+        }
+        let found = page_of(writer_file);
+        asked
+            .borrow_mut()
+            .insert(writer_file.to_owned(), found.clone());
+        found
     };
 
     let limit = if detail == Detail::Full { 1000 } else { 80 };

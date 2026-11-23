@@ -1,6 +1,8 @@
 //! Git facts for response freshness. Git is optional: anything that fails
 //! (no git binary, not a repo, unsafe directory) yields `None`, never an error.
 
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -285,6 +287,78 @@ pub fn show(root: &Path, rev: &str, path: &str) -> Option<String> {
     git(root, &["show", &format!("{rev}:./{path}")])
 }
 
+/// Many files' content at `rev`, read by one git process (a `git show` per
+/// file costs a process each: a branch can touch hundreds). A file that did
+/// not exist there is left out.
+pub fn show_many(root: &Path, rev: &str, paths: &[&str]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    // One request per line: a path with a line break in it cannot be asked for.
+    let paths: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|p| !p.contains('\n'))
+        .collect();
+    if paths.is_empty() {
+        return out;
+    }
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(error = %e, "git not available");
+            return out;
+        }
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return out;
+    };
+    let asked: String = paths.iter().map(|p| format!("{rev}:./{p}\n")).collect();
+    // Written from a thread of its own: git answers while it is still being
+    // asked, and both pipes are only so large.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(asked.as_bytes());
+    });
+    let mut reader = BufReader::new(stdout);
+    for path in &paths {
+        // `<object> <type> <size>`, then the content and a line break; or
+        // `<what was asked> missing`.
+        let mut header = String::new();
+        if reader.read_line(&mut header).unwrap_or(0) == 0 {
+            break;
+        }
+        let mut words = header.trim_end().rsplitn(3, ' ');
+        let (size, kind) = (words.next(), words.next());
+        let Some(size) = size
+            .filter(|_| words.next().is_some())
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue; // missing, or a name git could not read
+        };
+        let mut content = vec![0; size + 1];
+        if reader.read_exact(&mut content).is_err() {
+            break;
+        }
+        content.pop();
+        if kind == Some("blob") {
+            out.insert(
+                (*path).to_owned(),
+                String::from_utf8_lossy(&content).trim().to_owned(),
+            );
+        }
+    }
+    drop(reader);
+    let _ = writer.join();
+    let _ = child.wait();
+    out
+}
+
 pub fn remote_url(root: &Path) -> Option<String> {
     git(root, &["config", "--get", "remote.origin.url"]).filter(|s| !s.is_empty())
 }
@@ -383,6 +457,57 @@ mod tests {
             remote_url(root).as_deref(),
             Some("git@example.test:acme/api.git")
         );
+    }
+
+    #[test]
+    fn many_files_are_read_at_a_commit_in_one_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Outside a repository: nothing, as with `show`.
+        assert!(show_many(root, "HEAD", &["a.php"]).is_empty());
+        run(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join("app/Http")).unwrap();
+        std::fs::write(root.join("a.php"), "<?php\nclass A {}\n").unwrap();
+        std::fs::write(root.join("app/Http/b c.php"), "<?php\nclass B {}\n").unwrap();
+        std::fs::write(root.join("empty.txt"), "").unwrap();
+        // Larger than a pipe holds, with bytes that are not text.
+        let mut big = vec![b'x'; 300_000];
+        big.extend([0xff, 0xfe, b'\n']);
+        std::fs::write(root.join("big.bin"), &big).unwrap();
+        run(root, &["add", "."]);
+        run(root, &["commit", "-q", "-m", "init"]);
+        // Changed and deleted since: the commit's content is what comes back.
+        std::fs::write(root.join("a.php"), "<?php\nclass Renamed {}\n").unwrap();
+        std::fs::remove_file(root.join("app/Http/b c.php")).unwrap();
+
+        let asked = [
+            "a.php",
+            "missing.php",
+            "app/Http/b c.php",
+            "big.bin",
+            "empty.txt",
+            "app",
+        ];
+        let got = show_many(root, "HEAD", &asked);
+        assert_eq!(
+            got.get("a.php").map(String::as_str),
+            Some("<?php\nclass A {}")
+        );
+        assert_eq!(got["a.php"], show(root, "HEAD", "a.php").unwrap());
+        assert_eq!(got["app/Http/b c.php"], "<?php\nclass B {}");
+        assert_eq!(got["empty.txt"], "");
+        assert!(got["big.bin"].starts_with("xxxx") && got["big.bin"].len() >= 300_000);
+        // Not there at that commit, and a folder: left out.
+        assert!(!got.contains_key("missing.php"));
+        assert!(!got.contains_key("app"));
+        assert_eq!(got.len(), 4);
+
+        // From a folder inside the repository, paths are from that folder.
+        let inside = show_many(&root.join("app"), "HEAD", &["Http/b c.php", "a.php"]);
+        assert_eq!(inside.len(), 1);
+        assert_eq!(inside["Http/b c.php"], "<?php\nclass B {}");
+        // A commit that does not exist: nothing.
+        assert!(show_many(root, "no-such-branch", &["a.php"]).is_empty());
     }
 
     #[test]

@@ -187,6 +187,62 @@ const RESOURCES: &[&str] = &[
     "apiResources",
 ];
 
+/// What a registration is followed or preceded by (`->prefix('admin')`,
+/// `->only([...])`), and what a provider calls on itself.
+const ATTRS: &[&str] = &[
+    "group",
+    "prefix",
+    "name",
+    "as",
+    "middleware",
+    "withoutMiddleware",
+    "namespace",
+    "controller",
+    "domain",
+    "where",
+    "whereNumber",
+    "whereAlpha",
+    "whereAlphaNumeric",
+    "whereUuid",
+    "whereUlid",
+    "whereIn",
+    "can",
+    "defaults",
+    "scopeBindings",
+    "withoutScopedBindings",
+    "missing",
+    "withTrashed",
+    "block",
+    "withoutBlocking",
+    "lock",
+    "setBindingFields",
+    "only",
+    "except",
+    "names",
+    "parameters",
+    "parameter",
+    "shallow",
+    "creatable",
+    "destroyable",
+    "middlewareFor",
+    "withoutMiddlewareFor",
+    "scoped",
+    "routes",
+    "loadRoutesFrom",
+];
+
+/// PHP calls a method whatever case its name is written in
+/// (`Route::POST(...)`, `->Middleware('auth')`): a name this reader knows is
+/// read in the spelling it is matched by, any other name is kept as written.
+fn method_name(written: &str) -> String {
+    [VERBS, RESOURCES, ATTRS]
+        .into_iter()
+        .flatten()
+        .find(|known| known.eq_ignore_ascii_case(written))
+        .map_or(written, |known| known)
+        .to_owned()
+}
+
 fn is_registration(name: &str) -> bool {
     name == "group" || VERBS.contains(&name) || RESOURCES.contains(&name)
 }
@@ -577,7 +633,7 @@ impl<'r> Evaluator<'r> {
     // ------------------------------------------------------------ chains
 
     fn call<'t>(&self, n: Node<'t>, f: &FileCtx<'_>) -> Option<Call<'t>> {
-        let name = text(n.child_by_field_name("name")?, f.src).to_owned();
+        let name = method_name(text(n.child_by_field_name("name")?, f.src));
         let args = n
             .child_by_field_name("arguments")
             .map(|a| {
@@ -635,7 +691,8 @@ impl<'r> Evaluator<'r> {
             },
             "scoped_call_expression" => {
                 let scope = text(n.child_by_field_name("scope")?, f.src);
-                let is_route = scope.trim_start_matches('\\') == "Route"
+                // Class names too: `route::get(...)` is the same facade.
+                let is_route = scope.trim_start_matches('\\').eq_ignore_ascii_case("Route")
                     || f.scope.resolve_class(scope).as_deref() == Some(ROUTE_FACADE);
                 is_route.then(|| self.call(n, f).map(|c| (Root::Route, vec![c])))?
             }

@@ -350,6 +350,17 @@ pub fn all(conn: &Connection) -> Result<Vec<SymbolRecord>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The symbols of one file, in the order they are written.
+pub fn in_file(conn: &Connection, path: &str) -> Result<Vec<SymbolRecord>> {
+    let sql = format!(
+        "SELECT {RECORD_COLUMNS} FROM symbols s JOIN files f ON f.id = s.file_id
+         WHERE f.path = ?1 ORDER BY s.start_line, s.fqn"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map([path], SymbolRecord::from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Symbols whose FQN matches exactly (case-insensitive, leading `\\` ignored).
 pub fn by_fqn(conn: &Connection, fqn: &str) -> Result<Vec<SymbolRecord>> {
     let sql = format!(

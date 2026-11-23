@@ -1234,7 +1234,16 @@ fn cmd_query(
     let mcp: Vec<codemap_mcp::Project> = projects.iter().map(Project::mcp).collect();
     let apps: Vec<(&Store, &codemap_mcp::Project)> = stores.iter().zip(&mcp).collect();
     let started = std::time::Instant::now();
+    codemap_core::timing::start();
     let result = codemap_mcp::workspace::call(&apps, tool, args.clone(), fresh);
+    let steps = codemap_core::timing::text(&codemap_core::timing::finish());
+    if started.elapsed() >= std::time::Duration::from_secs(1) {
+        tracing::info!(
+            ms = started.elapsed().as_millis() as u64,
+            steps = %steps,
+            "answer took over a second"
+        );
+    }
     let target = args["app"]
         .as_str()
         .and_then(|a| mcp.iter().find(|p| p.app.as_deref() == Some(a)))

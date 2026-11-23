@@ -87,17 +87,23 @@ pub fn gone(root: &Path, from: &str, changes: &[Change]) -> Vec<(String, String)
             out.push((name, why));
         }
     };
-    for c in changes {
-        let old_path = match c.status {
-            'D' => c.path.as_str(),
+    // Where each changed file was before, when what it declared then is
+    // worth reading.
+    fn old_path(c: &Change) -> Option<&str> {
+        let old = match c.status {
+            'D' | 'M' => c.path.as_str(),
             'R' => c.from.as_deref().unwrap_or(&c.path),
-            'M' => c.path.as_str(),
-            _ => continue,
+            _ => return None,
         };
-        if crate::usages::is_test_path(old_path) || old_path.ends_with(".md") {
+        (!crate::usages::is_test_path(old) && !old.ends_with(".md")).then_some(old)
+    }
+    let old_paths: Vec<&str> = changes.iter().filter_map(old_path).collect();
+    let mut was = codemap_core::git::show_many(root, from, &old_paths);
+    for c in changes {
+        let Some(old_path) = old_path(c) else {
             continue;
-        }
-        let Some(before) = codemap_core::git::show(root, from, old_path) else {
+        };
+        let Some(before) = was.remove(old_path) else {
             continue;
         };
         let before_names = declared(old_path, &before);
@@ -307,6 +313,101 @@ mod tests {
         assert!(!searchable("refund"));
         assert!(!searchable("Index"));
         assert!(!searchable("item"));
+    }
+
+    /// What a branch removed, read from git: a deleted file, a renamed one,
+    /// a method taken out of a file that stays.
+    #[test]
+    fn names_gone_from_a_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "user.name=codemap",
+                    "-c",
+                    "user.email=codemap@example.test",
+                ])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        write(
+            "app/Services/OrderMailer.php",
+            "<?php\nclass OrderMailer {\n  public function sendReceipt() {}\n  public function sendInvoice() {}\n}\n",
+        );
+        write(
+            "app/Services/LegacyExporter.php",
+            "<?php\nclass LegacyExporter {}\n",
+        );
+        write("src/useCartApi.ts", "export function fetchCart() {}\n");
+        write("docs/notes.md", "function writtenInDocs() {}\n");
+        write(
+            "tests/Feature/OrderTest.php",
+            "<?php\nclass OrderTest { function test_old_flow() {} }\n",
+        );
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+
+        // On the branch: a method removed, a file deleted, a file renamed,
+        // a doc and a test rewritten, a file added.
+        git(&["checkout", "-q", "-b", "cleanup"]);
+        write(
+            "app/Services/OrderMailer.php",
+            "<?php\nclass OrderMailer {\n  public function sendReceipt() {}\n}\n",
+        );
+        std::fs::remove_file(root.join("app/Services/LegacyExporter.php")).unwrap();
+        git(&["mv", "src/useCartApi.ts", "src/useBasketApi.ts"]);
+        write("docs/notes.md", "nothing\n");
+        write("tests/Feature/OrderTest.php", "<?php\nclass OrderTest {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "cleanup"]);
+        write("app/Services/NewThing.php", "<?php\nclass NewThing {}\n");
+
+        let (_, from, changes) = codemap_core::git::branch_changes(root, Some("main")).unwrap();
+        let found = gone(root, &from, &changes);
+        let why = |name: &str| {
+            found
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, why)| why.as_str())
+        };
+        assert_eq!(
+            why("sendInvoice"),
+            Some("removed from app/Services/OrderMailer.php")
+        );
+        assert_eq!(
+            why("LegacyExporter"),
+            Some("app/Services/LegacyExporter.php was deleted")
+        );
+        assert_eq!(
+            why("useCartApi"),
+            Some("src/useCartApi.ts was renamed to src/useBasketApi.ts")
+        );
+        // Still there, never there, or only in a doc or a test: not gone.
+        for kept in [
+            "OrderMailer",
+            "sendReceipt",
+            "fetchCart",
+            "NewThing",
+            "writtenInDocs",
+            "test_old_flow",
+        ] {
+            assert_eq!(why(kept), None, "{kept}: {found:?}");
+        }
+        assert_eq!(found.len(), 3, "{found:?}");
     }
 
     #[test]

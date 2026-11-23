@@ -63,17 +63,18 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
     let root = project.root.as_path();
     let conn = store.conn();
     let count = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> i64 {
-        conn.query_row(sql, p, |r| r.get(0)).unwrap_or(1)
+        conn.prepare_cached(sql)
+            .and_then(|mut q| q.query_row(p, |r| r.get(0)))
+            .unwrap_or(1)
+    };
+    // Whether there is one at all: counting every use of a class the whole
+    // app uses takes far longer than finding the first.
+    let any = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> bool {
+        conn.prepare_cached(&format!("SELECT EXISTS ({sql})"))
+            .and_then(|mut q| q.query_row(p, |r| r.get(0)))
+            .unwrap_or(true)
     };
     let mut out = Vec::new();
-    let wanted: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
-    let mut by_file: std::collections::HashMap<String, Vec<codemap_core::symbols::SymbolRecord>> =
-        std::collections::HashMap::new();
-    for s in codemap_core::symbols::all(conn)? {
-        if wanted.contains(s.file.as_str()) {
-            by_file.entry(s.file.clone()).or_default().push(s);
-        }
-    }
     for f in files {
         if is_test_path(f) || discovered(f) {
             continue;
@@ -134,8 +135,14 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
                 out.push(format!("{f}: {what} {} is not shown anywhere", v.name));
             }
         }
-        let syms = by_file.remove(f.as_str()).unwrap_or_default();
-        let text = std::fs::read_to_string(root.join(f)).unwrap_or_default();
+        let syms = codemap_core::symbols::in_file(conn, f)?;
+        // Read when a symbol asks for it: most changed files have none
+        // (pages of text, images), and a branch can change thousands.
+        let read = std::cell::OnceCell::<String>::new();
+        let text = || {
+            read.get_or_init(|| std::fs::read_to_string(root.join(f)).unwrap_or_default())
+                .as_str()
+        };
         for s in syms {
             if f.ends_with(".php") {
                 if !s.kind.is_class_like() {
@@ -144,21 +151,23 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
                 let members = format!("{}::", s.fqn);
                 let members_end = crate::usages::range_end(&members);
                 // Two indexed counts, not one `OR` (that scans every reference).
-                let used = count(
-                    "SELECT COUNT(*) FROM refs r JOIN files fl ON fl.id = r.file_id
+                let used = any(
+                    "SELECT 1 FROM refs r JOIN files fl ON fl.id = r.file_id
                      WHERE fl.path != ?2 AND r.kind = 'class' AND r.target = ?1 COLLATE NOCASE",
                     &[&s.fqn, f],
-                ) + count(
-                    "SELECT COUNT(*) FROM refs r JOIN files fl ON fl.id = r.file_id
+                ) || any(
+                    "SELECT 1 FROM refs r JOIN files fl ON fl.id = r.file_id
                      WHERE fl.path != ?3 AND r.kind = 'call'
                        AND r.target >= ?1 COLLATE NOCASE AND r.target < ?2 COLLATE NOCASE",
                     &[&members, &members_end, f],
                 );
-                let routed = count(
-                    "SELECT COUNT(*) FROM routes WHERE controller_fqn = ?1 COLLATE NOCASE",
-                    &[&s.fqn],
-                );
-                if used + routed == 0 {
+                let routed = || {
+                    any(
+                        "SELECT 1 FROM routes WHERE controller_fqn = ?1 COLLATE NOCASE",
+                        &[&s.fqn],
+                    )
+                };
+                if !used && !routed() {
                     out.push(format!("{f}: class {} is not used anywhere", s.fqn));
                 }
             } else if s.parent_fqn.is_some() || s.visibility.as_deref() == Some("private") {
@@ -177,14 +186,14 @@ fn unused_in(store: &Store, project: &Project, base: &str, files: &[String]) -> 
                     &[&s.name],
                 );
                 // Mentioned again in its own file (called, or passed by name).
-                let local = word_count(&text, &s.name) > 1;
+                let local = word_count(text(), &s.name) > 1;
                 // What `find_usages` says, so both agree (auto-imports, templates).
                 let elsewhere = imported + called > 0
                     || (s.kind.as_str() != "interface"
                         && used_elsewhere(store, project, &s.name, f));
                 if !elsewhere && !local {
                     out.push(format!("{f}: {} {} is not used anywhere", s.kind, s.name));
-                } else if !elsewhere && text_exports(&text, &s.name) {
+                } else if !elsewhere && text_exports(text(), &s.name) {
                     out.push(format!(
                         "{f}: {} {} is exported but only used in its own file",
                         s.kind, s.name
@@ -498,6 +507,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }
     }
 
+    codemap_core::timing::mark("API calls");
     // Translations: shipped locales only.
     let cats = crate::i18n::catalogs(store.conn(), &project.config.i18n.locales)?;
     if !cats.is_empty() {
@@ -526,6 +536,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }
     }
 
+    codemap_core::timing::mark("translations");
     // Code added on this branch that nothing uses.
     let mut branch: Option<Vec<String>> = None;
     match codemap_core::git::branch_files(&project.root, base) {
@@ -546,6 +557,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         None => notes.push("not a git repository: unused new code not checked".into()),
     }
 
+    codemap_core::timing::mark("unused code");
     // What the release needs on the server, the project's file rules, and
     // mentions left behind after deletions.
     let mut deploy_steps: Vec<Value> = Vec::new();
@@ -575,9 +587,10 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }));
     }
 
+    codemap_core::timing::mark("release steps and file rules");
     // Tests that only pass with the right data already in the database.
-    let all_files: Vec<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
-    let live = crate::livedata::find(&project.root, &all_files);
+    let files: Vec<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
+    let live = crate::livedata::find(&project.root, &files);
     if !live.is_empty() {
         checked.push("tests that depend on live data".into());
         let examples: Vec<String> = live
@@ -592,8 +605,8 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         ));
     }
 
+    codemap_core::timing::mark("tests on live data");
     // Laravel: migrations, config, settings.
-    let files: Vec<String> = store.list_files()?.into_iter().map(|f| f.path).collect();
     let laravel = files.iter().any(|f| f.starts_with("database/migrations/"))
         || project.root.join("artisan").is_file();
     if laravel {
@@ -639,6 +652,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
                     .into(),
             );
         }
+        codemap_core::timing::mark("migrations");
         // Validation messages name each field from `validation.attributes`;
         // a field missing from a shipped language's list shows its raw key.
         if let Some((broken, unnamed)) = field_names_missing(store, &project.config.i18n.locales)? {
@@ -655,6 +669,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
                 ));
             }
         }
+        codemap_core::timing::mark("validation field names");
         checked.push("config and env keys".into());
         for (what, item, at) in codemap_laravel::settings::config_problems(
             &project.root,
@@ -664,6 +679,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         )? {
             push(&mut problems, "config", format!("{what}: {item} {at}"));
         }
+        codemap_core::timing::mark("config and env keys");
         let s = codemap_laravel::settings::describe(store, &project.root, None, Detail::Full)?;
         if s["settings_total"].as_u64().unwrap_or(0) > 0 {
             checked.push("settings".into());
@@ -701,6 +717,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }
     }
 
+    codemap_core::timing::mark("settings");
     // House copy rules (banned words per locale).
     let copy = crate::copy_rules::check(store, project)?;
     if let Some(found) = copy {
@@ -710,6 +727,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
         }
     }
 
+    codemap_core::timing::mark("copy rules");
     // Mentions of deleted names, searched in the background.
     {
         for (name, why, places) in leftover_job
@@ -744,6 +762,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
             }
         }
     }
+    codemap_core::timing::mark("mentions of deleted names");
     // Marked as intended: `codemap-ignore` on (or above) the line, or `[release] ignore`.
     let mut ignored: Vec<String> = Vec::new();
     problems.retain(|p| {
@@ -761,6 +780,7 @@ pub fn release_check(store: &Store, project: &Project, base: Option<&str>) -> R<
             true
         }
     });
+    codemap_core::timing::mark("ignore marks");
     let mut v = json!({
         "clean": problems.is_empty(),
         "problems_total": problems.len(),

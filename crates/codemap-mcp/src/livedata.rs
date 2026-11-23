@@ -339,13 +339,16 @@ pub fn find(root: &Path, files: &[String]) -> Vec<(String, String)> {
     let mut app_text = AppText::new(root);
     let mut out = Vec::new();
     for f in files.iter().filter(|f| is_test_path(f)) {
+        // Not read at all when its path already rules it out: a project has
+        // thousands of unit tests.
+        let php = f.ends_with(".php");
+        if php && (php_seeded || !f.contains("Feature") && !f.contains("Browser")) {
+            continue;
+        }
         let Ok(src) = std::fs::read_to_string(root.join(f)) else {
             continue;
         };
-        if f.ends_with(".php") {
-            if php_seeded || !f.contains("Feature") && !f.contains("Browser") {
-                continue;
-            }
+        if php {
             let checks = count(&src, PHP_CHECKS);
             // Setup in the test's own parent class (`extends IntegrationTestCase`).
             let parent = parent_class(&src)

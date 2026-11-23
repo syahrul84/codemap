@@ -13,6 +13,7 @@ pub mod scan;
 pub mod store;
 pub mod symbols;
 pub mod time;
+pub mod timing;
 pub mod updates;
 pub mod views;
 
