@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-23
+
 From two reports filed from a Laravel API with 5,600 routes ([#38](https://github.com/syahrul84/codemap/issues/38), [#39](https://github.com/syahrul84/codemap/issues/39)).
 
 - A route written with its method in another letter case (`Route::POST('reports/export-pdf', …)`, `Route::Get(…)`, `->Middleware('auth')`, `->Group(…)`, `route::delete(…)`) is read like any other: PHP calls a method whatever case its name is written in, and the app serves the route. It was left out, so `verify` answered `not_found` for a route that exists and `list_routes` did not list it. Route files are read again on the first call after the update.
